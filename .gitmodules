@@ -1,0 +1,30 @@
+[submodule "dune-modules/dune-common"]
+	path = dune-modules/dune-common
+	url = https://gitlab.dune-project.org/core/dune-common
+[submodule "extern/dune-common"]
+	path = extern/dune-common
+	url = https://gitlab.dune-project.org/core/dune-common
+[submodule "extern/dune-istl"]
+	path = extern/dune-istl
+	url = https://gitlab.dune-project.org/core/dune-istl
+[submodule "extern/dune-grid"]
+	path = extern/dune-grid
+	url = https://gitlab.dune-project.org/core/dune-grid
+[submodule "extern/dune-geometry"]
+	path = extern/dune-geometry
+	url = https://gitlab.dune-project.org/core/dune-geometry
+[submodule "extern/dune-pdelab"]
+	path = extern/dune-pdelab
+	url = https://gitlab.dune-project.org/pdelab/dune-pdelab
+[submodule "extern/dune-localfunctions"]
+	path = extern/dune-localfunctions
+	url = https://gitlab.dune-project.org/core/dune-localfunctions
+[submodule "extern/dune-uggrid"]
+	path = extern/dune-uggrid
+	url = https://gitlab.dune-project.org/staging/dune-uggrid
+[submodule "extern/dune-typetree"]
+	path = extern/dune-typetree
+	url = https://gitlab.dune-project.org/staging/dune-typetree
+[submodule "extern/dune-functions"]
+	path = extern/dune-functions
+	url = https://gitlab.dune-project.org/staging/dune-functions
