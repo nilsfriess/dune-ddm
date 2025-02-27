@@ -378,10 +378,10 @@ public:
         Aovlp[rIt.index()][cIt.index()] = *cIt;
 
         if (cIt.index() == rIt.index()) {
-          dirichlet_rows[rIt.index()] = dirichlet_rows[rIt.index()] & (*cIt == 1.0);
+          dirichlet_rows[rIt.index()] = dirichlet_rows[rIt.index()] && (*cIt == 1.0);
         }
         else {
-          dirichlet_rows[rIt.index()] = dirichlet_rows[rIt.index()] & (*cIt == 0.0);
+          dirichlet_rows[rIt.index()] = dirichlet_rows[rIt.index()] && (*cIt == 0.0);
         }
       }
     }
