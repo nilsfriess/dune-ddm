@@ -1,9 +1,5 @@
 #pragma once
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/communicator.hh>
 #include <dune/common/parallel/variablesizecommunicator.hh>
