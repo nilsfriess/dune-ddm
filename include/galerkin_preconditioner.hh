@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cassert>
+#include <cstddef>
 #include <dune/common/parallel/variablesizecommunicator.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/preconditioner.hh>
@@ -38,19 +40,19 @@
 template <class Vec, class Mat, class RemoteIndices, class Solver = Dune::UMFPack<Dune::BCRSMatrix<double>>>
 class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
 public:
-  GalerkinPreconditioner(const Mat &A, const Vec &pou, const Vec &t, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), r(pou.N()), N(ris.second->size()), d_ovlp(N), x_ovlp(N)
+  GalerkinPreconditioner(const Mat &A, const Vec &pou, const Vec &t, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), restr_vecs(1, Vec(pou.N(), 0)), N(ris.second->size()), d_ovlp(N), x_ovlp(N)
   {
-    const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
-    const AttributeSet ownerAttribute{Attribute::owner};
-    const AttributeSet copyAttribute{Attribute::copy};
+    buildCommunicationInterfaces(ris);
+    buildRestrictionVector(pou, t, restr_vecs[0]);
+    buildSolver(A);
+  }
 
-    all_all_interface.build(*ris.first, allAttributes, allAttributes);
-    all_all_comm = std::make_unique<Dune::VariableSizeCommunicator<>>(all_all_interface);
-
-    owner_copy_interface.build(*ris.first, ownerAttribute, copyAttribute);
-    owner_copy_comm = std::make_unique<Dune::VariableSizeCommunicator<>>(owner_copy_interface);
-
-    buildRestrictionVector(pou, t);
+  GalerkinPreconditioner(const Mat &A, const Vec &pou, const std::vector<Vec> &ts, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), restr_vecs(ts.size(), Vec(pou.N(), 0)), N(ris.second->size()), d_ovlp(N), x_ovlp(N)
+  {
+    buildCommunnicationInterfaces(ris);
+    for (std::size_t i = 0; i < ts.size(); ++i) {
+      buildRestrictionVector(pou, ts[i], restr_vecs[i]);
+    }
     buildSolver(A);
   }
 
@@ -61,6 +63,8 @@ public:
 
   void apply(Vec &x, const Vec &d) override
   {
+    assert(restr_vecs.size() == 1);
+
     MPI_Comm comm = ris.first->communicator();
     int rank = 0;
     int size = 0;
@@ -78,8 +82,8 @@ public:
 
     // 2. Compute local contribution of coarse defect
     double d_local = 0;
-    for (std::size_t i = 0; i < r.N(); ++i) {
-      d_local += r[i] * d_ovlp[i];
+    for (std::size_t i = 0; i < restr_vecs[0].N(); ++i) {
+      d_local += restr_vecs[0][i] * d_ovlp[i];
     }
 
     // 3. Gather defect values on rank 0
@@ -99,7 +103,7 @@ public:
     MPI_Scatter(x0.data(), 1, MPI_DOUBLE, &coarse_solution, 1, MPI_DOUBLE, 0, comm);
 
     // 6. Prolongate
-    x_ovlp = r;
+    x_ovlp = restr_vecs[0];
     x_ovlp *= coarse_solution;
 
     advdh.setVec(x_ovlp);
@@ -112,20 +116,33 @@ public:
   }
 
 private:
-  void buildRestrictionVector(const Vec &pou, const Vec &t)
+  void buildCommunicationInterfaces(const RemoteParallelIndices<RemoteIndices> &ris)
+  {
+    const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
+    const AttributeSet ownerAttribute{Attribute::owner};
+    const AttributeSet copyAttribute{Attribute::copy};
+
+    all_all_interface.build(*ris.first, allAttributes, allAttributes);
+    all_all_comm = std::make_unique<Dune::VariableSizeCommunicator<>>(all_all_interface);
+
+    owner_copy_interface.build(*ris.first, ownerAttribute, copyAttribute);
+    owner_copy_comm = std::make_unique<Dune::VariableSizeCommunicator<>>(owner_copy_interface);
+  }
+
+  void buildRestrictionVector(const Vec &pou, const Vec &t, Vec &restr)
   {
     // Initialise r to be the "template" vector and make consistent on the overlapping index set
-    r = 0;
+    restr = 0;
     for (std::size_t i = 0; i < t.N(); ++i) {
-      r[i] = t[i];
+      restr[i] = t[i];
     }
 
-    cvdh.setVec(r);
+    cvdh.setVec(restr);
     owner_copy_comm->forward(cvdh);
 
     // Multiply with the partition of unity
-    for (std::size_t i = 0; i < r.N(); ++i) {
-      r[i] *= pou[i];
+    for (std::size_t i = 0; i < restr.N(); ++i) {
+      restr[i] *= pou[i];
     }
   }
 
@@ -138,46 +155,52 @@ private:
     MPI_Comm_rank(ris.first->communicator(), &rank);
     MPI_Comm_size(ris.first->communicator(), &size);
 
-    Vec my_row(size, 0); // Each process builds one row of the coarse matrix
+    if (restr_vecs.size() == 1) {
+      Vec my_row(size, 0); // Each process builds one row of the coarse matrix
 
-    // Compute r * A * s, where s is the r vector of another rank
-    Vec s(r.N());
-    Vec y(r.N());
-    for (int col = 0; col < size; ++col) {
-      if (col == rank) {
-        s = r;
-      }
-      else {
-        s = 0;
-      }
-
-      advdh.setVec(s);
-      all_all_comm->forward(advdh);
-
-      A.mv(s, y);
-
-      for (std::size_t i = 0; i < y.N(); ++i) {
-        if (glis.pair(i)->local().attribute() != Attribute::owner) {
-          y[i] = 0;
+      // Compute r * A * s, where s is the r vector of another rank
+      Vec s(restr_vecs[0].N());
+      Vec y(restr_vecs[0].N());
+      for (int col = 0; col < size; ++col) {
+        if (col == rank) {
+          s = restr_vecs[0];
         }
+        else {
+          s = 0;
+        }
+
+        advdh.setVec(s);
+        all_all_comm->forward(advdh);
+
+        A.mv(s, y);
+
+        for (std::size_t i = 0; i < y.N(); ++i) {
+          if (glis.pair(i)->local().attribute() != Attribute::owner) {
+            y[i] = 0;
+          }
+        }
+
+        advdh.setVec(y);
+        all_all_comm->forward(advdh);
+
+        my_row[col] = restr_vecs[0] * y;
       }
 
-      advdh.setVec(y);
-      all_all_comm->forward(advdh);
+      Dune::BCRSMatrix<double> A0 = gatherMatrixFromRows(my_row, ris.first->communicator());
 
-      my_row[col] = r * y;
+      if (rank == 0) {
+        solver = std::make_unique<Solver>(A0);
+      }
     }
-
-    Dune::BCRSMatrix<double> A0 = gatherMatrixFromRows(my_row, ris.first->communicator());
-    if (rank == 0) {
-      solver = std::make_unique<Solver>(A0);
+    else {
+      assert(false && "Not implemented yet");
     }
   }
 
   std::unique_ptr<Solver> solver;
   RemoteParallelIndices<RemoteIndices> ris;
 
-  Vec r;
+  std::vector<Vec> restr_vecs;
 
   std::size_t N;
   Vec d_ovlp;
