@@ -115,6 +115,8 @@ public:
     }
   }
 
+  const Dune::BCRSMatrix<double> &getCoarseMatrix() const { return A0; }
+
 private:
   void buildCommunicationInterfaces(const RemoteParallelIndices<RemoteIndices> &ris)
   {
@@ -186,7 +188,7 @@ private:
         my_row[col] = restr_vecs[0] * y;
       }
 
-      Dune::BCRSMatrix<double> A0 = gatherMatrixFromRows(my_row, ris.first->communicator());
+      A0 = gatherMatrixFromRows(my_row, ris.first->communicator());
 
       if (rank == 0) {
         solver = std::make_unique<Solver>(A0);
@@ -214,4 +216,6 @@ private:
 
   CopyVectorDataHandle<Vec> cvdh;
   AddVectorDataHandle<Vec> advdh;
+
+  Dune::BCRSMatrix<double> A0;
 };
