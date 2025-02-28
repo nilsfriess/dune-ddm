@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(dune-ddm 
         VERSION 0.0.1
-        LANGUAGES CXX)
+        LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_COLOR_DIAGNOSTICS ON)
@@ -15,6 +15,8 @@ endforeach()
 message(STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
 
 set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ON)
+
+find_package(MPI REQUIRED)
 
 add_subdirectory(extern/dune-common SYSTEM)
 add_subdirectory(extern/dune-geometry SYSTEM)
