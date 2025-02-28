@@ -1,3 +1,4 @@
+#include "logger.hh"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -42,10 +43,12 @@ class MaskedScalarProduct : public Dune::ScalarProduct<Vec> {
   using Base = Dune::ScalarProduct<Vec>;
 
 public:
-  MaskedScalarProduct(const std::vector<unsigned> &mask, Communication comm) : mask(&mask), comm(comm) {}
+  MaskedScalarProduct(const std::vector<unsigned> &mask, Communication comm) : mask(&mask), comm(comm) { dot_event = Logger::get().registerEvent(Logger::get().registerFamily("MaskedScalarProduct"), "dot"); }
 
   typename Base::field_type dot(const Vec &x, const Vec &y) const override
   {
+    Logger::ScopedLog se(dot_event);
+
     typename Base::field_type res{0.0};
     for (typename Vec::size_type i = 0; i < x.size(); i++) {
       res += x[i] * y[i] * (*mask)[i];
@@ -64,6 +67,8 @@ public:
 private:
   const std::vector<unsigned> *mask;
   Communication comm;
+
+  Logger::Event *dot_event;
 };
 
 namespace {
@@ -291,5 +296,9 @@ int main(int argc, char *argv[])
   writer.addVertexData(gfadapterone);
 
   writer.write("Poisson");
+
+  
+  Logger::get().report(helper.getCommunicator());
+
   return 0;
 }

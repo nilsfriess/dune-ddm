@@ -10,6 +10,7 @@
 
 #include "datahandles.hh"
 #include "helpers.hh"
+#include "logger.hh"
 
 /** @brief A preconditioner that acts as R^T (R A R^T)^-1 R
 
@@ -42,6 +43,7 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
 public:
   GalerkinPreconditioner(const Mat &A, const Vec &pou, const Vec &t, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), restr_vecs(1, Vec(pou.N(), 0)), N(ris.second->size()), d_ovlp(N), x_ovlp(N)
   {
+    registerLogEvents();
     buildCommunicationInterfaces(ris);
     buildRestrictionVector(pou, t, restr_vecs[0]);
     buildSolver(A);
@@ -49,6 +51,7 @@ public:
 
   GalerkinPreconditioner(const Mat &A, const Vec &pou, const std::vector<Vec> &ts, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), restr_vecs(ts.size(), Vec(pou.N(), 0)), N(ris.second->size()), d_ovlp(N), x_ovlp(N)
   {
+    registerLogEvents();
     buildCommunnicationInterfaces(ris);
     for (std::size_t i = 0; i < ts.size(); ++i) {
       buildRestrictionVector(pou, ts[i], restr_vecs[i]);
@@ -63,6 +66,8 @@ public:
 
   void apply(Vec &x, const Vec &d) override
   {
+    Logger::ScopedLog se(apply_event);
+
     assert(restr_vecs.size() == 1);
 
     MPI_Comm comm = ris.first->communicator();
@@ -118,6 +123,13 @@ public:
   const Dune::BCRSMatrix<double> &getCoarseMatrix() const { return A0; }
 
 private:
+  void registerLogEvents()
+  {
+    auto *family = Logger::get().registerFamily("GalerkinPrec");
+    apply_event = Logger::get().registerEvent(family, "apply");
+    mat_prod_event = Logger::get().registerEvent(family, "build Matrix");
+  }
+
   void buildCommunicationInterfaces(const RemoteParallelIndices<RemoteIndices> &ris)
   {
     const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
@@ -150,6 +162,8 @@ private:
 
   void buildSolver(const Mat &A)
   {
+    Logger::ScopedLog se(mat_prod_event);
+
     Dune::GlobalLookupIndexSet glis(*ris.second);
 
     int rank = 0;
@@ -218,4 +232,7 @@ private:
   AddVectorDataHandle<Vec> advdh;
 
   Dune::BCRSMatrix<double> A0;
+
+  Logger::Event *apply_event;
+  Logger::Event *mat_prod_event;
 };

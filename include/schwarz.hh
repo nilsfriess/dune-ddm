@@ -14,6 +14,7 @@
 
 #include "datahandles.hh"
 #include "helpers.hh"
+#include "logger.hh"
 #include "overlap_extension.hh"
 
 template <typename Mat, typename X, typename Y>
@@ -32,6 +33,9 @@ private:
   std::shared_ptr<Mat> A;
   std::shared_ptr<Dune::BufferedCommunicator> communicator;
 
+  Logger::Event *apply_event;
+  Logger::Event *applyscaleadd_event;
+
   struct AddGatherScatter {
     using DataType = typename Dune::CommPolicy<X>::IndexedType;
 
@@ -44,18 +48,27 @@ public:
    * \param A              Reference to the matrix that this operator represents.
    * \param communicator   Reference to a communicator to exchange data between processes.
    */
-  NonoverlappingOperator(std::shared_ptr<Mat> A, std::shared_ptr<Dune::BufferedCommunicator> communicator) : A(std::move(A)), communicator(std::move(communicator)) {}
+  NonoverlappingOperator(std::shared_ptr<Mat> A, std::shared_ptr<Dune::BufferedCommunicator> communicator) : A(std::move(A)), communicator(std::move(communicator))
+  {
+    auto *family = Logger::get().registerFamily("NonovlpOperator");
+    apply_event = Logger::get().registerEvent(family, "apply");
+    applyscaleadd_event = Logger::get().registerEvent(family, "applyscaleadd");
+  }
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
 
   void apply(const X &x, Y &y) const override
   {
+    Logger::ScopedLog sl(apply_event);
+
     A->mv(x, y);
     communicator->forward<AddGatherScatter>(y);
   }
 
   void applyscaleadd(field_type alpha, const X &x, Y &y) const override
   {
+    Logger::ScopedLog sl(applyscaleadd_event);
+
     A->usmv(alpha, x, y);
     communicator->forward<AddGatherScatter>(y);
   }
@@ -118,6 +131,8 @@ public:
 
   void apply(Vec &x, const Vec &d) override
   {
+    Logger::get().startEvent(apply_event);
+
     // 1. Copy local values from non-overlapping to overlapping defect
     for (std::size_t i = 0; i < N; ++i) {
       (*d_ovlp)[i] = d[i];
@@ -161,6 +176,8 @@ public:
     for (std::size_t i = 0; i < x.size(); ++i) {
       x[i] = (*x_ovlp)[i];
     }
+
+    Logger::get().endEvent(apply_event);
   }
 
   std::shared_ptr<Mat> getOverlappingMat() const { return Aovlp; }
@@ -171,16 +188,16 @@ public:
 private:
   void init(const Mat &A, int overlap, const RemoteIndices &remoteindices, int verbose)
   {
-    auto start = MPI_Wtime();
+    auto *family = Logger::get().registerFamily("Schwarz");
+    apply_event = Logger::get().registerEvent(family, "apply");
+    auto *init_event = Logger::get().registerEvent(family, "init");
+    Logger::get().startEvent(init_event);
+
     ovlpindices = extendOverlap(remoteindices, A, overlap);
-    auto end = MPI_Wtime();
 
     int rank = 0;
     MPI_Comm comm = remoteindices.communicator();
     MPI_Comm_rank(comm, &rank);
-    if (rank == 0 && verbose > 1) {
-      std::cout << "SchwarzPreconditioner: Increasing overlap took: " << (end - start) << '\n';
-    }
 
     all_all_interface.build(*ovlpindices.first, allAttributes, allAttributes);
     all_all_comm = std::make_unique<Dune::VariableSizeCommunicator<>>(all_all_interface);
@@ -189,18 +206,12 @@ private:
     owner_copy_comm = std::make_unique<Dune::VariableSizeCommunicator<>>(owner_copy_interface);
 
     Aovlp = std::make_shared<Mat>(createOverlappingMatrix(A, *ovlpindices.first));
-    // {
-    //   MPI_Comm comm = remoteindices.communicator();
-    //   int rank;
-    //   MPI_Comm_rank(comm, &rank);
-    //   if (rank == 0) {
-    // 	Dune::printmatrix(std::cout, *Aovlp, "", "");
-    //   }
-    // }
     solver = std::make_unique<Solver>(*Aovlp, 0);
 
     d_ovlp = std::make_unique<Vec>(Aovlp->N());
     x_ovlp = std::make_unique<Vec>(Aovlp->N());
+
+    Logger::get().endEvent(init_event);
   }
 
   void createPOU()
@@ -253,4 +264,6 @@ private:
 
   SchwarzType type = SchwarzType::Restricted;
   PartitionOfUnityType pou_type;
+
+  Logger::Event *apply_event;
 };

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "logger.hh"
 #include <dune/common/exceptions.hh>
 #include <dune/istl/operators.hh>
 #include <dune/istl/preconditioner.hh>
@@ -17,9 +18,13 @@ public:
   explicit CombinedPreconditioner(ApplyMode mode = ApplyMode::Additive) : mode(mode)
   {
     precs.reserve(2); // In many cases, we expect this to be used to combine two preconditioners (e.g. two level Schwarz)
+
+    initLogEvents();
   }
 
-  explicit CombinedPreconditioner(std::shared_ptr<Dune::LinearOperator<X, Y>> A) : mode(ApplyMode::Multiplicative), A(A) {}
+  explicit CombinedPreconditioner(std::shared_ptr<Dune::LinearOperator<X, Y>> A) : mode(ApplyMode::Multiplicative), A(A) {
+    initLogEvents();
+  }
 
   Dune::SolverCategory::Category category() const override
   {
@@ -58,6 +63,8 @@ public:
 
   void apply(X &x, const Y &d) override
   {
+    Logger::ScopedLog se(apply_event);
+
     assert(precs.size() > 0 && "ERROR: No preconditioners to apply, add them using the `add` method"); // Error should be caught in the "category" method already
 
     precs[0]->apply(x, d);
@@ -92,45 +99,16 @@ public:
   }
 
 private:
+  void initLogEvents()
+  {
+    auto *family = Logger::get().registerFamily("CombinedPreconditioner");
+    apply_event = Logger::get().registerEvent(family, "apply");
+  }
+
   std::vector<std::shared_ptr<Dune::Preconditioner<X, Y>>> precs;
   ApplyMode mode;
 
   std::shared_ptr<Dune::LinearOperator<X, Y>> A;
-};
 
-template <class X, class Y>
-class AdditivePreconditioner : public Dune::Preconditioner<X, Y> {
-public:
-  AdditivePreconditioner(std::shared_ptr<Dune::Preconditioner<X, Y>> p1, std::shared_ptr<Dune::Preconditioner<X, Y>> p2) : p1(p1), p2(p2)
-  {
-    if (p1->category() != p2->category()) {
-      DUNE_THROW(Dune::Exception, "Preconditioners are incompatible (different categories)");
-    }
-  }
-
-  Dune::SolverCategory::Category category() const override { return p1->category(); }
-
-  void pre(X &x, Y &y) override
-  {
-    p1->pre(x, y);
-    p2->pre(x, y);
-  }
-
-  void post(X &x) override
-  {
-    p1->post(x);
-    p2->post(x);
-  }
-
-  void apply(X &x, const Y &d) override
-  {
-    X x2(x);
-    p1->apply(x, d);
-    p2->apply(x2, d);
-    x += x2;
-  }
-
-private:
-  std::shared_ptr<Dune::Preconditioner<X, Y>> p1;
-  std::shared_ptr<Dune::Preconditioner<X, Y>> p2;
+  Logger::Event *apply_event;
 };
