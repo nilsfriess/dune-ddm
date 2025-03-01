@@ -20,13 +20,9 @@
 template <typename Mat, typename X, typename Y>
 class NonoverlappingOperator : public Dune::AssembledLinearOperator<Mat, X, Y> {
 public:
-  //! export type of matrix
   using matrix_type = Mat;
-  //! export type of vectors the matrix is applied to
   using domain_type = X;
-  //! export type of result vectors
   using range_type = Y;
-  //! export type of the entries for x
   using field_type = typename X::field_type;
 
 private:
@@ -44,10 +40,6 @@ private:
   };
 
 public:
-  /**
-   * \param A              Reference to the matrix that this operator represents.
-   * \param communicator   Reference to a communicator to exchange data between processes.
-   */
   NonoverlappingOperator(std::shared_ptr<Mat> A, std::shared_ptr<Dune::BufferedCommunicator> communicator) : A(std::move(A)), communicator(std::move(communicator))
   {
     auto *family = Logger::get().registerFamily("NonovlpOperator");
@@ -73,7 +65,6 @@ public:
     communicator->forward<AddGatherScatter>(y);
   }
 
-  //! extract the matrix
   const Mat &getmat() const override { return *A; }
 };
 
@@ -90,9 +81,10 @@ class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   using ParallelIndexSet = typename RemoteIndices::ParallelIndexSet;
 
 public:
-  SchwarzPreconditioner(const Mat &A, const RemoteIndices &remoteindices, int overlap, SchwarzType type = SchwarzType::Restricted, PartitionOfUnityType pou_type = PartitionOfUnityType::None, int verbose = 0) : N(A.N()), type(type), pou_type(pou_type)
+  SchwarzPreconditioner(const Mat &A, const RemoteIndices &remoteindices, int overlap, SchwarzType type = SchwarzType::Restricted, PartitionOfUnityType pou_type = PartitionOfUnityType::None)
+      : N(A.N()), type(type), pou_type(pou_type)
   {
-    init(A, overlap, remoteindices, verbose);
+    init(A, overlap, remoteindices);
     createPOU();
   }
 
@@ -120,7 +112,7 @@ public:
       DUNE_THROW(Dune::Exception, "Unknown partition of unity type, can either be 'standard' or 'none'");
     }
 
-    init(A, ptree.get("overlap", 1), remoteindices, ptree.get("verbose", 0));
+    init(A, ptree.get("overlap", 1), remoteindices);
     createPOU();
   }
 
@@ -186,7 +178,7 @@ public:
   RemoteParallelIndices<RemoteIndices> getOverlappingIndices() const { return ovlpindices; }
 
 private:
-  void init(const Mat &A, int overlap, const RemoteIndices &remoteindices, int verbose)
+  void init(const Mat &A, int overlap, const RemoteIndices &remoteindices)
   {
     auto *family = Logger::get().registerFamily("Schwarz");
     apply_event = Logger::get().registerEvent(family, "apply");
@@ -249,7 +241,7 @@ private:
   std::unique_ptr<Vec> d_ovlp; // Defect on overlapping index set
   std::unique_ptr<Vec> x_ovlp; // Solution on overlapping index set
 
-  std::shared_ptr<Vec> pou;    // partition of unity (might be null)
+  std::shared_ptr<Vec> pou; // partition of unity (might be null)
 
   Dune::Interface all_all_interface;
   std::unique_ptr<Dune::VariableSizeCommunicator<>> all_all_comm;
@@ -265,5 +257,5 @@ private:
   SchwarzType type = SchwarzType::Restricted;
   PartitionOfUnityType pou_type;
 
-  Logger::Event *apply_event;
+  Logger::Event *apply_event{};
 };

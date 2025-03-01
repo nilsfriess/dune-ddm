@@ -233,6 +233,6 @@ private:
 
   Dune::BCRSMatrix<double> A0;
 
-  Logger::Event *apply_event;
-  Logger::Event *mat_prod_event;
+  Logger::Event *apply_event{};
+  Logger::Event *mat_prod_event{};
 };

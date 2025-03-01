@@ -1,6 +1,7 @@
 #pragma once
 
 #include "logger.hh"
+
 #include <dune/common/exceptions.hh>
 #include <dune/istl/operators.hh>
 #include <dune/istl/preconditioner.hh>
@@ -22,9 +23,7 @@ public:
     initLogEvents();
   }
 
-  explicit CombinedPreconditioner(std::shared_ptr<Dune::LinearOperator<X, Y>> A) : mode(ApplyMode::Multiplicative), A(A) {
-    initLogEvents();
-  }
+  explicit CombinedPreconditioner(std::shared_ptr<Dune::LinearOperator<X, Y>> A) : mode(ApplyMode::Multiplicative), A(A) { initLogEvents(); }
 
   Dune::SolverCategory::Category category() const override
   {
@@ -99,16 +98,12 @@ public:
   }
 
 private:
-  void initLogEvents()
-  {
-    auto *family = Logger::get().registerFamily("CombinedPreconditioner");
-    apply_event = Logger::get().registerEvent(family, "apply");
-  }
+  void initLogEvents() { apply_event = Logger::get().registerEvent("CombinedPreconditioner", "apply"); }
 
   std::vector<std::shared_ptr<Dune::Preconditioner<X, Y>>> precs;
   ApplyMode mode;
 
   std::shared_ptr<Dune::LinearOperator<X, Y>> A;
 
-  Logger::Event *apply_event;
+  Logger::Event *apply_event{};
 };

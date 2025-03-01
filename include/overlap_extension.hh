@@ -2,6 +2,7 @@
 
 #include "datahandles.hh"
 #include "helpers.hh"
+#include "logger.hh"
 
 #include <dune/common/parallel/interface.hh>
 #include <dune/common/parallel/variablesizecommunicator.hh>
@@ -135,11 +136,11 @@ void extendOverlapOnce(ParallelIndexSet &paridxs, RemoteIndices &remoteids, std:
   std::set<int> final_neighbours;
   final_neighbours.insert(neighbours.begin(), neighbours.end()); // The ones we knew before
 
-  for (const auto &[_, nbs] : dh.neighbours_for_gidx) {          // The ones we learned about during the first communication
+  for (const auto &[_, nbs] : dh.neighbours_for_gidx) { // The ones we learned about during the first communication
     final_neighbours.insert(nbs.begin(), nbs.end());
   }
 
-  for (auto &[_, nbs] : other_neighbours) {                      // The ones we learned about during the second communication
+  for (auto &[_, nbs] : other_neighbours) { // The ones we learned about during the second communication
     final_neighbours.insert(nbs.begin(), nbs.end());
   }
 
@@ -173,6 +174,10 @@ void extendOverlapOnce(ParallelIndexSet &paridxs, RemoteIndices &remoteids, std:
 template <class RemoteIndices, class Mat>
 RemoteParallelIndices<RemoteIndices> extendOverlap(const RemoteIndices &remoteids, const Mat &A, int overlap)
 {
+  static auto *overlap_family = Logger::get().registerFamily("OverlapExtension");
+  static auto *extend_event = Logger::get().registerEvent(overlap_family, "extend");
+  Logger::ScopedLog sl(extend_event);
+
   MPI_Comm comm = remoteids.communicator();
 
   auto paridxs = remoteids.sourceIndexSet();
@@ -257,6 +262,10 @@ RemoteParallelIndices<RemoteIndices> extendOverlap(const RemoteIndices &remoteid
 template <class Matrix, class RemoteIndices>
 Matrix createOverlappingMatrix(const Matrix &A, const RemoteIndices &remoteids)
 {
+  static auto *overlap_family = Logger::get().registerOrGetFamily("OverlapExtension");
+  static auto *matrix_event = Logger::get().registerEvent(overlap_family, "create Matrix");
+  Logger::ScopedLog sl(matrix_event);
+
   const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
   Dune::Interface interface;
   interface.build(remoteids, allAttributes, allAttributes);

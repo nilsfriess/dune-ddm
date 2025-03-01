@@ -1,4 +1,3 @@
-#include "logger.hh"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -34,6 +33,7 @@
 #include "combined_preconditioner.hh"
 #include "galerkin_preconditioner.hh"
 #include "helpers.hh"
+#include "logger.hh"
 #include "schwarz.hh"
 
 #include "poisson.hh"
@@ -43,7 +43,7 @@ class MaskedScalarProduct : public Dune::ScalarProduct<Vec> {
   using Base = Dune::ScalarProduct<Vec>;
 
 public:
-  MaskedScalarProduct(const std::vector<unsigned> &mask, Communication comm) : mask(&mask), comm(comm) { dot_event = Logger::get().registerEvent(Logger::get().registerFamily("MaskedScalarProduct"), "dot"); }
+  MaskedScalarProduct(const std::vector<unsigned> &mask, Communication comm) : mask(&mask), comm(comm) { dot_event = Logger::get().registerEvent("MaskedScalarProduct", "dot"); }
 
   typename Base::field_type dot(const Vec &x, const Vec &y) const override
   {
@@ -104,9 +104,10 @@ auto makeRemoteIndices(const GFS &gfs, const Dune::MPIHelper &helper)
 {
   using Dune::PDELab::Backend::native;
 
-  // Using the grid function space, we can generate a globally unique numbering of the dofs.
-  // This is done by taking the local index, shifting it to the upper 32 bits of a 64 bit number and
-  // taking our MPI rank as the lower 32 bits.
+  // Using the grid function space, we can generate a globally unique numbering
+  // of the dofs. This is done by taking the local index, shifting it to the
+  // upper 32 bits of a 64 bit number and taking our MPI rank as the lower 32
+  // bits.
   using GlobalIndexVec = Dune::PDELab::Backend::Vector<GFS, std::uint64_t>;
   GlobalIndexVec giv(gfs);
   for (int i = 0; i < giv.N(); ++i) {
@@ -114,9 +115,11 @@ auto makeRemoteIndices(const GFS &gfs, const Dune::MPIHelper &helper)
   }
 
   // Now we have a unique global indexing scheme in the interior of each process
-  // subdomain; at the process boundary we take the smallest among all processes.
+  // subdomain; at the process boundary we take the smallest among all
+  // processes.
   GlobalIndexVec giv_before(gfs);
-  giv_before = giv; // Copy the vector so that we can find out if we are the owner of a border index after communication
+  giv_before = giv; // Copy the vector so that we can find out if we are the
+                    // owner of a border index after communication
   Dune::PDELab::MinDataHandle mindh(gfs, giv);
   gfs.gridView().communicate(mindh, Dune::All_All_Interface, Dune::ForwardCommunication);
 
@@ -133,9 +136,10 @@ auto makeRemoteIndices(const GFS &gfs, const Dune::MPIHelper &helper)
   ParallelIndexSet paridxs;
   paridxs.beginResize();
   for (std::size_t i = 0; i < giv.N(); ++i) {
-    paridxs.add(native(giv)[i], {i,                                                                            // Local index is just i
-                                 native(giv)[i] == native(giv_before)[i] ? Attribute::owner : Attribute::copy, // If the index didn't change above, we own it
-                                 native(isPublic)[i]}                                                          // Index is public if multiple ranks added a value above
+    paridxs.add(native(giv)[i],
+                {i,                                                                            // Local index is just i
+                 native(giv)[i] == native(giv_before)[i] ? Attribute::owner : Attribute::copy, // If the index didn't change above, we own it
+                 native(isPublic)[i]}                                                          // SharedDOFDataHandle determines if an index is public
     );
   }
   paridxs.endResize();
@@ -222,7 +226,8 @@ int main(int argc, char *argv[])
 
   Vec one(gfs);
   if (ptree.get("coarsespace", false)) {
-    // Build vector of constant 1s, except for the Dirichlet dofs which are zeroed out
+    // Build vector of constant 1s, except for the Dirichlet dofs which are
+    // zeroed out
     Dune::PDELab::interpolate([]([[maybe_unused]] const auto &x) { return 1; }, gfs, one);
     for (std::size_t i = 0; i < one.N(); ++i) {
       if (native(problem.getDirichletMask())[i] > 0) {
@@ -230,7 +235,8 @@ int main(int argc, char *argv[])
       }
     }
 
-    auto nicolaides = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), *schwarz->getPartitionOfUnity(), native(one), schwarz->getOverlappingIndices());
+    auto nicolaides = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(
+        *schwarz->getOverlappingMat(), *schwarz->getPartitionOfUnity(), native(one), schwarz->getOverlappingIndices());
     prec.add(nicolaides);
   }
   end = MPI_Wtime();
@@ -283,8 +289,9 @@ int main(int argc, char *argv[])
   //   if (helper.rank() != ptree.get("debug_rank", 0))
   //     native(pouvec) = 0;
   //   Dune::PDELab::DiscreteGridFunction poudgf(gfs, pouvec);
-  //   auto pougfadapter = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(poudgf)>>(poudgf, "POU");
-  //   writer.addVertexData(pougfadapter);
+  //   auto pougfadapter =
+  //   std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(poudgf)>>(poudgf,
+  //   "POU"); writer.addVertexData(pougfadapter);
   // #endif
 
   Dune::PDELab::DiscreteGridFunction dgf(gfs, problem.getX());
@@ -297,7 +304,6 @@ int main(int argc, char *argv[])
 
   writer.write("Poisson");
 
-  
   Logger::get().report(helper.getCommunicator());
 
   return 0;
