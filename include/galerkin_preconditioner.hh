@@ -2,8 +2,13 @@
 
 #include <cassert>
 #include <cstddef>
+#include <iostream>
+
+#include <mpi.h>
+
 #include <dune/common/parallel/variablesizecommunicator.hh>
 #include <dune/istl/bcrsmatrix.hh>
+#include <dune/istl/io.hh>
 #include <dune/istl/preconditioner.hh>
 #include <dune/istl/solver.hh>
 #include <dune/istl/umfpack.hh>
@@ -12,7 +17,7 @@
 #include "helpers.hh"
 #include "logger.hh"
 
-/** @brief A preconditioner that acts as R^T (R A R^T)^-1 R
+/** @brief A preconditioner that acts as R^T (R A R^T)^-1 R.
 
     The restriction matrix R (which is of size 'A.N()' x 'MPI ranks') is built from
       - a so called template vector \p t, and
@@ -49,10 +54,11 @@ public:
     buildSolver(A);
   }
 
-  GalerkinPreconditioner(const Mat &A, const Vec &pou, const std::vector<Vec> &ts, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), restr_vecs(ts.size(), Vec(pou.N(), 0)), N(ris.second->size()), d_ovlp(N), x_ovlp(N)
+  GalerkinPreconditioner(const Mat &A, const Vec &pou, const std::vector<Vec> &ts, RemoteParallelIndices<RemoteIndices> ris)
+      : ris(ris), restr_vecs(ts.size(), Vec(pou.N(), 0)), N(ris.second->size()), d_ovlp(N), x_ovlp(N)
   {
     registerLogEvents();
-    buildCommunnicationInterfaces(ris);
+    buildCommunicationInterfaces(ris);
     for (std::size_t i = 0; i < ts.size(); ++i) {
       buildRestrictionVector(pou, ts[i], restr_vecs[i]);
     }
@@ -68,7 +74,7 @@ public:
   {
     Logger::ScopedLog se(apply_event);
 
-    assert(restr_vecs.size() == 1);
+    // assert(restr_vecs.size() == 1);
 
     MPI_Comm comm = ris.first->communicator();
     int rank = 0;
@@ -86,17 +92,19 @@ public:
     owner_copy_comm->forward(cvdh);
 
     // 2. Compute local contribution of coarse defect
-    double d_local = 0;
-    for (std::size_t i = 0; i < restr_vecs[0].N(); ++i) {
-      d_local += restr_vecs[0][i] * d_ovlp[i];
+    std::vector<double> d_local(restr_vecs.size(), 0);
+    for (std::size_t k = 0; k < restr_vecs.size(); ++k) {
+      for (std::size_t i = 0; i < restr_vecs[0].N(); ++i) {
+        d_local[k] += restr_vecs[k][i] * d_ovlp[i];
+      }
     }
 
     // 3. Gather defect values on rank 0
-    Dune::BlockVector<double> d0(size);
-    MPI_Gather(&d_local, 1, MPI_DOUBLE, d0.data(), 1, MPI_DOUBLE, 0, comm);
+    Dune::BlockVector<double> d0(size * restr_vecs.size());
+    MPI_Gather(d_local.data(), static_cast<int>(d_local.size()), MPI_DOUBLE, d0.data(), restr_vecs.size(), MPI_DOUBLE, 0, comm);
 
     // 4. Solve on rank 0
-    Dune::BlockVector<double> x0(size);
+    Dune::BlockVector<double> x0(size * restr_vecs.size());
     if (rank == 0) {
       x0 = 0;
       Dune::InverseOperatorResult res;
@@ -104,12 +112,16 @@ public:
     }
 
     // 5. Scatter the local solution back
-    double coarse_solution{};
-    MPI_Scatter(x0.data(), 1, MPI_DOUBLE, &coarse_solution, 1, MPI_DOUBLE, 0, comm);
+    std::vector<double> coarse_solution(restr_vecs.size(), 0);
+    MPI_Scatter(x0.data(), restr_vecs.size(), MPI_DOUBLE, coarse_solution.data(), coarse_solution.size(), MPI_DOUBLE, 0, comm);
 
     // 6. Prolongate
-    x_ovlp = restr_vecs[0];
-    x_ovlp *= coarse_solution;
+    x_ovlp = 0;
+    for (std::size_t k = 0; k < restr_vecs.size(); ++k) {
+      for (std::size_t j = 0; j < x_ovlp.N(); ++j) {
+        x_ovlp[j] += coarse_solution[k] * restr_vecs[k][j];
+      }
+    }
 
     advdh.setVec(x_ovlp);
     all_all_comm->forward(advdh);
@@ -164,6 +176,12 @@ private:
   {
     Logger::ScopedLog se(mat_prod_event);
 
+    auto *s_event = Logger::get().registerEvent("GalerkinPrec", "comm s");
+    auto *y_event = Logger::get().registerEvent("GalerkinPrec", "comm y");
+    auto *Asy_event = Logger::get().registerEvent("GalerkinPrec", "compute y=As");
+    auto *gather_A0 = Logger::get().registerEvent("GalerkinPrec", "gather A0");
+    auto *factor_A0 = Logger::get().registerEvent("GalerkinPrec", "factor A0");
+
     Dune::GlobalLookupIndexSet glis(*ris.second);
 
     int rank = 0;
@@ -171,46 +189,75 @@ private:
     MPI_Comm_rank(ris.first->communicator(), &rank);
     MPI_Comm_size(ris.first->communicator(), &size);
 
-    if (restr_vecs.size() == 1) {
-      Vec my_row(size, 0); // Each process builds one row of the coarse matrix
+    // First check that all MPI ranks have the same number of template vectors
+    std::size_t num_t = restr_vecs.size();
+    std::size_t max_num_t = 0;
+    std::size_t min_num_t = 0;
+    MPI_Allreduce(&num_t, &max_num_t, 1, MPI_UNSIGNED_LONG, MPI_MAX, ris.first->communicator());
+    MPI_Allreduce(&num_t, &min_num_t, 1, MPI_UNSIGNED_LONG, MPI_MIN, ris.first->communicator());
+    if (max_num_t != min_num_t) {
+      std::cout << "Error: All MPI ranks must have the same number of template vectors\n";
+      MPI_Abort(ris.first->communicator(), 1);
+    }
 
-      // Compute r * A * s, where s is the r vector of another rank
-      Vec s(restr_vecs[0].N());
-      Vec y(restr_vecs[0].N());
+    // if (rank == 1) {
+    //   for (auto &restr_vec : restr_vecs) {
+    //     Dune::printvector(std::cout, restr_vec, "", "");
+    //   }
+    // }
+
+    std::vector<bool> owner_mask(restr_vecs[0].N(), false);
+    for (std::size_t l = 0; l < owner_mask.size(); ++l) {
+      owner_mask[l] = glis.pair(l)->local().attribute() == Attribute::owner;
+    }
+
+    std::vector<Vec> my_rows(num_t, Vec(size * num_t));
+    Vec s(restr_vecs[0].N());
+    Vec y(restr_vecs[0].N());
+
+    for (std::size_t k = 0; k < num_t; ++k) {
+      const Vec &r = restr_vecs[k];
       for (int col = 0; col < size; ++col) {
-        if (col == rank) {
-          s = restr_vecs[0];
-        }
-        else {
-          s = 0;
-        }
-
-        advdh.setVec(s);
-        all_all_comm->forward(advdh);
-
-        A.mv(s, y);
-
-        for (std::size_t i = 0; i < y.N(); ++i) {
-          if (glis.pair(i)->local().attribute() != Attribute::owner) {
-            y[i] = 0;
+        for (std::size_t i = 0; i < num_t; ++i) {
+          if (col == rank) {
+            s = restr_vecs[i];
           }
+          else {
+            s = 0;
+          }
+
+          Logger::get().startEvent(s_event);
+          advdh.setVec(s);
+          all_all_comm->forward(advdh);
+          Logger::get().endEvent(s_event);
+
+          Logger::get().startEvent(Asy_event);
+          A.mv(s, y);
+
+          for (std::size_t l = 0; l < y.N(); ++l) {
+            y[l] *= owner_mask[l];
+          }
+          Logger::get().endEvent(Asy_event);
+
+          Logger::get().startEvent(y_event);
+          advdh.setVec(y);
+          all_all_comm->forward(advdh);
+          Logger::get().endEvent(y_event);
+
+          my_rows[k][col * num_t + i] = r * y;
         }
-
-        advdh.setVec(y);
-        all_all_comm->forward(advdh);
-
-        my_row[col] = restr_vecs[0] * y;
-      }
-
-      A0 = gatherMatrixFromRows(my_row, ris.first->communicator());
-
-      if (rank == 0) {
-        solver = std::make_unique<Solver>(A0);
       }
     }
-    else {
-      assert(false && "Not implemented yet");
+
+    Logger::get().startEvent(gather_A0);
+    A0 = gatherMatrixFromRows(my_rows, ris.first->communicator());
+    Logger::get().endEvent(gather_A0);
+
+    Logger::get().startEvent(factor_A0);
+    if (rank == 0) {
+      solver = std::make_unique<Solver>(A0);
     }
+    Logger::get().endEvent(factor_A0);
   }
 
   std::unique_ptr<Solver> solver;

@@ -217,26 +217,50 @@ int main(int argc, char *argv[])
   }
   start = MPI_Wtime();
 
-  auto applymode = (ptree.get("applymode", "additive") == "additive") ? ApplyMode::Additive : ApplyMode::Multiplicative;
-  CombinedPreconditioner<Native<Vec>> prec(applymode);
-  prec.setMat(op);
+  ApplyMode applymode = ApplyMode::Additive;
+  auto applymode_param = ptree.get("applymode", "additive");
+  if (applymode_param == "additive") {
+    applymode = ApplyMode::Additive;
+  }
+  else if (applymode_param == "multiplicative") {
+    applymode = ApplyMode::Multiplicative;
+  }
+  else {
+    if (helper.rank() == 0) {
+      std::cout << "Unknown apply mode for combined preconditioner, using 'additive' instead\n";
+    }
+  }
 
   auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*problem.getA(), remoteindices, ptree);
-  prec.add(schwarz);
 
-  Vec one(gfs);
+  CombinedPreconditioner<Native<Vec>> prec(applymode, {schwarz}, op);
+
+  int nvecs = ptree.get("nvecs", 1);
+  assert(nvecs >= 1 and nvecs <= 3 && "Wrong number of template vectors");
+  std::vector<Vec> template_vecs(nvecs, Vec(gfs));
   if (ptree.get("coarsespace", false)) {
-    // Build vector of constant 1s, except for the Dirichlet dofs which are
-    // zeroed out
-    Dune::PDELab::interpolate([]([[maybe_unused]] const auto &x) { return 1; }, gfs, one);
-    for (std::size_t i = 0; i < one.N(); ++i) {
-      if (native(problem.getDirichletMask())[i] > 0) {
-        native(one)[i] = 0;
+    Dune::PDELab::interpolate([](const auto &) { return 1; }, gfs, template_vecs[0]);
+    if (nvecs > 1) {
+      Dune::PDELab::interpolate([](const auto &x) { return x[0]; }, gfs, template_vecs[1]);
+    }
+    if (nvecs > 2) {
+      Dune::PDELab::interpolate([](const auto &x) { return x[1]; }, gfs, template_vecs[2]);
+    }
+    for (auto &template_vec : template_vecs) {
+      for (std::size_t i = 0; i < template_vec.N(); ++i) {
+        if (native(problem.getDirichletMask())[i] > 0) {
+          native(template_vec)[i] = 0;
+        }
       }
     }
 
+    std::vector<Native<Vec>> native_template_vecs(template_vecs.size());
+    for (std::size_t i = 0; i < template_vecs.size(); ++i) {
+      native_template_vecs[i] = native(template_vecs[i]);
+    }
+
     auto nicolaides = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(
-        *schwarz->getOverlappingMat(), *schwarz->getPartitionOfUnity(), native(one), schwarz->getOverlappingIndices());
+        *schwarz->getOverlappingMat(), *schwarz->getPartitionOfUnity(), native_template_vecs, schwarz->getOverlappingIndices());
     prec.add(nicolaides);
   }
   end = MPI_Wtime();

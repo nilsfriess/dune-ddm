@@ -74,8 +74,8 @@ class PoissonProblem {
   using BC = Dune::PDELab::ConvectionDiffusionBoundaryConditionAdapter<CDProblem>;
 
   using FEM = std::conditional_t<isYASPGrid<Grid>(),                                          // If YASP grid...
-                                 Dune::PDELab::QkLocalFiniteElementMap<GridView, DF, RF, 2>,  // ... then use quadrilaterals
-                                 Dune::PDELab::PkLocalFiniteElementMap<GridView, DF, RF, 2>>; // ... otherwise use triangles
+                                 Dune::PDELab::QkLocalFiniteElementMap<GridView, DF, RF, 1>,  // ... then use quadrilaterals
+                                 Dune::PDELab::PkLocalFiniteElementMap<GridView, DF, RF, 1>>; // ... otherwise use triangles
   using LOP = Dune::PDELab::ConvectionDiffusionFEM<CDProblem, FEM>;
 
   using CON = Dune::PDELab::ConformingDirichletConstraints;
