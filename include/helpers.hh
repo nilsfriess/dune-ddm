@@ -160,6 +160,8 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
     }
     A0.compress();
   }
+
+  MPI_Type_free(&triple_type);
   return A0;
 }
 
