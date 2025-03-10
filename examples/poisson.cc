@@ -74,6 +74,9 @@ private:
 namespace {
 auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPIHelper &helper)
 {
+  auto *event = Logger::get().registerEvent("Grid", "create");
+  Logger::ScopedLog sl(event);
+
 #if USE_UGGRID
   const auto meshfile = ptree.get("meshfile", "../data/unitsquare.msh");
   const auto verbose = ptree.get("verbose", 0);
@@ -86,15 +89,18 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
   auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0}, {gridsize, gridsize}, std::bitset<2>(0ULL), GRID_OVERLAP));
 #endif
 
-  grid->globalRefine(ptree.get("refine", 2));
-
 #if USE_UGGRID
+  grid->globalRefine(ptree.get("serial_refine", 2));
+
   auto gv = grid->leafGridView();
   auto part = Dune::ParMetisGridPartitioner<decltype(gv)>::partition(gv, helper);
+
   grid->loadBalance(part, 0);
 #else
   grid->loadBalance();
 #endif
+
+  grid->globalRefine(ptree.get("refine", 2));
 
   return grid;
 }
