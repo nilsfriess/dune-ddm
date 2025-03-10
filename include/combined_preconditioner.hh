@@ -1,6 +1,7 @@
 #pragma once
 
 #include "logger.hh"
+#include "spdlog/spdlog.h"
 
 #include <dune/common/exceptions.hh>
 #include <dune/istl/operators.hh>
@@ -9,21 +10,40 @@
 #include <cstdint>
 #include <memory>
 #include <mpi.h>
+#include <utility>
 #include <vector>
 
 enum class ApplyMode : std::uint8_t { Additive, Multiplicative };
 
+/**
+ * @brief A class to combine multiple preconditioners to create a new one.
+ *
+ * This class allows to combine two preconditioners of type Dune::Preconditioner<X, Y> into a new one (either additively or multiplicatively).
+ *
+ */
 template <class X, class Y = X>
 class CombinedPreconditioner : public Dune::Preconditioner<X, Y> {
 public:
-  explicit CombinedPreconditioner(ApplyMode mode = ApplyMode::Additive) : mode(mode)
+  explicit CombinedPreconditioner(ApplyMode mode = ApplyMode::Additive, std::initializer_list<std::shared_ptr<Dune::Preconditioner<X, Y>>> preconditioners = {},
+                                  std::shared_ptr<Dune::LinearOperator<X, Y>> A = nullptr)
+      : mode(mode), A(A)
   {
-    precs.reserve(2); // In many cases, we expect this to be used to combine two preconditioners (e.g. two level Schwarz)
+    if (preconditioners.size() > 0) {
+      precs.reserve(preconditioners.size());
+      std::move(preconditioners.begin(), preconditioners.end(), std::back_inserter(precs));
+    }
+    else {
+      precs.reserve(2); // In many cases, we expect this to be used to combine two preconditioners (e.g. two level Schwarz)
+    }
+
+    if (mode == ApplyMode::Additive) {
+      spdlog::info("Setting up CombinedPreconditioner in 'additive' mode (currently has {} preconditioners)", precs.size());
+    } else if (mode == ApplyMode::Multiplicative) {
+      spdlog::info("Setting up CombinedPreconditioner in 'multiplicative' mode (currently has {} preconditioners)", precs.size());
+    }
 
     initLogEvents();
   }
-
-  explicit CombinedPreconditioner(std::shared_ptr<Dune::LinearOperator<X, Y>> A) : mode(ApplyMode::Multiplicative), A(A) { initLogEvents(); }
 
   Dune::SolverCategory::Category category() const override
   {
@@ -42,6 +62,8 @@ public:
       }
     }
     precs.push_back(prec);
+
+    spdlog::info("Adding new preconditioner to CombinedPreconditioner, now has {}", precs.size());
   }
 
   void setMat(std::shared_ptr<Dune::LinearOperator<X, Y>> A) { this->A = A; }

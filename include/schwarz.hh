@@ -16,6 +16,7 @@
 #include "helpers.hh"
 #include "logger.hh"
 #include "overlap_extension.hh"
+#include "spdlog/spdlog.h"
 
 template <typename Mat, typename X, typename Y>
 class NonoverlappingOperator : public Dune::AssembledLinearOperator<Mat, X, Y> {
@@ -84,6 +85,8 @@ public:
   SchwarzPreconditioner(const Mat &A, const RemoteIndices &remoteindices, int overlap, SchwarzType type = SchwarzType::Restricted, PartitionOfUnityType pou_type = PartitionOfUnityType::None)
       : N(A.N()), type(type), pou_type(pou_type)
   {
+    spdlog::info("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
+
     init(A, overlap, remoteindices);
     createPOU();
   }
@@ -100,6 +103,8 @@ public:
     else {
       DUNE_THROW(Dune::Exception, "Unknown Schwarz type, can either be 'restricted' or 'standard'");
     }
+
+    spdlog::info("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
 
     auto pou_string = ptree.get("pou", "standard");
     if (pou_string == "standard") {
@@ -123,7 +128,7 @@ public:
 
   void apply(Vec &x, const Vec &d) override
   {
-    Logger::get().startEvent(apply_event);
+    Logger::ScopedLog sl(apply_event);
 
     // 1. Copy local values from non-overlapping to overlapping defect
     for (std::size_t i = 0; i < N; ++i) {
@@ -168,8 +173,6 @@ public:
     for (std::size_t i = 0; i < x.size(); ++i) {
       x[i] = (*x_ovlp)[i];
     }
-
-    Logger::get().endEvent(apply_event);
   }
 
   std::shared_ptr<Mat> getOverlappingMat() const { return Aovlp; }
@@ -180,11 +183,12 @@ public:
 private:
   void init(const Mat &A, int overlap, const RemoteIndices &remoteindices)
   {
-    auto *family = Logger::get().registerFamily("Schwarz");
-    apply_event = Logger::get().registerEvent(family, "apply");
-    auto *init_event = Logger::get().registerEvent(family, "init");
-    Logger::get().startEvent(init_event);
+    apply_event = Logger::get().registerEvent("Schwarz", "apply");
+    auto *init_event = Logger::get().registerEvent("Schwarz", "init");
 
+    Logger::ScopedLog sl(init_event);
+
+    spdlog::info("Extending overlap by {} in SchwarzPreconitioner", overlap);
     ovlpindices = extendOverlap(remoteindices, A, overlap);
 
     int rank = 0;
@@ -202,8 +206,6 @@ private:
 
     d_ovlp = std::make_unique<Vec>(Aovlp->N());
     x_ovlp = std::make_unique<Vec>(Aovlp->N());
-
-    Logger::get().endEvent(init_event);
   }
 
   void createPOU()

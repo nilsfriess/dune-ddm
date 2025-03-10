@@ -27,9 +27,17 @@ add_subdirectory(extern/dune-pdelab SYSTEM)
 
 include(CTest)
 
+include(FetchContent)
+FetchContent_Declare(
+  spdlog
+  GIT_REPOSITORY https://github.com/gabime/spdlog.git
+  GIT_TAG        v1.15.1
+)
+FetchContent_MakeAvailable(spdlog)
+
 add_library(dune-ddm INTERFACE)
 target_include_directories(dune-ddm INTERFACE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::Common Dune::ISTL)
+target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog)
 
 add_subdirectory(examples)
 add_subdirectory(tests)

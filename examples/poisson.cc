@@ -1,8 +1,13 @@
+#include "logger.hh" // Must be included at the very top if MPI calls should be logged
+#include "spdlog/common.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <iostream>
-#include <memory>
+
+#include <spdlog/cfg/argv.h>
+#include <spdlog/spdlog.h>
 
 #include <mpi.h>
 
@@ -33,7 +38,6 @@
 #include "combined_preconditioner.hh"
 #include "galerkin_preconditioner.hh"
 #include "helpers.hh"
-#include "logger.hh"
 #include "schwarz.hh"
 
 #include "poisson.hh"
@@ -170,6 +174,12 @@ int main(int argc, char *argv[])
   using Dune::PDELab::Backend::Native;
 
   const auto &helper = Dune::MPIHelper::instance(argc, argv);
+  if (helper.rank() != 0) {
+    spdlog::set_level(spdlog::level::off);
+  }
+  else {
+    spdlog::cfg::load_argv_levels(argc, argv);
+  }
 
   Dune::ParameterTree ptree;
   Dune::ParameterTreeParser ptreeparser;
@@ -197,13 +207,9 @@ int main(int argc, char *argv[])
     }
   }
 
-  if (verbose > 0) {
-    auto my_dofs = std::count_if(mask.begin(), mask.end(), [](auto e) { return e > 0; });
-    auto sum = helper.getCommunication().sum(my_dofs);
-    if (helper.rank() == 0) {
-      std::cout << "Total dofs: " << sum << "\n";
-    }
-  }
+  auto my_dofs = std::count_if(mask.begin(), mask.end(), [](auto e) { return e > 0; });
+  auto sum = helper.getCommunication().sum(my_dofs);
+  spdlog::info("Total dofs: {}", sum);
 
   MaskedScalarProduct<Native<Vec>, decltype(helper.getCommunication())> sp(mask, helper.getCommunication());
 
@@ -218,9 +224,6 @@ int main(int argc, char *argv[])
   // Construct the preconditioner
   double start = 0;
   double end = 0;
-  if (verbose > 0 and helper.rank() == 0) {
-    std::cout << "Setting up preconditioner... " << std::flush;
-  }
   start = MPI_Wtime();
 
   ApplyMode applymode = ApplyMode::Additive;
@@ -232,9 +235,8 @@ int main(int argc, char *argv[])
     applymode = ApplyMode::Multiplicative;
   }
   else {
-    if (helper.rank() == 0) {
-      std::cout << "Unknown apply mode for combined preconditioner, using 'additive' instead\n";
-    }
+    applymode = ApplyMode::Additive;
+    spdlog::warn("Unknown apply mode for combined preconditioner, using 'additive' instead");
   }
 
   auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*problem.getA(), remoteindices, ptree);
@@ -242,7 +244,11 @@ int main(int argc, char *argv[])
   CombinedPreconditioner<Native<Vec>> prec(applymode, {schwarz}, op);
 
   int nvecs = ptree.get("nvecs", 1);
-  assert(nvecs >= 1 and nvecs <= 3 && "Wrong number of template vectors");
+  if (nvecs < 1 or nvecs > 3) {
+    nvecs = 1;
+    spdlog::warn("Wrong number of template vectors, using 1 instead");
+  }
+
   std::vector<Vec> template_vecs(nvecs, Vec(gfs));
   if (ptree.get("coarsespace", false)) {
     Dune::PDELab::interpolate([](const auto &) { return 1; }, gfs, template_vecs[0]);
@@ -270,9 +276,7 @@ int main(int argc, char *argv[])
     prec.add(nicolaides);
   }
   end = MPI_Wtime();
-  if (verbose > 0 and helper.rank() == 0) {
-    std::cout << "Done. Took " << (end - start) << "s\n";
-  }
+  spdlog::info("Done setting up preconditioner, took {:.5f}s", (end - start));
 
 #if !USE_UGGRID && GRID_OVERLAP > 0
   using SolverVec = Vec;
@@ -328,13 +332,12 @@ int main(int argc, char *argv[])
   auto gfadapter = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgf)>>(dgf, "Solution");
   writer.addVertexData(gfadapter);
 
-  Dune::PDELab::DiscreteGridFunction dgfone(gfs, one);
-  auto gfadapterone = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgfone)>>(dgfone, "Template vec");
-  writer.addVertexData(gfadapterone);
+  // Dune::PDELab::DiscreteGridFunction dgfone(gfs, one);
+  // auto gfadapterone = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgfone)>>(dgfone, "Template vec");
+  // writer.addVertexData(gfadapterone);
 
   writer.write("Poisson");
 
   Logger::get().report(helper.getCommunicator());
-
   return 0;
 }
