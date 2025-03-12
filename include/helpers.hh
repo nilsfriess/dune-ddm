@@ -8,6 +8,13 @@
 #include <utility>
 #include <vector>
 
+struct TripleWithRank {
+  int rank;
+  std::size_t row;
+  std::size_t col;
+  double val;
+};
+
 enum class Attribute : std::uint8_t { owner, copy };
 
 class AttributeSet {
@@ -56,13 +63,6 @@ RemoteParallelIndices<RemoteIndices> makeRemoteParallelIndices(std::shared_ptr<R
 template <class Vec>
 Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_Comm comm, int verbose = 0, double clip_tolerance = 1e-12)
 {
-  struct TripleWithRank {
-    int rank;
-    int row;
-    int col;
-    double val;
-  };
-
   int rank = 0;
   int size = 0;
   MPI_Comm_size(comm, &size);
@@ -90,7 +90,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
 
   constexpr int nitems = 4;
   std::array<int, nitems> blocklengths = {1, 1, 1, 1};
-  std::array<MPI_Datatype, nitems> types = {MPI_INT, MPI_INT, MPI_INT, MPI_DOUBLE};
+  std::array<MPI_Datatype, nitems> types = {MPI_INT, MPI_UNSIGNED_LONG, MPI_UNSIGNED_LONG, MPI_DOUBLE};
   MPI_Datatype triple_type = MPI_DATATYPE_NULL;
   std::array<MPI_Aint, nitems> offsets{0};
   offsets[0] = offsetof(TripleWithRank, rank);
@@ -102,9 +102,9 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
 
   std::vector<TripleWithRank> my_triples;
   my_triples.reserve(rowsize * rows.size());
-  for (int i = 0; i < rows.size(); ++i) {
+  for (std::size_t i = 0; i < rows.size(); ++i) {
     const auto &row = rows[i];
-    for (int col = 0; col < rowsize; ++col) {
+    for (std::size_t col = 0; col < rowsize; ++col) {
       if (std::abs(row[col]) >= clip_tolerance) {
         my_triples.push_back({rank, i, col, row[col]});
       }
@@ -116,7 +116,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   if (rank == 0) {
     num_triples.resize(size);
   }
-  int num_my_triples = my_triples.size();
+  int num_my_triples = static_cast<int>(my_triples.size());
   MPI_Gather(&num_my_triples, 1, MPI_INT, num_triples.data(), 1, MPI_INT, 0, comm);
 
   std::vector<int> displacements;
@@ -134,18 +134,18 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
       std::cout << "[" << rank << "] Total " << sum << " nonzeros in matrix built on rank 0\n";
     }
   }
-  MPI_Gatherv(my_triples.data(), my_triples.size(), triple_type, all_triples.data(), num_triples.data(), displacements.data(), triple_type, 0, comm);
+  MPI_Gatherv(my_triples.data(), static_cast<int>(my_triples.size()), triple_type, all_triples.data(), num_triples.data(), displacements.data(), triple_type, 0, comm);
 
   Dune::BCRSMatrix<double> A0;
 
   if (rank == 0) {
     // Compute offsets of rows for each rank
-    std::map<int, int> rows_per_rank;
+    std::map<int, std::size_t> rows_per_rank;
     for (const auto &triple : all_triples) {
       rows_per_rank[triple.rank] = std::max(rows_per_rank[triple.rank], triple.row + 1);
     }
 
-    std::vector<int> row_offsets(size);
+    std::vector<std::size_t> row_offsets(size);
     row_offsets[0] = 0;
     for (int i = 1; i < size; ++i) {
       row_offsets[i] = row_offsets[i - 1] + rows_per_rank[i - 1];

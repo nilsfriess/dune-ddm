@@ -2,7 +2,6 @@
 
 #include <cassert>
 #include <cstddef>
-#include <iostream>
 #include <numeric>
 
 #include <mpi.h>
@@ -55,29 +54,29 @@ public:
   //   buildSolver(A);
   // }
 
-  GalerkinPreconditioner(const Mat &A, const Vec &pou, const std::vector<Vec> &ts, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), N(ris.second->size()), d_ovlp(N), x_ovlp(N), num_t(ts.size())
+  GalerkinPreconditioner(const Mat &A, const std::vector<Vec> &ts, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), N(ris.second->size()), d_ovlp(N), x_ovlp(N), num_t(ts.size())
   {
     registerLogEvents();
     buildCommunicationInterfaces(ris);
 
+    if (ts.size() == 0) {
+      DUNE_THROW(Dune::Exception, "Must at least pass one template vector");
+    }
+
+    if (ts[0].N() != A.N()) {
+      DUNE_THROW(Dune::Exception, "Template vectors must match size of matrix");
+    }
+
     auto max_num_t = getMaxTemplateVecs(ts.size());
-    restr_vecs.resize(max_num_t, Vec(pou.N()));
     Vec zero(ts[0].N());
     zero = 0;
-    for (std::size_t i = 0; i < max_num_t; ++i) {
-      if (i < ts.size()) {
-        buildRestrictionVector(pou, ts[i], restr_vecs[i]);
-      }
-      else {
-        /* If we have less template vectors than the rank that has the most template vectors
-           than we just fill the remaining "slots" with vectors of zeros so that we don't
-           contribute anything. */
-        buildRestrictionVector(pou, zero, restr_vecs[i]);
-      }
+    restr_vecs.resize(max_num_t, Vec(ts[0].N()));
+    for (std::size_t i = 0; i < num_t; ++i) {
+      restr_vecs[i] = ts[i];
     }
 
     spdlog::info("Setting up GalerkinPreconditioner with {} template vector{} (max. one rank has is {})", num_t, (num_t == 1 ? "" : "s"), max_num_t);
-    
+
     buildSolver(A);
   }
 
@@ -176,22 +175,22 @@ private:
     return max_num_t;
   }
 
-  void buildRestrictionVector(const Vec &pou, const Vec &t, Vec &restr)
-  {
-    // Initialise r to be the "template" vector and make consistent on the overlapping index set
-    restr = 0;
-    for (std::size_t i = 0; i < t.N(); ++i) {
-      restr[i] = t[i];
-    }
+  // void buildRestrictionVector(const Vec &pou, const Vec &t, Vec &restr)
+  // {
+  //   // Initialise r to be the "template" vector and make consistent on the overlapping index set
+  //   restr = 0;
+  //   for (std::size_t i = 0; i < t.N(); ++i) {
+  //     restr[i] = t[i];
+  //   }
 
-    cvdh.setVec(restr);
-    owner_copy_comm->forward(cvdh);
+  //   cvdh.setVec(restr);
+  //   owner_copy_comm->forward(cvdh);
 
-    // Multiply with the partition of unity
-    for (std::size_t i = 0; i < restr.N(); ++i) {
-      restr[i] *= pou[i];
-    }
-  }
+  //   // Multiply with the partition of unity
+  //   for (std::size_t i = 0; i < restr.N(); ++i) {
+  //     restr[i] *= pou[i];
+  //   }
+  // }
 
   void buildSolver(const Mat &A)
   {

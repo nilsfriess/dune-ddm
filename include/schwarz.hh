@@ -27,7 +27,7 @@ public:
   using field_type = typename X::field_type;
 
 private:
-  std::shared_ptr<Mat> A;
+  const Mat &A;
   std::shared_ptr<Dune::BufferedCommunicator> communicator;
 
   Logger::Event *apply_event;
@@ -41,12 +41,18 @@ private:
   };
 
 public:
-  NonoverlappingOperator(std::shared_ptr<Mat> A, std::shared_ptr<Dune::BufferedCommunicator> communicator) : A(std::move(A)), communicator(std::move(communicator))
+  NonoverlappingOperator(const Mat &A, std::shared_ptr<Dune::BufferedCommunicator> communicator) : A(A), communicator(std::move(communicator))
   {
     auto *family = Logger::get().registerFamily("NonovlpOperator");
     apply_event = Logger::get().registerEvent(family, "apply");
     applyscaleadd_event = Logger::get().registerEvent(family, "applyscaleadd");
   }
+
+  NonoverlappingOperator(const NonoverlappingOperator &) = delete;
+  NonoverlappingOperator(const NonoverlappingOperator &&) = delete;
+  NonoverlappingOperator &operator=(const NonoverlappingOperator &) = delete;
+  NonoverlappingOperator &operator=(const NonoverlappingOperator &&) = delete;
+  ~NonoverlappingOperator() = default;
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
 
@@ -54,7 +60,7 @@ public:
   {
     Logger::ScopedLog sl(apply_event);
 
-    A->mv(x, y);
+    A.mv(x, y);
     communicator->forward<AddGatherScatter>(y);
   }
 
@@ -62,11 +68,11 @@ public:
   {
     Logger::ScopedLog sl(applyscaleadd_event);
 
-    A->usmv(alpha, x, y);
+    A.usmv(alpha, x, y);
     communicator->forward<AddGatherScatter>(y);
   }
 
-  const Mat &getmat() const override { return *A; }
+  const Mat &getmat() const override { return A; }
 };
 
 enum class SchwarzType : std::uint8_t { Standard, Restricted };
@@ -88,7 +94,7 @@ public:
     spdlog::info("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
 
     init(A, overlap, remoteindices);
-    createPOU();
+    createPOU(*Aovlp);
   }
 
   SchwarzPreconditioner(const Mat &A, const RemoteIndices &remoteindices, const Dune::ParameterTree &ptree) : N(A.N())
@@ -118,7 +124,7 @@ public:
     }
 
     init(A, ptree.get("overlap", 1), remoteindices);
-    createPOU();
+    createPOU(*Aovlp);
   }
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
@@ -208,18 +214,33 @@ private:
     x_ovlp = std::make_unique<Vec>(Aovlp->N());
   }
 
-  void createPOU()
+  void createPOU(const Mat &A)
   {
+    int rank{};
+    MPI_Comm_rank(ovlpindices.first->communicator(), &rank);
+    IdentifyBoundaryDataHandle ibdh(A, *ovlpindices.second, rank);
+    all_all_comm->forward(ibdh);
+    auto boundaryMask = ibdh.getBoundaryMask();
+
     switch (pou_type) {
     case PartitionOfUnityType::Standard: {
       pou = std::make_shared<Vec>(x_ovlp->N());
       *pou = 1.0;
+      for (std::size_t i = 0; i < pou->N(); ++i) {
+        if (boundaryMask[i]) {
+          (*pou)[i] = 0.0;
+        }
+      }
 
       avdh.setVec(*pou);
       all_all_comm->forward(avdh);
 
       for (int i = 0; i < pou->N(); ++i) {
-        (*pou)[i] = 1. / (*pou)[i];
+        if (!boundaryMask[i]) {
+          (*pou)[i] = 1. / (*pou)[i];
+        } else {
+          (*pou)[i] = 0.0;
+        }
       }
     } break;
 

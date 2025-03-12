@@ -75,7 +75,7 @@ private:
 template <class Mat, class ParallelIndexSet>
 class IdentifyBoundaryDataHandle {
 public:
-  IdentifyBoundaryDataHandle(const Mat &A, const ParallelIndexSet &paridxs) : boundaryMask(paridxs.size(), false), paridxs{paridxs}, A{A}, glis{paridxs} {}
+  IdentifyBoundaryDataHandle(const Mat &A, const ParallelIndexSet &paridxs, int rank) : paridxs{paridxs}, A{A}, glis{paridxs}, rank{rank} {}
   IdentifyBoundaryDataHandle(const IdentifyBoundaryDataHandle &) = delete;
   IdentifyBoundaryDataHandle(IdentifyBoundaryDataHandle &&) = delete;
   IdentifyBoundaryDataHandle &operator=(const IdentifyBoundaryDataHandle &) = delete;
@@ -88,7 +88,7 @@ public:
 
   std::size_t size(int i)
   {
-    int count = 0;
+    int count = 1; // We send at least our own rank number
     for (auto cit = A[i].begin(); cit != A[i].end(); ++cit) {
       if (cit.index() != i) {
         ++count;
@@ -100,6 +100,7 @@ public:
   template <class B>
   void gather(B &buffer, int i)
   {
+    buffer.write(rank);
     for (auto cit = A[i].begin(); cit != A[i].end(); ++cit) {
       if (cit.index() != i) {
         buffer.write(glis.pair(cit.index())->global());
@@ -110,22 +111,39 @@ public:
   template <class Buffer>
   void scatter(Buffer &buffer, int i, int size)
   {
+    DataType remoterank;
     DataType gi;
-    for (int k = 0; k < size; k++) {
+    buffer.read(remoterank);
+
+    boundaryMaskForRank[static_cast<int>(remoterank)].resize(paridxs.size(), false);
+
+    for (int k = 1; k < size; k++) {
       buffer.read(gi);
       if (not paridxs.exists(gi)) { // If we don't know the received global index, i is a boundary index
-        boundaryMask[i] = true;
+        boundaryMaskForRank[static_cast<int>(remoterank)][i] = true;
       }
     }
   }
 
-  std::vector<bool> &&extractBoundaryMask() { return std::move(boundaryMask); }
+  std::vector<bool> getBoundaryMask() const
+  {
+    std::vector<bool> boundaryMask(paridxs.size(), false);
+    for (std::size_t i = 0; i < boundaryMask.size(); ++i) {
+      for (const auto &[rank, mask] : boundaryMaskForRank) {
+        boundaryMask[i] = boundaryMask[i] || mask[i];
+      }
+    }
+    return boundaryMask;
+  }
+
+  const std::map<int, std::vector<bool>> &getBoundaryMaskForRank() const { return boundaryMaskForRank; }
 
 private:
-  std::vector<bool> boundaryMask;
+  std::map<int, std::vector<bool>> boundaryMaskForRank;
   const ParallelIndexSet &paridxs;
   const Mat &A;
   Dune::GlobalLookupIndexSet<ParallelIndexSet> glis;
+  int rank;
 };
 
 class RankDataHandle {
@@ -218,13 +236,13 @@ public:
     // assert(connected_indices.count(i) > 0);
 
     std::size_t count = 0;
-    count += 1;                                    // The number of global indices and connected ranks we send for this local index
+    count += 1; // The number of global indices and connected ranks we send for this local index
 
     if (connected_indices.contains(i)) {
       for (const auto &idx : connected_indices.at(i)) {
-        count += 1;                                // The actual global index
+        count += 1; // The actual global index
 
-        count += 1;                                // The number of ranks that also know this index
+        count += 1; // The number of ranks that also know this index
         if (connected_ranks.contains(idx)) {
           count += connected_ranks.at(idx).size(); // The ranks
         }
@@ -297,7 +315,8 @@ private:
 template <class Mat, class ParallelIndexSet>
 class CreateMatrixDataHandle {
 public:
-  CreateMatrixDataHandle(const Mat &A, const ParallelIndexSet &paridxs) : A(A), glis(paridxs), paridxs(paridxs), Aovlp(paridxs.size(), paridxs.size(), static_cast<double>(A.nonzeroes()) / A.N(), 0.5, Mat::implicit)
+  CreateMatrixDataHandle(const Mat &A, const ParallelIndexSet &paridxs)
+      : A(A), glis(paridxs), paridxs(paridxs), Aovlp(paridxs.size(), paridxs.size(), static_cast<double>(A.nonzeroes()) / A.N(), 0.5, Mat::implicit)
   {
     for (auto rIt = A.begin(); rIt != A.end(); ++rIt) {
       for (auto cIt = rIt->begin(); cIt != rIt->end(); ++cIt) {
@@ -340,7 +359,7 @@ public:
   void scatter(Buffer &buffer, int i, int size)
   {
     DataType gi;
-    buffer.read(gi);   // read dummy data
+    buffer.read(gi); // read dummy data
     for (int k = 0; k < size - 1; k++) {
       buffer.read(gi); // read global index
       if (paridxs.exists(gi)) {
@@ -441,4 +460,55 @@ private:
   Dune::GlobalLookupIndexSet<ParallelIndexSet> glis;
 
   std::vector<bool> dirichlet_rows;
+};
+
+template <class ParallelIndexSet>
+class MarkIndicesForRank {
+  using GlobalIndex = typename ParallelIndexSet::GlobalIndex;
+
+public:
+  using DataType = std::pair<int, bool>; // Our rank and whether the index is marked or not
+
+  MarkIndicesForRank(const std::vector<std::size_t> &marked_indices, int rank, const ParallelIndexSet &paridxs) : mask(paridxs.size(), false), rank(rank), paridxs(paridxs), glis(paridxs)
+  {
+    for (auto i : marked_indices) {
+      mask[i] = true;
+    }
+  }
+  MarkIndicesForRank(const MarkIndicesForRank &) = delete;
+  MarkIndicesForRank(MarkIndicesForRank &&) = delete;
+  MarkIndicesForRank &operator=(const MarkIndicesForRank &) = delete;
+  MarkIndicesForRank &operator=(MarkIndicesForRank &&) = delete;
+  ~MarkIndicesForRank() = default;
+
+  bool fixedSize() { return true; }
+  std::size_t size(int) { return 1; }
+
+  template <class Buffer>
+  void gather(Buffer &buffer, int i)
+  {
+    buffer.write({rank, mask[i]});
+  }
+
+  template <class Buffer>
+  void scatter(Buffer &buffer, int i, int)
+  {
+    DataType d;
+    buffer.read(d);
+
+    if (not mask_from_rank.contains(d.first)) {
+      mask_from_rank[d.first].resize(paridxs.size(), false); // Initialise masks with false
+    }
+
+    mask_from_rank[d.first][i] = d.second;
+  }
+
+  std::map<int, std::vector<bool>> mask_from_rank;
+
+private:
+  std::vector<bool> mask;
+  int rank;
+
+  const ParallelIndexSet &paridxs;
+  Dune::GlobalLookupIndexSet<ParallelIndexSet> glis;
 };

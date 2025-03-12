@@ -6,6 +6,7 @@
 
 #include <dune/common/parallel/interface.hh>
 #include <dune/common/parallel/variablesizecommunicator.hh>
+#include <mpi.h>
 
 // Creates a new parallel index set from the given index set, using the same local/global indices but the "public" state of the local indices
 // will be modified according to the functor isPublic(int local_index) -> bool.
@@ -174,11 +175,17 @@ void extendOverlapOnce(ParallelIndexSet &paridxs, RemoteIndices &remoteids, std:
 template <class RemoteIndices, class Mat>
 RemoteParallelIndices<RemoteIndices> extendOverlap(const RemoteIndices &remoteids, const Mat &A, int overlap)
 {
+  if (A.N() != remoteids.sourceIndexSet().size()) {
+    DUNE_THROW(Dune::Exception, "Size of matrix does not match size of parallel index set");
+  }
+
   static auto *overlap_family = Logger::get().registerFamily("OverlapExtension");
   static auto *extend_event = Logger::get().registerEvent(overlap_family, "extend");
   Logger::ScopedLog sl(extend_event);
 
   MPI_Comm comm = remoteids.communicator();
+  int rank{};
+  MPI_Comm_rank(comm, &rank);
 
   auto paridxs = remoteids.sourceIndexSet();
   auto nextIndexSet = paridxs;
@@ -190,9 +197,9 @@ RemoteParallelIndices<RemoteIndices> extendOverlap(const RemoteIndices &remoteid
   Dune::Interface interface;
   interface.build(remoteids, allAttributes, allAttributes);
   Dune::VariableSizeCommunicator communicator(interface);
-  IdentifyBoundaryDataHandle ibdh(A, paridxs);
+  IdentifyBoundaryDataHandle ibdh(A, paridxs, rank);
   communicator.forward(ibdh);
-  std::vector<bool> boundaryMask(ibdh.extractBoundaryMask());
+  auto boundaryMask = ibdh.getBoundaryMask();
 
   std::vector<int> boundary_dst(paridxs.size(), std::numeric_limits<int>::max() - 1);
   for (const auto &idxpair : paridxs) {
@@ -218,7 +225,7 @@ RemoteParallelIndices<RemoteIndices> extendOverlap(const RemoteIndices &remoteid
     // or (ii) have to be communicated during the next round of overlap generation. Only public indices are
     // considered in the data handles, so this way we save communication overhead.
     nextIndexSet = modifyIndexSetPublicState(nextIndexSet, [&](int li) {
-      if (li < boundary_dst.size() && boundary_dst[li] <= round + 2) {
+      if (li < boundary_dst.size() && boundary_dst[li] <= round + 4) { // TODO: I have no idea why we have to mark all indices up to round + 4 as public
         return true;
       }
 
@@ -237,7 +244,7 @@ RemoteParallelIndices<RemoteIndices> extendOverlap(const RemoteIndices &remoteid
 
   // After we're done, we have to mark all indices in the overlap region and all indices that were added as public.
   nextIndexSet = modifyIndexSetPublicState(nextIndexSet, [&](int li) {
-    if (li < boundary_dst.size() && boundary_dst[li] <= overlap + 3) {
+    if (li < boundary_dst.size() && boundary_dst[li] <= overlap + 4) { // TODO: I have no idea why we have to mark all indices up to overlap + 4 as public
       return true;
     }
 

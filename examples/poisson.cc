@@ -1,9 +1,10 @@
+#include <cstddef>
+#define EIGEN_DEFAULT_DENSE_INDEX_TYPE std::int64_t
+
 #include "logger.hh" // Must be included at the very top if MPI calls should be logged
-#include "spdlog/common.h"
 
 #include <algorithm>
 #include <cassert>
-#include <cstddef>
 #include <iostream>
 
 #include <spdlog/cfg/argv.h>
@@ -22,7 +23,6 @@
 #include <dune/common/parallel/variablesizecommunicator.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/common/parametertreeparser.hh>
-#include <dune/common/shared_ptr.hh>
 #include <dune/grid/io/file/gmshreader.hh>
 #include <dune/grid/uggrid.hh>
 #include <dune/grid/utility/parmetisgridpartitioner.hh>
@@ -35,7 +35,9 @@
 #include <dune/istl/solver.hh>
 #include <dune/pdelab.hh>
 
+#include "coarsespaces/geneo.hh"
 #include "combined_preconditioner.hh"
+#include "datahandles.hh"
 #include "galerkin_preconditioner.hh"
 #include "helpers.hh"
 #include "schwarz.hh"
@@ -93,9 +95,9 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
   auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0}, {gridsize, gridsize}, std::bitset<2>(0ULL), GRID_OVERLAP));
 #endif
 
-#if USE_UGGRID
   grid->globalRefine(ptree.get("serial_refine", 2));
 
+#if USE_UGGRID
   auto gv = grid->leafGridView();
   auto part = Dune::ParMetisGridPartitioner<decltype(gv)>::partition(gv, helper);
 
@@ -196,6 +198,11 @@ int main(int argc, char *argv[])
   const auto &remoteindices = *remoteparidxs.first;
   const auto &paridxs = *remoteparidxs.second;
 
+  // Now we have a set of remote indices on the non-overlapping grid, and a stiffness matrix with the correct sparsity pattern.
+  // We can use those to find out which dofs we need to treat differently when assembling the matrix. This is all done in the
+  // following method.
+  const auto [remote_ncorr_triples, own_ncorr_triples] = problem.assembleJacobian(remoteindices, ptree.get("overlap", 1));
+
   using Vec = decltype(problem)::Vec;
   using Mat = decltype(problem)::Mat;
 
@@ -239,18 +246,21 @@ int main(int argc, char *argv[])
     spdlog::warn("Unknown apply mode for combined preconditioner, using 'additive' instead");
   }
 
-  auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*problem.getA(), remoteindices, ptree);
+  auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(problem.getA(), remoteindices, ptree);
 
   CombinedPreconditioner<Native<Vec>> prec(applymode, {schwarz}, op);
 
-  int nvecs = ptree.get("nvecs", 1);
-  if (nvecs < 1 or nvecs > 3) {
-    nvecs = 1;
-    spdlog::warn("Wrong number of template vectors, using 1 instead");
-  }
+  Vec visuvec(gfs); // A vector that can be used for visualisation
 
-  std::vector<Vec> template_vecs(nvecs, Vec(gfs));
-  if (ptree.get("coarsespace", false)) {
+  const auto coarsespace = ptree.get("coarsespace", "geneo");
+  if (coarsespace == "nicolaides") {
+    int nvecs = ptree.get("nvecs", 1);
+    if (nvecs < 1 or nvecs > 3) {
+      nvecs = 1;
+      spdlog::warn("Wrong number of template vectors, using 1 instead");
+    }
+
+    std::vector<Vec> template_vecs(nvecs, Vec(gfs));
     Dune::PDELab::interpolate([](const auto &) { return 1; }, gfs, template_vecs[0]);
     if (nvecs > 1) {
       Dune::PDELab::interpolate([](const auto &x) { return x[0]; }, gfs, template_vecs[1]);
@@ -271,9 +281,54 @@ int main(int argc, char *argv[])
       native_template_vecs[i] = native(template_vecs[i]);
     }
 
-    auto nicolaides = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(
-        *schwarz->getOverlappingMat(), *schwarz->getPartitionOfUnity(), native_template_vecs, schwarz->getOverlappingIndices());
+    // Extend to overlapping index set and multiply with partition of unity
+    const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
+    const AttributeSet ownerAttribute{Attribute::owner};
+    const AttributeSet copyAttribute{Attribute::copy};
+
+    Dune::Interface owner_copy_interface;
+    owner_copy_interface.build(*schwarz->getOverlappingIndices().first, ownerAttribute, copyAttribute);
+    Dune::VariableSizeCommunicator owner_copy_comm(owner_copy_interface);
+
+    CopyVectorDataHandle<Native<Vec>> cvdh{};
+
+    std::vector<Native<Vec>> extended_template_vecs(native_template_vecs.size(), Native<Vec>(schwarz->getPartitionOfUnity()->N()));
+    for (std::size_t i = 0; i < native_template_vecs.size(); ++i) {
+      extended_template_vecs[i] = 0;
+      for (std::size_t j = 0; j < native_template_vecs[i].N(); ++j) {
+        extended_template_vecs[i][j] = native_template_vecs[i][j];
+      }
+
+      cvdh.setVec(extended_template_vecs[i]);
+      owner_copy_comm.forward(cvdh);
+
+      // Multiply with the partition of unity
+      for (std::size_t j = 0; j < extended_template_vecs[i].N(); ++j) {
+        extended_template_vecs[i][j] *= (*schwarz->getPartitionOfUnity())[j];
+      }
+    }
+
+    native(visuvec) = extended_template_vecs[0]; // Save one vector for visualisation
+
+    auto nicolaides = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), extended_template_vecs,
+                                                                                                                                           schwarz->getOverlappingIndices());
     prec.add(nicolaides);
+  }
+  else if (coarsespace == "geneo") {
+    auto basis_vecs = buildGenEOCoarseSpace(schwarz->getOverlappingIndices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(),
+                                            ptree.get("nev", 10));
+    native(visuvec) = basis_vecs[ptree.get("n_vis", 0)]; // Save one vectors for visualisation
+
+    auto geneo = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
+                                                                                                                                      schwarz->getOverlappingIndices());
+    prec.add(geneo);
+  }
+  else if (coarsespace == "none") {
+    // Nothing to do here
+  }
+  else {
+    spdlog::error("Unknown coarse space type '{}'", coarsespace);
+    MPI_Abort(MPI_COMM_WORLD, 1);
   }
   end = MPI_Wtime();
   spdlog::info("Done setting up preconditioner, took {:.5f}s", (end - start));
@@ -317,6 +372,36 @@ int main(int argc, char *argv[])
 
   Dune::VTKWriter writer(grid->leafGridView());
   writer.addCellData(rankVec, "Rank");
+
+  writer.addCellData(problem.interesting_elements, "Elements");
+
+  if (helper.rank() != ptree.get("debug_rank", 0)) {
+    visuvec = 0;
+  }
+  Dune::PDELab::DiscreteGridFunction visudgf(gfs, visuvec);
+  auto visuadapt = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(visudgf)>>(visudgf, "Basis");
+  writer.addVertexData(visuadapt);
+
+  const auto &ovlp_paridxs = *schwarz->getOverlappingIndices().second;
+  Native<Vec> overlap_region(ovlp_paridxs.size());
+  overlap_region = 1;
+  if (helper.rank() != ptree.get("debug_rank", 0)) {
+    overlap_region = 0;
+  }
+  Dune::Interface interface;
+  interface.build(*schwarz->getOverlappingIndices().first, allAttributes, allAttributes);
+  Dune::VariableSizeCommunicator ovlp_communicator(interface);
+  AddVectorDataHandle<Native<Vec>> advdh;
+  advdh.setVec(overlap_region);
+  ovlp_communicator.forward(advdh);
+
+  Vec ovlp_vec(gfs);
+  for (std::size_t i = 0; i < ovlp_vec.N(); ++i) {
+    native(ovlp_vec)[i] = overlap_region[i];
+  }
+  Dune::PDELab::DiscreteGridFunction dgf_ovlp(gfs, ovlp_vec);
+  auto gfadapter_ovlp = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgf_ovlp)>>(dgf_ovlp, "Overlap");
+  writer.addVertexData(gfadapter_ovlp);
 
   // #if GRID_OVERLAP == 0
   //   Vec pouvec(gfs, *schwarz->getPartitionOfUnity());
