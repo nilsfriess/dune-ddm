@@ -226,7 +226,7 @@ int main(int argc, char *argv[])
   all_all_interface.build(remoteindices, allAttributes, allAttributes);
   auto communicator = std::make_shared<Dune::BufferedCommunicator>();
   communicator->build<Native<Vec>>(all_all_interface);
-  auto op = std::make_shared<NonoverlappingOperator<Native<Mat>, Native<Vec>, Native<Vec>>>(problem.getA(), std::move(communicator));
+  auto op = std::make_shared<NonoverlappingOperator<Native<Mat>, Native<Vec>, Native<Vec>>>(problem.getA(), communicator);
 
   // Construct the preconditioner
   double start = 0;
