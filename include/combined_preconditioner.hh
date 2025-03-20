@@ -4,6 +4,7 @@
 #include "spdlog/spdlog.h"
 
 #include <dune/common/exceptions.hh>
+#include <dune/istl/io.hh>
 #include <dune/istl/operators.hh>
 #include <dune/istl/preconditioner.hh>
 
@@ -18,8 +19,10 @@ enum class ApplyMode : std::uint8_t { Additive, Multiplicative };
 /**
  * @brief A class to combine multiple preconditioners to create a new one.
  *
- * This class allows to combine two preconditioners of type Dune::Preconditioner<X, Y> into a new one (either additively or multiplicatively).
- *
+ * This class allows to combine two preconditioners of type Dune::Preconditioner<X, Y>
+ * into a new one (either additively or multiplicatively). If the apply mode is
+ * multiplicative, then an operator of type Dune::LinearOperator<X, Y> must be provided
+ * using the method setOp (or it must be passed in the constructor).
  */
 template <class X, class Y = X>
 class CombinedPreconditioner : public Dune::Preconditioner<X, Y> {
@@ -38,7 +41,8 @@ public:
 
     if (mode == ApplyMode::Additive) {
       spdlog::info("Setting up CombinedPreconditioner in 'additive' mode (currently has {} preconditioners)", precs.size());
-    } else if (mode == ApplyMode::Multiplicative) {
+    }
+    else if (mode == ApplyMode::Multiplicative) {
       spdlog::info("Setting up CombinedPreconditioner in 'multiplicative' mode (currently has {} preconditioners)", precs.size());
     }
 
@@ -54,6 +58,12 @@ public:
     return precs[0]->category();
   }
 
+  /**
+   * Add another preconditioner. The order in which the preconditioners are applied is
+   * the same order in which they are added (either using this method, the constructor,
+   * or a combination of both).
+   * @param prec The new preconditioner
+   */
   void add(std::shared_ptr<Dune::Preconditioner<X, Y>> prec)
   {
     if (precs.size() > 0) {
@@ -66,7 +76,7 @@ public:
     spdlog::info("Adding new preconditioner to CombinedPreconditioner, now has {}", precs.size());
   }
 
-  void setMat(std::shared_ptr<Dune::LinearOperator<X, Y>> A) { this->A = A; }
+  void setOp(std::shared_ptr<Dune::LinearOperator<X, Y>> A) { this->A = A; }
 
   void pre(X &x, Y &y) override
   {
@@ -88,6 +98,7 @@ public:
 
     assert(precs.size() > 0 && "ERROR: No preconditioners to apply, add them using the `add` method"); // Error should be caught in the "category" method already
 
+    x = 0;
     precs[0]->apply(x, d);
     if (mode == ApplyMode::Additive) {
       X xnext(x.N());
@@ -100,14 +111,14 @@ public:
     }
     else if (mode == ApplyMode::Multiplicative) {
       if (!A) {
-        DUNE_THROW(Dune::Exception, "ERROR: ApplyMode is multiplicative but operator A is not provided. Set with `setMat`");
+        DUNE_THROW(Dune::Exception, "ERROR: ApplyMode is multiplicative but operator A is not provided. Set with `setOp`");
       }
 
       Y dnext(d);
-      X xnext(x);
       for (std::size_t i = 1; i < precs.size(); ++i) {
-        A->applyscaleadd(-1, xnext, dnext);
+        A->applyscaleadd(-1.0, x, dnext);
 
+        X xnext(x.N());
         xnext = 0;
         precs[i]->apply(xnext, dnext);
 
