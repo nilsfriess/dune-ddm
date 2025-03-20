@@ -176,12 +176,7 @@ int main(int argc, char *argv[])
   using Dune::PDELab::Backend::Native;
 
   const auto &helper = Dune::MPIHelper::instance(argc, argv);
-  if (helper.rank() != 0) {
-    spdlog::set_level(spdlog::level::off);
-  }
-  else {
-    spdlog::cfg::load_argv_levels(argc, argv);
-  }
+  setup_loggers(helper.rank(), argc, argv);
 
   Dune::ParameterTree ptree;
   Dune::ParameterTreeParser ptreeparser;

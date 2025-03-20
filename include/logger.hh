@@ -236,3 +236,4 @@ private:
 
   std::vector<Family> families;
 };
+void setup_loggers(int, int &, char **&);

@@ -47,25 +47,31 @@ FetchContent_MakeAvailable(Spectra)
 message(STATUS "Trying to download BLOPEX (implementation of LOBPCG)")
 FetchContent_Declare(
   blopex_all
-  GIT_REPOSITORY https://github.com/lobpcg/blopex
-  GIT_COMMIT     cc658b19f791daf282e95915757eb3cf20c7d601
+  GIT_REPOSITORY https://github.com/nilsfriess/blopex
+  GIT_COMMIT     master
 )
 FetchContent_MakeAvailable(blopex_all)
-add_custom_command(
-        OUTPUT ${blopex_all_SOURCE_DIR}/blopex_abstract/lib/libBLOPEX.a
-        COMMAND cd ${blopex_all_SOURCE_DIR}/blopex_abstract && make clean && make CFLAGS='-O3')
-add_custom_target(BLOPEX_BUILD DEPENDS ${blopex_all_SOURCE_DIR}/blopex_abstract/lib/libBLOPEX.a)
-add_library(BLOPEX STATIC IMPORTED GLOBAL)
-set_target_properties(BLOPEX
-    PROPERTIES
-    IMPORTED_LOCATION ${blopex_all_SOURCE_DIR}/blopex_abstract/lib/libBLOPEX.a
-    INTERFACE_INCLUDE_DIRECTORIES ${blopex_all_SOURCE_DIR}/blopex_abstract/include
-)
-add_dependencies(BLOPEX BLOPEX_BUILD)
+add_subdirectory(${blopex_all_SOURCE_DIR}/blopex_abstract)
 
-add_library(dune-ddm INTERFACE)
-target_include_directories(dune-ddm INTERFACE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog Spectra BLOPEX)
+# add_custom_command(
+#         OUTPUT ${blopex_all_SOURCE_DIR}/blopex_abstract/lib/libBLOPEX.a
+#         COMMAND cd ${blopex_all_SOURCE_DIR}/blopex_abstract && make clean && make CFLAGS='-O3')
+# add_custom_target(BLOPEX_BUILD DEPENDS ${blopex_all_SOURCE_DIR}/blopex_abstract/lib/libBLOPEX.a)
+# add_library(BLOPEX STATIC IMPORTED GLOBAL)
+# set_target_properties(BLOPEX
+#     PROPERTIES
+#     IMPORTED_LOCATION ${blopex_all_SOURCE_DIR}/blopex_abstract/lib/libBLOPEX.a
+#     INTERFACE_INCLUDE_DIRECTORIES ${blopex_all_SOURCE_DIR}/blopex_abstract/include
+# )
+# add_dependencies(BLOPEX BLOPEX_BUILD)
+
+add_library(logger src/logger.cc)
+target_include_directories(logger PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(logger PUBLIC MPI::MPI_C spdlog::spdlog)
+
+add_library(dune-ddm src/logger.cc)
+target_include_directories(dune-ddm PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dune-ddm PUBLIC MPI::MPI_C Dune::ISTL spdlog::spdlog Spectra BLOPEX)
 
 add_subdirectory(examples)
 add_subdirectory(tests)
