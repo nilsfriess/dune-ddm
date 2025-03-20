@@ -340,19 +340,20 @@ int main(int argc, char *argv[])
 #endif
 
   std::unique_ptr<Dune::IterativeSolver<SolverVec, SolverVec>> solver;
+  auto maxit = ptree.get("maxit", 1000);
   auto tol = ptree.get("tolerance", 1e-8);
   auto solvertype = ptree.get("solver", "gmres");
   if (solvertype == "cg") {
-    solver = std::make_unique<Dune::CGSolver<SolverVec>>(*op, sp, prec, tol, 1000, helper.rank() == 0 ? verbose : 0);
+    solver = std::make_unique<Dune::CGSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
   }
   else if (solvertype == "none") {
-    solver = std::make_unique<Dune::LoopSolver<SolverVec>>(*op, sp, prec, tol, 1000, helper.rank() == 0 ? verbose : 0);
+    solver = std::make_unique<Dune::LoopSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
   }
   else if (solvertype == "bicgstab") {
-    solver = std::make_unique<Dune::BiCGSTABSolver<SolverVec>>(*op, sp, prec, tol, 1000, helper.rank() == 0 ? verbose : 0);
+    solver = std::make_unique<Dune::BiCGSTABSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
   }
   else {
-    solver = std::make_unique<Dune::RestartedGMResSolver<SolverVec>>(*op, sp, prec, tol, 50, 1000, helper.rank() == 0 ? verbose : 0);
+    solver = std::make_unique<Dune::RestartedGMResSolver<SolverVec>>(*op, sp, prec, tol, 50, maxit, helper.rank() == 0 ? verbose : 0);
     if (solvertype != "gmres") {
       if (helper.rank() == 0) {
         std::cout << "WARNING: Unknown solver type '" << solvertype << "', using GMRES instead\n";
