@@ -133,12 +133,12 @@ auto makeRemoteIndices(const GFS &gfs, const Dune::MPIHelper &helper)
   giv_before = giv; // Copy the vector so that we can find out if we are the
                     // owner of a border index after communication
   Dune::PDELab::MinDataHandle mindh(gfs, giv);
-  gfs.gridView().communicate(mindh, Dune::All_All_Interface, Dune::ForwardCommunication);
+  gfs.gridView().communicate(mindh, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
 
   using BooleanVec = Dune::PDELab::Backend::Vector<GFS, bool>;
   BooleanVec isPublic(gfs);
   Dune::PDELab::SharedDOFDataHandle shareddh(gfs, isPublic);
-  gfs.gridView().communicate(shareddh, Dune::All_All_Interface, Dune::ForwardCommunication);
+  gfs.gridView().communicate(shareddh, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
 
   using AttributeLocalIndex = Dune::ParallelLocalIndex<Attribute>;
   using GlobalIndex = std::uint64_t;
@@ -162,7 +162,7 @@ auto makeRemoteIndices(const GFS &gfs, const Dune::MPIHelper &helper)
 
   std::set<int> neighboursset;
   Dune::PDELab::GFSNeighborDataHandle nbdh(gfs, helper.rank(), neighboursset);
-  gfs.gridView().communicate(nbdh, Dune::All_All_Interface, Dune::ForwardCommunication);
+  gfs.gridView().communicate(nbdh, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
   std::vector<int> neighbours(neighboursset.begin(), neighboursset.end());
 
   auto remoteindices = std::make_shared<RemoteIndices>(paridxs, paridxs, helper.getCommunicator(), neighbours);
