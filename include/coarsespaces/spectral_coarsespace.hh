@@ -18,6 +18,7 @@
 
 #include "fakemultivec.hh"
 #include "multivec.hh"
+#include "spdlog/spdlog.h"
 
 // struct WrappedVec {
 //   using field_type = double;
@@ -109,16 +110,26 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
 
     std::vector<Triplet> triplets;
     triplets.reserve(A.nonzeroes());
-    Dune::flatMatrixForEach(A, [&](auto &&entry, std::size_t i, std::size_t j) { triplets.push_back({static_cast<int>(i), static_cast<int>(j), entry}); });
+    Dune::flatMatrixForEach(A, [&](auto &&entry, std::size_t i, std::size_t j) {
+      if (std::abs(entry) > 1e-16) {
+        triplets.push_back({static_cast<int>(i), static_cast<int>(j), entry});
+      }
+    });
     A_.setFromTriplets(triplets.begin(), triplets.end());
 
     triplets.clear();
     triplets.reserve(A.nonzeroes());
-    Dune::flatMatrixForEach(B, [&](auto &&entry, std::size_t i, std::size_t j) { triplets.push_back({static_cast<int>(i), static_cast<int>(j), entry}); });
+    Dune::flatMatrixForEach(B, [&](auto &&entry, std::size_t i, std::size_t j) {
+      if (std::abs(entry) > 1e-16) {
+        triplets.push_back({static_cast<int>(i), static_cast<int>(j), entry});
+      }
+    });
     B_.setFromTriplets(triplets.begin(), triplets.end());
 
     A_.makeCompressed();
     B_.makeCompressed();
+
+    spdlog::info("nnz(A) = {}, nnz(B) = {}", A_.nonZeros(), B_.nonZeros());
 
     using OpType = Spectra::SymShiftInvert<double, Eigen::Sparse, Eigen::Sparse>;
     using BOpType = Spectra::SparseSymMatProd<double>;
@@ -128,7 +139,7 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
     OpType op(A_, B_);
     BOpType Bop(B_);
 
-    Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, 2 * nev, -0.001);
+    Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, 2 * nev, 0.001);
     geigs.init();
 
     // Find largest eigenvalue of the shifted problem (which corresponds to the smallest of the original problem)
@@ -139,11 +150,7 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
       const auto evalues = geigs.eigenvalues();
       const auto evecs = geigs.eigenvectors();
 
-      std::cout << "Eigenvalues: \n";
-      for (auto ev : evalues) {
-        std::cout << "  " << ev << "\n";
-      }
-      std::cout << std::endl;
+      spdlog::get("all_ranks")->info("Computed eigenvalues, smallest {}, largest {}", evalues[0], evalues[evalues.size() - 1]);
 
       Vec vec(evecs.rows());
       eigenvectors.resize(nconv);
@@ -185,7 +192,7 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
     auto *xx = mv_MultiVectorWrap(&ii, &x, 0);
 
     int err = 0;
-    if (prec) {
+    if constexpr (not std::is_same_v<Prec, void>) {
       err = lobpcg_solve_double(xx,                        // The initial eigenvectors + pointers to interface routines
                                 (void *)&A,                // The lhs matrix
                                 MatMultiVec<Mat>,          // A function implementing matvec for the lhs matrix
