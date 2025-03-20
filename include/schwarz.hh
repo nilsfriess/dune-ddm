@@ -59,7 +59,7 @@ public:
   void apply(const X &x, Y &y) const override
   {
     Logger::ScopedLog sl(apply_event);
-
+    y = 0;
     A.mv(x, y);
     communicator->forward<AddGatherScatter>(y);
   }
@@ -68,8 +68,11 @@ public:
   {
     Logger::ScopedLog sl(applyscaleadd_event);
 
-    A.usmv(alpha, x, y);
-    communicator->forward<AddGatherScatter>(y);
+    Y y1(y.N());
+    y1 = 0;
+    A.usmv(alpha, x, y1);
+    communicator->forward<AddGatherScatter>(y1);
+    y += y1;
   }
 
   const Mat &getmat() const override { return A; }
