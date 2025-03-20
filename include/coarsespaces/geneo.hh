@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+
+#include <cstddef>
 #include <dune/common/parallel/interface.hh>
 #include <dune/common/parallel/variablesizecommunicator.hh>
 #include <dune/common/parametertree.hh>
@@ -72,6 +74,9 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
       }
     }
   }
+
+  std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
+  std::vector<std::size_t> ring_to_subdomain(boundary_dst.size());
 
   Mat A; // The left-hand side of the eigenproblem. Will be set below depending on the requested type
   Mat B; // The right-hand side of the eigenproblem. Will be set below depending on the requested type
@@ -168,7 +173,6 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
     // certain way (see below, after the solution of the eigenproblem).
 
     // First we have to create the matrix on the ring. To this end, we first need to identify all degrees of freedom inside the ring.
-    std::vector<std::size_t> ring_to_subdomain(boundary_dst.size());
     std::size_t cnt = 0;
     for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
       if (boundary_dst[i] <= 2 * overlap) {
@@ -181,7 +185,6 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
     std::sort(ring_to_subdomain.begin(), ring_to_subdomain.end());
 
     // We also create the inverse mapping (subdomain-to-ring)
-    std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
     subdomain_to_ring.reserve(ring_to_subdomain.size());
     for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
       subdomain_to_ring[ring_to_subdomain[i]] = i;
@@ -296,6 +299,95 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
   spdlog::info("Solving generalized eigenvalue problem for GenEO");
   std::vector<Vec> eigenvectors = solveGEVP<Vec>(A, B, eigensolver, ptree.get("nev", 10));
 
+  if (geneo_type == "ring") {
+    std::vector<std::size_t> interior_to_subdomain(boundary_dst.size());
+    std::size_t cnt = 0;
+    for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
+      if (boundary_dst[i] >= 2 * overlap) {
+        interior_to_subdomain[cnt++] = i;
+      }
+    }
+    interior_to_subdomain.resize(cnt);
+
+    // We create a ring-to-subdomain mapping by simply sorting this list of dofs
+    std::sort(interior_to_subdomain.begin(), interior_to_subdomain.end());
+
+    // We also create the inverse mapping (subdomain-to-ring)
+    std::unordered_map<std::size_t, std::size_t> subdomain_to_interior;
+    subdomain_to_interior.reserve(interior_to_subdomain.size());
+    for (std::size_t i = 0; i < interior_to_subdomain.size(); ++i) {
+      subdomain_to_interior[interior_to_subdomain[i]] = i;
+    }
+
+    // Now create the matrix
+    Mat Aint;
+    auto avg = Aovlp.nonzeroes() / Aovlp.N() + 2;
+    auto N = interior_to_subdomain.size();
+    Aint.setBuildMode(Mat::implicit);
+    Aint.setImplicitBuildModeParameters(avg, 0.2);
+    Aint.setSize(N, N);
+
+    for (auto ri = Aovlp.begin(); ri != Aovlp.end(); ++ri) {
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+        if (subdomain_to_interior.contains(ri.index()) && subdomain_to_interior.contains(ci.index())) {
+          Aint.entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = 0.0;
+        }
+      }
+    }
+    Aint.compress();
+
+    for (auto ri = Aint.begin(); ri != Aint.end(); ++ri) {
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+        *ci = Aovlp[interior_to_subdomain[ri.index()]][interior_to_subdomain[ci.index()]];
+      }
+    }
+
+    // Set Dirichlet rows
+    for (std::size_t i = 0; i < Aint.N(); ++i) {
+      if (dirichlet_mask_ovlp[interior_to_subdomain[i]] > 0) {
+        for (auto ci = Aint[i].begin(); ci != Aint[i].end(); ++ci) {
+          *ci = (ci.index() == i) ? 1.0 : 0.0;
+        }
+      }
+    }
+
+    for (std::size_t i = 0; i < Aint.N(); ++i) {
+      if (boundary_dst[interior_to_subdomain[i]] == 2 * overlap) {
+        for (auto ci = Aint[i].begin(); ci != Aint[i].end(); ++ci) {
+          *ci = (ci.index() == i) ? 1.0 : 0.0;
+        }
+      }
+    }
+
+    Dune::UMFPack interior_solver(Aint);
+    Vec x_int(Aint.N());
+    x_int = 0.0;
+    std::vector<Vec> solutions(eigenvectors.size(), x_int);
+    Vec b_int(Aint.N());
+    b_int = 0.0;
+    for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
+      b_int = 0;
+      for (std::size_t i = 0; i < eigenvectors[k].N(); ++i) {
+        b_int[subdomain_to_interior[ring_to_subdomain[i]]] = eigenvectors[k][i];
+      }
+
+      Dune::InverseOperatorResult res;
+      interior_solver.apply(solutions[k], b_int, res);
+    }
+
+    Vec zero(Aovlp.N());
+    std::vector<Vec> combined_vectors(eigenvectors.size(), zero);
+    for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
+      for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
+        combined_vectors[k][ring_to_subdomain[i]] = eigenvectors[k][i];
+      }
+      for (std::size_t i = 0; i < interior_to_subdomain.size(); ++i) {
+        combined_vectors[k][interior_to_subdomain[i]] = solutions[k][i];
+      }
+    }
+    eigenvectors = std::move(combined_vectors);
+  }
+
   for (auto &vec : eigenvectors) {
     for (std::size_t i = 0; i < vec.N(); ++i) {
       if (dirichlet_mask_ovlp[i] > 0) {
@@ -307,8 +399,8 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
     }
   }
 
-  MPI_Barrier(MPI_COMM_WORLD);
-  MPI_Abort(MPI_COMM_WORLD, 0);
+  // MPI_Barrier(MPI_COMM_WORLD);
+  // MPI_Abort(MPI_COMM_WORLD, 0);
 
   Logger::get().endEvent(eigensolver_event);
   return eigenvectors;
