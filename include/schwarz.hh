@@ -92,7 +92,7 @@ class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
 
 public:
   SchwarzPreconditioner(const Mat &A, const RemoteIndices &remoteindices, int overlap, SchwarzType type = SchwarzType::Restricted, PartitionOfUnityType pou_type = PartitionOfUnityType::None)
-      : N(A.N()), type(type), pou_type(pou_type)
+      : type(type), pou_type(pou_type)
   {
     spdlog::info("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
 
@@ -100,7 +100,7 @@ public:
     createPOU(*Aovlp);
   }
 
-  SchwarzPreconditioner(const Mat &A, const RemoteIndices &remoteindices, const Dune::ParameterTree &ptree) : N(A.N())
+  SchwarzPreconditioner(const Mat &A, const RemoteIndices &remoteindices, const Dune::ParameterTree &ptree)
   {
     auto type_string = ptree.get("type", "restricted");
     if (type_string == "restricted") {
@@ -140,19 +140,14 @@ public:
     Logger::ScopedLog sl(apply_event);
 
     // 1. Copy local values from non-overlapping to overlapping defect
-    for (std::size_t i = 0; i < N; ++i) {
+    *d_ovlp = 0;
+    for (std::size_t i = 0; i < d.size(); ++i) {
       (*d_ovlp)[i] = d[i];
     }
 
     // 2. Get remaining values from other ranks
     cvdh.setVec(*d_ovlp);
     owner_copy_comm->forward(cvdh);
-
-    int rank = 0;
-    MPI_Comm comm = ovlpindices.first->communicator();
-    MPI_Comm_rank(comm, &rank);
-    // if (rank == 0)
-    //   Dune::printvector(std::cout, (*d_ovlp), "Residual", "");
 
     // 3. Solve using the overlapping subdomain matrix
     Dune::InverseOperatorResult res;
@@ -200,10 +195,6 @@ private:
     spdlog::info("Extending overlap by {} in SchwarzPreconitioner", overlap);
     ovlpindices = extendOverlap(remoteindices, A, overlap);
 
-    int rank = 0;
-    MPI_Comm comm = remoteindices.communicator();
-    MPI_Comm_rank(comm, &rank);
-
     all_all_interface.build(*ovlpindices.first, allAttributes, allAttributes);
     all_all_comm = std::make_unique<Dune::VariableSizeCommunicator<>>(all_all_interface);
 
@@ -241,7 +232,8 @@ private:
       for (int i = 0; i < pou->N(); ++i) {
         if (!boundaryMask[i]) {
           (*pou)[i] = 1. / (*pou)[i];
-        } else {
+        }
+        else {
           (*pou)[i] = 0.0;
         }
       }
@@ -260,7 +252,6 @@ private:
     }
   }
 
-  std::size_t N;
   std::shared_ptr<Mat> Aovlp;
 
   std::unique_ptr<Solver> solver;
