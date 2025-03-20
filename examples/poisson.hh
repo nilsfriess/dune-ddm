@@ -171,6 +171,9 @@ public:
 
   PoissonProblem(const GridView &gv, const Dune::MPIHelper &helper) : es(gv), fem(gv), gfs(es, fem), bc(es, modelProblem), lop(modelProblem), x(std::make_unique<Vec>(gfs, 0.0))
   {
+    // Name the GFS for visualisation
+    gfs.name("Solution");
+
     // Create solution vector and initialise with Dirichlet conditions
     Dune::PDELab::ConvectionDiffusionDirichletExtensionAdapter g(es, modelProblem);
     cc.clear();
@@ -202,12 +205,12 @@ public:
     // Dune::PDELab::set_nonconstrained_dofs(cc, 0, *x0);
   }
 
+  // TODO: This function is a horrible, inefficient mess
   template <class RemoteIndices>
   std::pair<std::vector<TripleWithRank>, std::vector<TripleWithRank>> assembleJacobian(const RemoteIndices &remoteids, int overlap)
   {
     using Dune::PDELab::Backend::native;
 
-    // The sparsity pattern is already assembled and we can use it to algebraically increase the overlap.
     if (overlap <= 0) {
       DUNE_THROW(Dune::Exception, "Overlap must be greater than zero");
     }
@@ -336,7 +339,7 @@ public:
       neumannCorrForRank[rank] = *As;
       neumannCorrForRank[rank] = 0.0;
 
-      wrapper->setMasks(&boundary_mask, &(outside_mask_for_rank[rank]), rank);
+      wrapper->setMasks(&boundary_mask, &(outside_mask_for_rank[rank]));
       go->jacobian(*x, neumannCorrForRank[rank]);
     }
 
@@ -422,19 +425,57 @@ public:
       all_triples.insert(all_triples.end(), triples.begin(), triples.end());
     }
 
-    // Combine all of our own triples into one vector
-    std::size_t cnt = 0;
-    for (const auto &[rank, triples] : my_triples) {
-      cnt += triples.size();
+    // Now we have to do the same thing once again but now for the "interior" boundary of our overlap region.
+    std::vector<TripleWithRank> all_own_triples;
+
+    // TODO: There are about 100 instances where we do the same thing as below, this should be refactored into a function or even better just computed once and for all in some class.
+    auto boundary_mask = ibdh.getBoundaryMask();
+    std::vector<int> boundary_dst(boundary_mask.size(), std::numeric_limits<int>::max() - 1);
+    for (const auto &idxpair : paridxs) {
+      auto li = idxpair.local();
+      if (boundary_mask[li]) {
+        boundary_dst[li] = 0;
+      }
     }
-    std::vector<TripleWithRank> all_own_triples(cnt);
-    for (const auto &[rank, triples] : my_triples) {
-      all_own_triples.insert(all_own_triples.end(), triples.begin(), triples.end());
+
+    for (int round = 0; round <= overlap + 3; ++round) {
+      for (int i = 0; i < boundary_dst.size(); ++i) {
+        for (auto cIt = native(*As)[i].begin(); cIt != native(*As)[i].end(); ++cIt) {
+          boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cIt.index()] + 1); // Increase distance from boundary by one
+        }
+      }
+    }
+
+    std::vector<bool> on_boundary_mask(paridxs.size(), false);
+    std::vector<bool> outside_boundary_mask(paridxs.size(), false);
+    for (std::size_t i = 0; i < paridxs.size(); ++i) {
+      on_boundary_mask[i] = boundary_dst[i] == overlap;
+      outside_boundary_mask[i] = boundary_dst[i] == overlap + 1;
+    }
+
+    auto innerA = *As;
+    innerA = 0;
+    wrapper->setMasks(&on_boundary_mask, &outside_boundary_mask);
+    go->jacobian(*x, innerA);
+
+    auto &An = native(innerA);
+    for (auto ri = An.begin(); ri != An.end(); ++ri) {
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+        if (std::abs(*ci) > 1e-12) {
+          auto col = ci.index();
+          auto row = ri.index();
+
+          if (boundary_dst[row] == overlap and boundary_dst[row] == boundary_dst[col]) {
+            all_own_triples.push_back(TripleWithRank{.rank = ownrank, .row = row, .col = col, .val = *ci});
+          }
+        }
+      }
     }
 
     return {all_triples, all_own_triples};
   }
 
+  Vec &getXVec() { return *x0; }
   NativeVec &getX() { return Dune::PDELab::Backend::native(*x0); }
   NativeVec &getD() const { return Dune::PDELab::Backend::native(*d); }
   Vec &getDVec() const { return *d; }
@@ -443,6 +484,7 @@ public:
   const NativeMat &getA() { return Dune::PDELab::Backend::native(*As); }
 
   const GFS &getGFS() const { return gfs; }
+  const ES &getEntitySet() const { return es; }
 
 private:
   ES es;
