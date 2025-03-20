@@ -58,12 +58,77 @@ public:
   BC bctype(const typename Traits::IntersectionType &is, const typename Traits::IntersectionDomainType &x) const
   {
     auto center = is.geometry().global(x);
-    if (true or center[0] < 1e-6 or center[1] < 1e-6) {
+    if (center[0] < 1e-6 or center[1] < 1e-6) {
       return BC::Dirichlet;
     }
     else {
       return BC::Neumann;
     }
+  }
+};
+
+template <class GridView, class RF>
+class IslandsModelProblem : public Dune::PDELab::ConvectionDiffusionModelProblem<GridView, RF> {
+  using BC = Dune::PDELab::ConvectionDiffusionBoundaryConditions::Type;
+
+public:
+  using Traits = typename Dune::PDELab::ConvectionDiffusionModelProblem<GridView, RF>::Traits;
+
+  typename Traits::PermTensorType A(const typename Traits::ElementType &e, const typename Traits::DomainType &xlocal) const
+  {
+    auto xg = e.geometry().global(xlocal);
+
+    int ix = std::floor(15.0 * xg[0]);
+    int iy = std::floor(15.0 * xg[1]);
+    auto x = xg[0];
+    auto y = xg[1];
+
+    double kappa = 1.0;
+
+    if (x > 0.3 && x < 0.9 && y > 0.6 - (x - 0.3) / 6 && y < 0.8 - (x - 0.3) / 6) {
+      kappa = pow(10, 5.0) * (x + y) * 10.0;
+    }
+
+    if (x > 0.1 && x < 0.5 && y > 0.1 + x && y < 0.25 + x) {
+      kappa = pow(10, 5.0) * (1.0 + 7.0 * y);
+    }
+
+    if (x > 0.5 && x < 0.9 && y > 0.15 - (x - 0.5) * 0.25 && y < 0.35 - (x - 0.5) * 0.25) {
+      kappa = pow(10, 5.0) * 2.5;
+    }
+
+    if (ix % 2 == 0 && iy % 2 == 0) {
+      kappa = pow(10, 5.0) * (1.0 + ix + iy);
+    }
+
+    typename Traits::PermTensorType I;
+    for (std::size_t i = 0; i < Traits::dimDomain; i++) {
+      for (std::size_t j = 0; j < Traits::dimDomain; j++) {
+        I[i][j] = (i == j) ? kappa : 0;
+      }
+    }
+
+    return I;
+  }
+
+  typename Traits::RangeFieldType f(const typename Traits::ElementType &, const typename Traits::DomainType &) const { return 0.0; }
+
+  typename Traits::RangeFieldType g(const typename Traits::ElementType &e, const typename Traits::DomainType &xlocal) const
+  {
+    auto xglobal = e.geometry().global(xlocal);
+    return 1. - xglobal[0];
+  }
+
+  BC bctype(const typename Traits::IntersectionType &is, const typename Traits::IntersectionDomainType &x) const
+  {
+    auto xglobal = is.geometry().global(x);
+    if (xglobal[0] < 1e-6) {
+      return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet;
+    }
+    if (xglobal[0] > 1.0 - 1e-6) {
+      return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet;
+    }
+    return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Neumann;
   }
 };
 
@@ -80,8 +145,10 @@ public:
   using Grid = typename GridView::Grid;
   using DF = typename Grid::ctype;
 
-  using ModelProblem = PoissonModelProblem<GridView, RF>;
   using ES = Dune::PDELab::NonOverlappingEntitySet<GridView>; // Skip ghost elements during assembly
+
+  // using ModelProblem = PoissonModelProblem<ES, RF>;
+  using ModelProblem = IslandsModelProblem<ES, RF>;
   using BC = Dune::PDELab::ConvectionDiffusionBoundaryConditionAdapter<ModelProblem>;
 
   using FEM = std::conditional_t<isYASPGrid<Grid>(),                                          // If YASP grid...
