@@ -285,27 +285,5 @@ Matrix createOverlappingMatrix(const Matrix &A, const RemoteIndices &remoteids)
   AddMatrixDataHandle amdh(A, Aovlp, remoteids.sourceIndexSet());
   communicator.forward(amdh);
 
-  // Check for rows with zeros everywhere, except on the diagonal. Set the diagonal entry to one.
-  // TODO: Check if this is actually correct or find a better way to prevent that this happens.
-  //       Should this be considered a bug in PDELab?
-  for (auto rIt = Aovlp.begin(); rIt != Aovlp.end(); ++rIt) {
-    bool dirichlet_row = true;
-    for (auto cIt = rIt->begin(); cIt != rIt->end(); ++cIt) {
-
-      if (cIt.index() == rIt.index()) {
-        dirichlet_row &= (*cIt != 0.0);
-      }
-      else {
-        dirichlet_row &= (*cIt == 0.0);
-      }
-    }
-
-    if (dirichlet_row) {
-      for (auto cIt = rIt->begin(); cIt != rIt->end(); ++cIt) {
-        *cIt = (cIt.index() == rIt.index()) ? 1.0 : 0.0;
-      }
-    }
-  }
-
   return Aovlp;
 }
