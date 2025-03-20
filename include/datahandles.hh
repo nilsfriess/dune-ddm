@@ -390,18 +390,11 @@ class AddMatrixDataHandle {
 public:
   using DataType = std::pair<GlobalIndex, MatrixEntry>;
 
-  AddMatrixDataHandle(const Mat &A, Mat &Aovlp, const ParallelIndexSet &paridxs) : Asource(A), Atarget(Aovlp), paridxs(paridxs), glis(paridxs), dirichlet_rows(A.N(), true)
+  AddMatrixDataHandle(const Mat &A, Mat &Aovlp, const ParallelIndexSet &paridxs) : Asource(A), Atarget(Aovlp), paridxs(paridxs), glis(paridxs)
   {
     for (auto rIt = A.begin(); rIt != A.end(); ++rIt) {
       for (auto cIt = rIt->begin(); cIt != rIt->end(); ++cIt) {
-        Aovlp[rIt.index()][cIt.index()] = *cIt;
-
-        if (cIt.index() == rIt.index()) {
-          dirichlet_rows[rIt.index()] = dirichlet_rows[rIt.index()] && (*cIt == 1.0);
-        }
-        else {
-          dirichlet_rows[rIt.index()] = dirichlet_rows[rIt.index()] && (*cIt == 0.0);
-        }
+        Atarget[rIt.index()][cIt.index()] = Asource[rIt.index()][cIt.index()];
       }
     }
   }
@@ -443,10 +436,6 @@ public:
     for (int k = 1; k < size; k++) {
       buffer.read(x);
       if (paridxs.exists(x.first)) {
-        if (i < Asource.N() && dirichlet_rows[i]) {
-          continue; // Don't modify Dirichlet rows
-        }
-
         Atarget[i][paridxs[x.first].local()] += x.second;
       }
     }
@@ -458,8 +447,6 @@ private:
 
   const ParallelIndexSet &paridxs;
   Dune::GlobalLookupIndexSet<ParallelIndexSet> glis;
-
-  std::vector<bool> dirichlet_rows;
 };
 
 template <class ParallelIndexSet>
