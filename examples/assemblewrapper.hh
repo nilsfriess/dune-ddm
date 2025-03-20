@@ -169,10 +169,6 @@ public:
       Dune::PDELab::LocalOperatorApply::jacobianVolume(*lop, eg, lfsu, x, lfsv, mat);
     }
     else {
-      if (interesting_elements[currrank].size() == 0) {
-        interesting_elements[currrank].resize(lfsu.gridFunctionSpace().entitySet().size(eg.entity().type()));
-      }
-
       // We're in "only integrate the Neumann correction terms" mode, so first check, if we should integrate this element.
       Dune::PDELab::LFSIndexCache cache(lfsu);
       cache.update();
@@ -193,13 +189,8 @@ public:
 
       const auto elem_idx = lfsu.gridFunctionSpace().entitySet().indexSet().index(eg.entity());
       if (hasDofAtBoundary and hasDofOutsideBoundary) {
-        interesting_elements[currrank][elem_idx] = 1;
-
-        // Found an element that is necessary to construct the Neumann correction, so we assemble
+        // Found an element that is required when constructing the Neumann correction, so we assemble
         Dune::PDELab::LocalOperatorApply::jacobianVolume(*lop, eg, lfsu, x, lfsv, mat);
-      }
-      else {
-        interesting_elements[currrank][elem_idx] = 0;
       }
     }
   }
@@ -225,20 +216,15 @@ public:
     Dune::PDELab::LocalOperatorApply::jacobianBoundary(*lop, ig, lfsu_s, x_s, lfsv_s, mat_ss);
   }
 
-  // std::shared_ptr<Mat> getNeumannCorrectionMatrix() {}
-
   void setMasks(const std::vector<bool> *boundary_mask, const std::vector<bool> *outside_mask, int rank)
   {
     this->boundary_mask = boundary_mask;
     this->outside_mask = outside_mask;
 
-    interesting_elements[rank].clear();
-
     integrateOnlyNeumannCorrection = true;
     currrank = rank;
   }
 
-  mutable std::map<int, std::vector<int>> interesting_elements; // Just for visualisation
 private:
   const std::vector<bool> *boundary_mask{nullptr};
   const std::vector<bool> *outside_mask{nullptr};

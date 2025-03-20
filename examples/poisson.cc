@@ -361,68 +361,72 @@ int main(int argc, char *argv[])
   }
 
   Dune::InverseOperatorResult res;
-  auto v = problem.getX();
-  auto b = problem.getD();
-  v = 0;
+  Native<Vec> v(native(problem.getX()));
+  Native<Vec> b = problem.getD();
 
+  v = 0;
   solver->apply(v, b, res);
   problem.getX() -= v;
 
-  std::vector<int> rankVec(grid->leafGridView().size(0), helper.rank());
+  // Visualisation
+  if (ptree.get("visualise", true)) {
+    Dune::VTKWriter writer(grid->leafGridView());
 
-  Dune::VTKWriter writer(grid->leafGridView());
-  writer.addCellData(rankVec, "Rank");
+    // Write MPI partitioning
+    std::vector<int> rankVec(grid->leafGridView().size(0), helper.rank());
+    writer.addCellData(rankVec, "Rank");
 
-  writer.addCellData(problem.interesting_elements, "Elements");
+    // For one rank (can be modified using the command line argument 'debug_rank'), plot its overlapping subdomain
+    const auto &ovlp_paridxs = *schwarz->getOverlappingIndices().second;
+    Native<Vec> overlap_region(ovlp_paridxs.size());
+    overlap_region = 1;
+    if (helper.rank() != ptree.get("debug_rank", 0)) {
+      overlap_region = 0;
+    }
+    Dune::Interface interface;
+    interface.build(*schwarz->getOverlappingIndices().first, allAttributes, allAttributes);
+    Dune::VariableSizeCommunicator ovlp_communicator(interface);
+    AddVectorDataHandle<Native<Vec>> advdh;
+    advdh.setVec(overlap_region);
+    ovlp_communicator.forward(advdh);
 
-  if (helper.rank() != ptree.get("debug_rank", 0)) {
-    visuvec = 0;
+    Vec ovlp_vec(gfs);
+    for (std::size_t i = 0; i < ovlp_vec.N(); ++i) {
+      native(ovlp_vec)[i] = overlap_region[i];
+    }
+    Dune::PDELab::DiscreteGridFunction dgf_ovlp(gfs, ovlp_vec);
+    auto gfadapter_ovlp = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgf_ovlp)>>(dgf_ovlp, "Overlap");
+    writer.addVertexData(gfadapter_ovlp);
+
+    // #if GRID_OVERLAP == 0
+    //   Vec pouvec(gfs, *schwarz->getPartitionOfUnity());
+    //   if (helper.rank() != ptree.get("debug_rank", 0))
+    //     native(pouvec) = 0;
+    //   Dune::PDELab::DiscreteGridFunction poudgf(gfs, pouvec);
+    //   auto pougfadapter =
+    //   std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(poudgf)>>(poudgf,
+    //   "POU"); writer.addVertexData(pougfadapter);
+    // #endif
+
+    // Plot the finite element solution
+    Vec xgrid(gfs, problem.getX());
+    Dune::PDELab::DiscreteGridFunction dgf(gfs, xgrid);
+    auto gfadapter = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgf)>>(dgf, "Solution");
+    writer.addVertexData(gfadapter);
+
+    // Plot the initial right hand side (= the residual)
+    Dune::PDELab::DiscreteGridFunction dgfb0(gfs, problem.getDVec());
+    auto gfadapterb0 = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgfb0)>>(dgfb0, "RHS 0");
+    writer.addVertexData(gfadapterb0);
+
+    // Dune::PDELab::DiscreteGridFunction dgfone(gfs, one);
+    // auto gfadapterone = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgfone)>>(dgfone, "Template vec");
+    // writer.addVertexData(gfadapterone);
+
+    writer.write(ptree.get("filename", "Poisson"));
   }
-  Dune::PDELab::DiscreteGridFunction visudgf(gfs, visuvec);
-  auto visuadapt = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(visudgf)>>(visudgf, "Basis");
-  writer.addVertexData(visuadapt);
 
-  const auto &ovlp_paridxs = *schwarz->getOverlappingIndices().second;
-  Native<Vec> overlap_region(ovlp_paridxs.size());
-  overlap_region = 1;
-  if (helper.rank() != ptree.get("debug_rank", 0)) {
-    overlap_region = 0;
+  if (ptree.get("view_report", true)) {
+    Logger::get().report(helper.getCommunicator());
   }
-  Dune::Interface interface;
-  interface.build(*schwarz->getOverlappingIndices().first, allAttributes, allAttributes);
-  Dune::VariableSizeCommunicator ovlp_communicator(interface);
-  AddVectorDataHandle<Native<Vec>> advdh;
-  advdh.setVec(overlap_region);
-  ovlp_communicator.forward(advdh);
-
-  Vec ovlp_vec(gfs);
-  for (std::size_t i = 0; i < ovlp_vec.N(); ++i) {
-    native(ovlp_vec)[i] = overlap_region[i];
-  }
-  Dune::PDELab::DiscreteGridFunction dgf_ovlp(gfs, ovlp_vec);
-  auto gfadapter_ovlp = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgf_ovlp)>>(dgf_ovlp, "Overlap");
-  writer.addVertexData(gfadapter_ovlp);
-
-  // #if GRID_OVERLAP == 0
-  //   Vec pouvec(gfs, *schwarz->getPartitionOfUnity());
-  //   if (helper.rank() != ptree.get("debug_rank", 0))
-  //     native(pouvec) = 0;
-  //   Dune::PDELab::DiscreteGridFunction poudgf(gfs, pouvec);
-  //   auto pougfadapter =
-  //   std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(poudgf)>>(poudgf,
-  //   "POU"); writer.addVertexData(pougfadapter);
-  // #endif
-
-  Dune::PDELab::DiscreteGridFunction dgf(gfs, problem.getX());
-  auto gfadapter = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgf)>>(dgf, "Solution");
-  writer.addVertexData(gfadapter);
-
-  // Dune::PDELab::DiscreteGridFunction dgfone(gfs, one);
-  // auto gfadapterone = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgfone)>>(dgfone, "Template vec");
-  // writer.addVertexData(gfadapterone);
-
-  writer.write("Poisson");
-
-  Logger::get().report(helper.getCommunicator());
-  return 0;
 }
