@@ -35,9 +35,37 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(spdlog)
 
+message(STATUS "Trying to download Spectra (C++ ARPACK implementation based on Eigen)")
+find_package(Eigen3 REQUIRED)
+FetchContent_Declare(
+  Spectra
+  GIT_REPOSITORY https://github.com/yixuan/spectra
+  GIT_TAG        v1.0.1
+)
+FetchContent_MakeAvailable(Spectra)
+
+message(STATUS "Trying to download BLOPEX (implementation of LOBPCG)")
+FetchContent_Declare(
+  blopex_all
+  GIT_REPOSITORY https://github.com/lobpcg/blopex
+  GIT_COMMIT     cc658b19f791daf282e95915757eb3cf20c7d601
+)
+FetchContent_MakeAvailable(blopex_all)
+add_custom_command(
+        OUTPUT ${blopex_all_SOURCE_DIR}/blopex_abstract/lib/libBLOPEX.a
+        COMMAND cd ${blopex_all_SOURCE_DIR}/blopex_abstract && make clean && make CFLAGS='-O3')
+add_custom_target(BLOPEX_BUILD DEPENDS ${blopex_all_SOURCE_DIR}/blopex_abstract/lib/libBLOPEX.a)
+add_library(BLOPEX STATIC IMPORTED GLOBAL)
+set_target_properties(BLOPEX
+    PROPERTIES
+    IMPORTED_LOCATION ${blopex_all_SOURCE_DIR}/blopex_abstract/lib/libBLOPEX.a
+    INTERFACE_INCLUDE_DIRECTORIES ${blopex_all_SOURCE_DIR}/blopex_abstract/include
+)
+add_dependencies(BLOPEX BLOPEX_BUILD)
+
 add_library(dune-ddm INTERFACE)
 target_include_directories(dune-ddm INTERFACE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog)
+target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog Spectra BLOPEX)
 
 add_subdirectory(examples)
 add_subdirectory(tests)

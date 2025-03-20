@@ -315,8 +315,8 @@ int main(int argc, char *argv[])
     prec.add(nicolaides);
   }
   else if (coarsespace == "geneo") {
-    auto basis_vecs = buildGenEOCoarseSpace(schwarz->getOverlappingIndices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(),
-                                            ptree.get("nev", 10));
+    auto basis_vecs = buildGenEOCoarseSpace(schwarz->getOverlappingIndices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, native(problem.getDirichletMask()),
+                                            *schwarz->getPartitionOfUnity(), ptree);
     native(visuvec) = basis_vecs[ptree.get("n_vis", 0)]; // Save one vectors for visualisation
 
     auto geneo = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
