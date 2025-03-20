@@ -16,7 +16,7 @@
 #include "config.h"
 #endif
 
-#define USE_UGGRID 1
+#define USE_UGGRID 0 // Set to zero to use YASPGrid
 #define GRID_OVERLAP 0
 
 #include <dune/common/parallel/communicator.hh>
@@ -24,6 +24,7 @@
 #include <dune/common/parametertree.hh>
 #include <dune/common/parametertreeparser.hh>
 #include <dune/grid/io/file/gmshreader.hh>
+#include <dune/grid/io/file/vtk/subsamplingvtkwriter.hh>
 #include <dune/grid/uggrid.hh>
 #include <dune/grid/utility/parmetisgridpartitioner.hh>
 #include <dune/istl/bccsmatrixinitializer.hh>
@@ -88,7 +89,7 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
   const auto verbose = ptree.get("verbose", 0);
 
   using Grid = Dune::UGGrid<2>;
-  auto grid = Dune::GmshReader<Grid>::read(meshfile, verbose > 1, false);
+  auto grid = Dune::GmshReader<Grid>::read(meshfile, verbose > 2, false);
 #else
   using Grid = Dune::YaspGrid<2>;
   const auto gridsize = ptree.get("gridsize", 32);
@@ -366,58 +367,20 @@ int main(int argc, char *argv[])
 
   // Visualisation
   if (ptree.get("visualise", true)) {
-    Dune::VTKWriter writer(grid->leafGridView());
+    Dune::SubsamplingVTKWriter writer(problem.getEntitySet(), Dune::refinementLevels(0));
 
     // Write MPI partitioning
-    std::vector<int> rankVec(grid->leafGridView().size(0), helper.rank());
-    writer.addCellData(rankVec, "Rank");
-
-    // For one rank (can be modified using the command line argument 'debug_rank'), plot its overlapping subdomain
-    const auto &ovlp_paridxs = *schwarz->getOverlappingIndices().second;
-    Native<Vec> overlap_region(ovlp_paridxs.size());
-    overlap_region = 1;
-    if (helper.rank() != ptree.get("debug_rank", 0)) {
-      overlap_region = 0;
-    }
-    Dune::Interface interface;
-    interface.build(*schwarz->getOverlappingIndices().first, allAttributes, allAttributes);
-    Dune::VariableSizeCommunicator ovlp_communicator(interface);
-    AddVectorDataHandle<Native<Vec>> advdh;
-    advdh.setVec(overlap_region);
-    ovlp_communicator.forward(advdh);
-
-    Vec ovlp_vec(gfs);
-    for (std::size_t i = 0; i < ovlp_vec.N(); ++i) {
-      native(ovlp_vec)[i] = overlap_region[i];
-    }
-    Dune::PDELab::DiscreteGridFunction dgf_ovlp(gfs, ovlp_vec);
-    auto gfadapter_ovlp = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgf_ovlp)>>(dgf_ovlp, "Overlap");
-    writer.addVertexData(gfadapter_ovlp);
-
-    // #if GRID_OVERLAP == 0
-    //   Vec pouvec(gfs, *schwarz->getPartitionOfUnity());
-    //   if (helper.rank() != ptree.get("debug_rank", 0))
-    //     native(pouvec) = 0;
-    //   Dune::PDELab::DiscreteGridFunction poudgf(gfs, pouvec);
-    //   auto pougfadapter =
-    //   std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(poudgf)>>(poudgf,
-    //   "POU"); writer.addVertexData(pougfadapter);
-    // #endif
+    std::vector<int> rankVec(problem.getEntitySet().size(0), helper.rank());
+    Dune::P0VTKFunction rankFunc(problem.getEntitySet(), rankVec, "Rank");
+    writer.addCellData(Dune::stackobject_to_shared_ptr(rankFunc));
 
     // Plot the finite element solution
-    Vec xgrid(gfs, problem.getX());
-    Dune::PDELab::DiscreteGridFunction dgf(gfs, xgrid);
-    auto gfadapter = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgf)>>(dgf, "Solution");
-    writer.addVertexData(gfadapter);
+    Dune::P1VTKFunction residualFunc(problem.getEntitySet(), problem.getD(), "Residual");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(residualFunc));
 
-    // Plot the initial right hand side (= the residual)
-    Dune::PDELab::DiscreteGridFunction dgfb0(gfs, problem.getDVec());
-    auto gfadapterb0 = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgfb0)>>(dgfb0, "RHS 0");
-    writer.addVertexData(gfadapterb0);
-
-    // Dune::PDELab::DiscreteGridFunction dgfone(gfs, one);
-    // auto gfadapterone = std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<decltype(dgfone)>>(dgfone, "Template vec");
-    // writer.addVertexData(gfadapterone);
+    // Plot the finite element solution
+    Dune::P1VTKFunction solutionFunc(problem.getEntitySet(), problem.getX(), "Solution");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(solutionFunc));
 
     writer.write(ptree.get("filename", "Poisson"));
   }
