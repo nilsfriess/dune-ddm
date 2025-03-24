@@ -192,11 +192,12 @@ private:
   //   }
   // }
 
+  // TODO: Remove some of the logging, this was just added to find out where the most time is spent,
+  //       because this function can become the bottleneck for large simulations.
   void buildSolver(const Mat &A)
   {
     Logger::ScopedLog se(build_solver_event);
 
-    auto *copy_vecs_event = Logger::get().registerEvent("GalerkinPrec", "copy vectors");
     auto *dot_vecs_event = Logger::get().registerEvent("GalerkinPrec", "dot products");
     auto *s_event = Logger::get().registerEvent("GalerkinPrec", "comm s");
     auto *y_event = Logger::get().registerEvent("GalerkinPrec", "comm y");
@@ -213,6 +214,11 @@ private:
     MPI_Comm_rank(ris.first->communicator(), &rank);
     MPI_Comm_size(ris.first->communicator(), &size);
 
+    std::vector<bool> neighbours(size, false);
+    for (auto nid : ris.first->getNeighbours()) {
+      neighbours[nid] = true;
+    }
+
     std::vector<bool> owner_mask(restr_vecs[0].N(), false);
     for (std::size_t l = 0; l < owner_mask.size(); ++l) {
       owner_mask[l] = glis.pair(l)->local().attribute() == Attribute::owner;
@@ -223,7 +229,9 @@ private:
     MPI_Allgather(&num_t, 1, MPI_INT, num_t_per_rank.data(), 1, MPI_INT, ris.first->communicator());
     total_num_t = std::accumulate(num_t_per_rank.begin(), num_t_per_rank.end(), 0UL);
 
-    std::vector<Vec> my_rows(num_t, Vec(total_num_t));
+    Vec zero(total_num_t);
+    zero = 0;
+    std::vector<Vec> my_rows(num_t, zero);
     Vec s(restr_vecs[0].N());
     Vec y(restr_vecs[0].N());
 
@@ -234,38 +242,50 @@ private:
 
     for (int col = 0; col < size; ++col) {
       for (std::size_t i = 0; i < num_t_per_rank[col]; ++i) {
-        Logger::get().startEvent(copy_vecs_event);
         if (col == rank) {
           s = restr_vecs[i];
         }
         else {
           s = 0;
         }
-        Logger::get().endEvent(copy_vecs_event);
 
         Logger::get().startEvent(s_event);
         advdh.setVec(s);
         all_all_comm->forward(advdh);
         Logger::get().endEvent(s_event);
 
-        Logger::get().startEvent(Asy_event);
-        A.mv(s, y);
+        y = 0;
+        // Below, we're computing products of the form s' * A * r, for all combinations of restriction vectors s and r.
+        // This product will only be nonzero, if either we set some values in the 's' vector, or one of our neighbours
+        // set some values in their 's' vector. For a rank that we share no degrees of freedom with, this will always be
+        // zero and we can skip the computations. Unfortunately, we can't skip the communication.
+        // TODO: Rewrite the whole communication interface so we can actually skip the communication here.
+        if (col == rank or neighbours[col]) {
+          Logger::get().startEvent(Asy_event);
+          A.mv(s, y);
 
-        for (std::size_t l = 0; l < y.N(); ++l) {
-          y[l] *= owner_mask[l];
+          for (std::size_t l = 0; l < y.N(); ++l) {
+            y[l] *= owner_mask[l];
+          }
+          Logger::get().endEvent(Asy_event);
         }
-        Logger::get().endEvent(Asy_event);
 
         Logger::get().startEvent(y_event);
         advdh.setVec(y);
         all_all_comm->forward(advdh);
         Logger::get().endEvent(y_event);
 
-        Logger::get().startEvent(dot_vecs_event); 
-        for (std::size_t k = 0; k < num_t; ++k) {
-          my_rows[k][offset_per_rank[col] + i] = restr_vecs[k] * y;
+        Logger::get().startEvent(dot_vecs_event);
+
+        // Again, we skip the computation if we know it will be zero. In fact, these dot products are often
+        // the longest taking step in this loop, so skipping unecessary computations here is crucial.
+        // Note that my_rows is initialised with zeros, so just skipping here is fine.
+        if (col == rank or neighbours[col]) {
+          for (std::size_t k = 0; k < num_t; ++k) {
+            my_rows[k][offset_per_rank[col] + i] = restr_vecs[k] * y;
+          }
         }
-        Logger::get().endEvent(dot_vecs_event); 
+        Logger::get().endEvent(dot_vecs_event);
       }
     }
 
