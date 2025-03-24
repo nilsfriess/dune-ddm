@@ -1,23 +1,26 @@
 #pragma once
 
+#include <chrono>
+#include <dune/common/parallel/mpitraits.hh>
 #include <iomanip>
 #include <iostream>
 #include <mpi.h>
 #include <ostream>
+#include <ratio>
 #include <string>
 #include <vector>
 
 #include "spdlog/cfg/argv.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
 #include "spdlog/spdlog.h"
+
 // TODO: This is a bit sketchy because we preallocate memory for the families and events;
 //       as soon as either of the vectors has to be resized, all pointers to the events
 //       become invalid. For now it works well enough.
 /**
- * A simple logger to log timings for different events in an MPI parallel program.
+ * @brief A simple logger to log timings for different events in an MPI parallel program.
  *
- * Consider a simple class:
- *
+ * The logger itself is implemented as a singleton. Consider a simple class:
  * \code{.cpp}
  * class SomeOperation {
  * private:
@@ -33,7 +36,6 @@
  *   }
  * };
  * \endcode
- *
  * Here we register an `apply` event for some operation that we want to log.
  * In the main program we could then use this class and output a log report:
  * \code{.cpp}
@@ -63,6 +65,11 @@
  */
 class Logger {
 public:
+  using Duration = std::chrono::duration<std::size_t, std::nano>;
+
+  /**
+   * Get the Logger singleton which can be used to register logging events and create reports.
+   */
   static Logger &get()
   {
     static Logger instance;
@@ -80,8 +87,9 @@ public:
     std::string name;
 
     std::size_t times_called = 0;
-    double last_start = 0;
-    double total_time = 0;
+    std::chrono::steady_clock::time_point last_start;
+    Duration total_time{0};
+    bool is_running = false;
   };
 
   struct Family {
@@ -90,9 +98,9 @@ public:
   };
 
   /**
-   * A convenience class to log an event that should end when the lifetime of the ScopedLog object ends
+   * A convenience class to log an event that should end when the lifetime of the ScopedLog object ends.
    *
-   * Using this class, the example code given above could equivalently be written as follows:
+   * Using this class, the example code given in the Logger class could equivalently be written as follows:
    * \code{.cpp}
    * class SomeOperation {
    * private:
@@ -133,7 +141,7 @@ public:
   }
 
   /**
-   * Register a new family or return a pointer to one with the given name if it already exists
+   * Register a new family or return a pointer to one with the given name if it already exists.
    */
   Family *registerOrGetFamily(const std::string &name)
   {
@@ -146,7 +154,7 @@ public:
   }
 
   /**
-   * Register a new event for a given family that has been created with registerFamily() or registerOrGetFamily()
+   * Register a new event for a given family that has been created with registerFamily() or registerOrGetFamily().
    */
   Event *registerEvent(Family *family, const std::string &event)
   {
@@ -156,7 +164,7 @@ public:
   }
 
   /**
-   * Register a new event for the family with the given \p family_name
+   * Register a new event for the family with the given \p family_name.
    *
    * If the family does not yet exist, it is registered as a new family. In other words
    * this function is just a wrapper around
@@ -166,12 +174,25 @@ public:
    */
   Event *registerEvent(const std::string &family_name, const std::string &event_name) { return registerEvent(registerOrGetFamily(family_name), event_name); }
 
-  void startEvent(Event *event) { event->last_start = MPI_Wtime(); }
+  void startEvent(Event *event)
+  {
+    if (event->is_running) {
+      spdlog::error("Event was already started");
+      MPI_Abort(MPI_COMM_WORLD, 4);
+    }
+    event->last_start = std::chrono::steady_clock::now();
+    event->is_running = true;
+  }
 
   void endEvent(Event *event)
   {
-    event->total_time += MPI_Wtime() - event->last_start;
+    if (not event->is_running) {
+      spdlog::error("Event was not started yet");
+      MPI_Abort(MPI_COMM_WORLD, 4);
+    }
+    event->total_time += std::chrono::steady_clock::now() - event->last_start;
     event->times_called++;
+    event->is_running = false;
   }
 
   /**
@@ -187,13 +208,18 @@ public:
   {
     int rank = 0;
     MPI_Comm_rank(comm, &rank);
+    int size = 0;
+    MPI_Comm_size(comm, &size);
 
     if (rank == 0) {
       out << "\n==========================================================================================\n";
       out << "#                                      Logger report                                     #\n";
-      out << "==========================================================================================\n";
+      out << "==========================================================================================\n\n";
+    }
 
-      out << "Event                 |   Mean time [s] |    Min time [s] |    Max time [s] | Times called\n";
+    if (rank == 0) {
+      out << "------------------------------------------------------------------------------------------\n";
+      out << "User Event            |   Mean time [s] |    Min time [s] |    Max time [s] | Times called\n";
       out << "------------------------------------------------------------------------------------------\n";
     }
 
@@ -205,9 +231,9 @@ public:
         const auto [mean, min, max] = meanMinMaxTime(comm, event);
         if (rank == 0) {
           out << "  " << std::left << std::setw(20) << event.name;
-          out << "| " << std::right << std::setw(15) << mean << ' ';
-          out << "| " << std::right << std::setw(15) << min << ' ';
-          out << "| " << std::right << std::setw(15) << max << ' ';
+          out << "| " << std::right << std::setw(15) << std::chrono::duration_cast<std::chrono::duration<double>>(mean) << ' ';
+          out << "| " << std::right << std::setw(15) << std::chrono::duration_cast<std::chrono::duration<double>>(min) << ' ';
+          out << "| " << std::right << std::setw(15) << std::chrono::duration_cast<std::chrono::duration<double>>(max) << ' ';
           out << "| " << std::right << std::setw(12) << event.times_called;
 
           out << '\n';
@@ -220,21 +246,23 @@ public:
   }
 
 private:
-  std::tuple<double, double, double> meanMinMaxTime(MPI_Comm comm, const Event &event) const
+  std::tuple<Duration, Duration, Duration> meanMinMaxTime(MPI_Comm comm, const Event &event) const
   {
-    double mean = event.total_time;
-    double min = event.total_time;
-    double max = event.total_time;
+    auto val = event.total_time.count();
+    std::size_t mean{};
+    std::size_t min{};
+    std::size_t max{};
 
-    MPI_Allreduce(MPI_IN_PLACE, &mean, 1, MPI_DOUBLE, MPI_SUM, comm);
-    MPI_Allreduce(MPI_IN_PLACE, &min, 1, MPI_DOUBLE, MPI_MIN, comm);
-    MPI_Allreduce(MPI_IN_PLACE, &max, 1, MPI_DOUBLE, MPI_MAX, comm);
+    const auto type = Dune::MPITraits<std::size_t>::getType();
+    MPI_Allreduce(&val, &mean, 1, type, MPI_SUM, comm);
+    MPI_Allreduce(&val, &min, 1, type, MPI_MIN, comm);
+    MPI_Allreduce(&val, &max, 1, type, MPI_MAX, comm);
 
     int size = 0;
     MPI_Comm_size(comm, &size);
     mean /= size;
 
-    return {mean, min, max};
+    return {Duration(mean), Duration(min), Duration(max)};
   }
 
   std::vector<Family> families;

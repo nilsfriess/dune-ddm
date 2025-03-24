@@ -196,12 +196,16 @@ private:
   {
     Logger::ScopedLog se(build_solver_event);
 
+    auto *copy_vecs_event = Logger::get().registerEvent("GalerkinPrec", "copy vectors");
+    auto *dot_vecs_event = Logger::get().registerEvent("GalerkinPrec", "dot products");
     auto *s_event = Logger::get().registerEvent("GalerkinPrec", "comm s");
     auto *y_event = Logger::get().registerEvent("GalerkinPrec", "comm y");
     auto *Asy_event = Logger::get().registerEvent("GalerkinPrec", "compute y=As");
     auto *gather_A0 = Logger::get().registerEvent("GalerkinPrec", "gather A0");
     auto *factor_A0 = Logger::get().registerEvent("GalerkinPrec", "factor A0");
+    auto *prepare_event = Logger::get().registerEvent("GalerkinPrec", "prepare");
 
+    Logger::get().startEvent(prepare_event);
     Dune::GlobalLookupIndexSet glis(*ris.second);
 
     int rank = 0;
@@ -226,14 +230,18 @@ private:
     offset_per_rank.resize(size);
     std::exclusive_scan(num_t_per_rank.begin(), num_t_per_rank.end(), offset_per_rank.begin(), 0);
 
+    Logger::get().endEvent(prepare_event);
+
     for (int col = 0; col < size; ++col) {
       for (std::size_t i = 0; i < num_t_per_rank[col]; ++i) {
+        Logger::get().startEvent(copy_vecs_event);
         if (col == rank) {
           s = restr_vecs[i];
         }
         else {
           s = 0;
         }
+        Logger::get().endEvent(copy_vecs_event);
 
         Logger::get().startEvent(s_event);
         advdh.setVec(s);
@@ -253,9 +261,11 @@ private:
         all_all_comm->forward(advdh);
         Logger::get().endEvent(y_event);
 
+        Logger::get().startEvent(dot_vecs_event); 
         for (std::size_t k = 0; k < num_t; ++k) {
           my_rows[k][offset_per_rank[col] + i] = restr_vecs[k] * y;
         }
+        Logger::get().endEvent(dot_vecs_event); 
       }
     }
 
