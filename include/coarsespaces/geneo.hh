@@ -101,17 +101,11 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
       }
     }
 
+    // Make sure global Dirichlet conditions are correctly set
     for (std::size_t i = 0; i < A.N(); ++i) {
       if (dirichlet_mask_ovlp[i] > 0) {
         for (auto ci = A[i].begin(); ci != A[i].end(); ++ci) {
           *ci = (ci.index() == i) ? 1.0 : 0.0;
-        }
-      }
-      else {
-        for (auto ci = A[i].begin(); ci != A[i].end(); ++ci) {
-          if (dirichlet_mask_ovlp[ci.index()] > 0) {
-            *ci = 0.0;
-          }
         }
       }
     }
@@ -143,18 +137,12 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
         }
       }
 
-      // Dirichlet conditions
+      // Make sure global Dirichlet conditions are correctly set
+      // TODO: This is probably not necessary
       for (std::size_t i = 0; i < B.N(); ++i) {
         if (dirichlet_mask_ovlp[i] > 0) {
           for (auto ci = B[i].begin(); ci != B[i].end(); ++ci) {
             *ci = (ci.index() == i) ? 1.0 : 0.0;
-          }
-        }
-        else {
-          for (auto ci = B[i].begin(); ci != B[i].end(); ++ci) {
-            if (dirichlet_mask_ovlp[ci.index()] > 0) {
-              *ci = 0.0;
-            }
           }
         }
       }
