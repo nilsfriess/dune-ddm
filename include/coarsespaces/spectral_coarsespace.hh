@@ -89,18 +89,20 @@ void applyPreconditioner(void *T_, void *r_, void *Tr_)
 
     std::copy(rstart, rstart + r->N, d.begin());
     v = 0;
-    T->apply(v, d);
+
+    Dune::InverseOperatorResult res;
+    T->apply(v, d, res);
 
     std::copy(v.begin(), v.end(), Trstart);
   }
 }
 
 template <class Vec, class Mat, class Eigensolver, class Prec = void>
-std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, long nev, Prec *prec = nullptr)
+std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, long nev, const Dune::ParameterTree &ptree, Prec *prec = nullptr)
 {
   std::vector<Vec> eigenvectors;
 
-  const double tolerance = 1e-8;
+  const double tolerance = ptree.get("eigensolver_tolerance", 1e-5);
 
   if (eigensolver == Eigensolver::Spectra) {
     using Triplet = Eigen::Triplet<double>;
@@ -139,7 +141,7 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
     OpType op(A_, B_);
     BOpType Bop(B_);
 
-    Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, 2 * nev, 0.001);
+    Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, 3 * nev, 0.001);
     geigs.init();
 
     // Find largest eigenvalue of the shifted problem (which corresponds to the smallest of the original problem)
@@ -175,7 +177,7 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
     lobpcg_tol.absolute = tolerance;
     lobpcg_tol.relative = tolerance;
 
-    int maxit = 50;
+    int maxit = 100;
     int its = 0; // Iterations that were actually required
 
     Vector sample(A.N());
@@ -204,7 +206,7 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
                                 blap_fn,                   // The LAPACK functions that BLOPEX should use for the small gevp
                                 lobpcg_tol,                // Tolerance that should be achieved
                                 maxit,                     // Maximum number of iterations
-                                1,                         // Verbosity level
+                                0,                         // Verbosity level
                                 &its,                      // Iterations that were required
                                 eigenvalues.data(),        // The computed eigenvalues
                                 nullptr,                   // History of the compute eigenvalues
@@ -241,12 +243,12 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
       std::cerr << "Eigensolver failed" << std::endl;
     }
 
-    // Eigensolver succeded, copy computed vectors
-    std::cout << "Eigenvalues after " << its << " iterations: \n";
-    for (auto ev : eigenvalues) {
-      std::cout << "  " << ev << "\n";
-    }
-    std::cout << std::endl;
+    // // Eigensolver succeded, copy computed vectors
+    // std::cout << "Eigenvalues after " << its << " iterations: \n";
+    // for (auto ev : eigenvalues) {
+    //   std::cout << "  " << ev << "\n";
+    // }
+    // std::cout << std::endl;
 
     Vec vec(A.N());
     eigenvectors.resize(nev);
