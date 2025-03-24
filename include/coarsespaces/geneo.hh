@@ -19,10 +19,9 @@
 #include "logger.hh"
 #include "spectral_coarsespace.hh"
 
-template <class Vec, class Mat, class RemoteIndices, class Solver>
+template <class Vec, class Mat, class RemoteIndices>
 std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat &Aovlp, const std::vector<TripleWithRank> &remote_ncorr_triples,
-                                       [[maybe_unused]] const std::vector<TripleWithRank> &own_ncorr_triples, const Vec &dirichlet_mask_novlp, const Vec &pou, const Dune::ParameterTree &ptree,
-                                       Solver *subdomain_solver = nullptr)
+                                       [[maybe_unused]] const std::vector<TripleWithRank> &own_ncorr_triples, const Vec &dirichlet_mask_novlp, const Vec &pou, const Dune::ParameterTree &ptree)
 {
   MPI_Barrier(MPI_COMM_WORLD);
   auto *eigensolver_event = Logger::get().registerEvent("GenEO", "solve eigenproblem");
@@ -313,154 +312,95 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
       subdomain_to_interior[interior_to_subdomain[i]] = i;
     }
 
-    //     if (subdomain_solver) {
-    //       spdlog::get("all_ranks")->warn("This implementation is currently not computing correct results");
-    //       /* TODO: This is wrong.
-    //          We are given a solver (= a factorised matrix) that lives on the whole subdomain.
-    //          We can use it to extend the eigenvectors that we computed on the ring in an
-    //          energy-minimising way to the interior of the subdomain. To understand how,
-    //          write A in block form:
+    // Now create the matrix
+    Mat Aint;
+    auto avg = Aovlp.nonzeroes() / Aovlp.N() + 2;
+    auto N = interior_to_subdomain.size();
+    Aint.setBuildMode(Mat::implicit);
+    Aint.setImplicitBuildModeParameters(avg, 0.2);
+    Aint.setSize(N, N);
 
-    //                  A = [ [ A_II, A_IR ],
-    //                        [ A_RI, A_RR ] ],
-
-    //          where I correponds to dofs in the interior and R corresponds to dofs in the ring.
-    //          Now we compute the product
-
-    //                  A [ 0, v ] = [ b_I, b_R],
-
-    //          where v is one of the eigenvectors that we computed on the ring. Then we solve
-
-    //                  A [ x_I, x_R ] = [ 0, b_R ],
-
-    //          for x = [ x_I, x_R ], which corresponds to the energy-minimising extension of the
-    //          eigenvector v to the interior of the subdomain. We do this for all eigenvectors. */
-
-    //       Vec zero(Aovlp.N());
-    //       zero = 0;
-    //       std::vector<Vec> full_vectors(eigenvectors.size(), zero);
-    //       Vec b(Aovlp.N());
-    //       Vec x(Aovlp.N());
-    //       for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
-    //         for (std::size_t j = 0; j < ptree.get("geneo_its", 4); ++j) {
-    //           for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-    //             full_vectors[k][ring_to_subdomain[i]] = eigenvectors[k][i];
-    //           }
-
-    //           // Compute b = Ax
-    //           Aovlp.mv(full_vectors[k], b);
-
-    //           // Solve Ax = b for x
-    //           Dune::InverseOperatorResult res;
-    //           full_vectors[k] = 0;
-    //           subdomain_solver->apply(full_vectors[k], b, res);
-    //         }
-
-    // #ifndef NDEBUG
-    //         double sum = 0;
-    //         for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-    //           sum += std::pow(eigenvectors[k][i] - full_vectors[k][ring_to_subdomain[i]], 2);
-    //         }
-    //         sum = std::sqrt(sum);
-    //         if (sum > 1e-12) {
-    //           spdlog::get("all_ranks")->warn("Eigenvector on ring and computed solution in interior differ at boundary, difference is {}", sum);
-    //         }
-    // #endif
-    //       }
-
-    //       eigenvectors = std::move(full_vectors);
-    //     }
-    {
-      // Now create the matrix
-      Mat Aint;
-      auto avg = Aovlp.nonzeroes() / Aovlp.N() + 2;
-      auto N = interior_to_subdomain.size();
-      Aint.setBuildMode(Mat::implicit);
-      Aint.setImplicitBuildModeParameters(avg, 0.2);
-      Aint.setSize(N, N);
-
-      for (auto ri = Aovlp.begin(); ri != Aovlp.end(); ++ri) {
-        for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-          if (subdomain_to_interior.contains(ri.index()) && subdomain_to_interior.contains(ci.index())) {
-            Aint.entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = 0.0;
-          }
+    for (auto ri = Aovlp.begin(); ri != Aovlp.end(); ++ri) {
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+        if (subdomain_to_interior.contains(ri.index()) && subdomain_to_interior.contains(ci.index())) {
+          Aint.entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = 0.0;
         }
       }
-      Aint.compress();
+    }
+    Aint.compress();
 
-      for (auto ri = Aint.begin(); ri != Aint.end(); ++ri) {
-        for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-          *ci = Aovlp[interior_to_subdomain[ri.index()]][interior_to_subdomain[ci.index()]];
+    for (auto ri = Aint.begin(); ri != Aint.end(); ++ri) {
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+        *ci = Aovlp[interior_to_subdomain[ri.index()]][interior_to_subdomain[ci.index()]];
+      }
+    }
+
+    // Set Dirichlet rows
+    for (std::size_t i = 0; i < Aint.N(); ++i) {
+      if (dirichlet_mask_ovlp[interior_to_subdomain[i]] > 0) {
+        for (auto ci = Aint[i].begin(); ci != Aint[i].end(); ++ci) {
+          *ci = (ci.index() == i) ? 1.0 : 0.0;
+        }
+      }
+    }
+
+    for (std::size_t i = 0; i < Aint.N(); ++i) {
+      if (boundary_dst[interior_to_subdomain[i]] == 2 * overlap) {
+        for (auto ci = Aint[i].begin(); ci != Aint[i].end(); ++ci) {
+          *ci = (ci.index() == i) ? 1.0 : 0.0;
+        }
+      }
+    }
+
+    auto *factorise_interior = Logger::get().registerEvent("GenEO", "factorise interior");
+    auto *solve_interior = Logger::get().registerEvent("GenEO", "solve interior");
+    Logger::get().startEvent(factorise_interior);
+    Dune::UMFPack interior_solver(Aint);
+    Logger::get().endEvent(factorise_interior);
+
+    Vec x_int(Aint.N());
+    x_int = 0.0;
+    std::vector<Vec> solutions(eigenvectors.size(), x_int);
+    Vec b_int(Aint.N());
+
+    Logger::get().startEvent(solve_interior);
+    for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
+      b_int = 0;
+      for (std::size_t i = 0; i < eigenvectors[k].N(); ++i) {
+        if (boundary_dst[ring_to_subdomain[i]] == 2 * overlap) {
+          assert(subdomain_to_interior.contains(ring_to_subdomain[i]) && "Interior and ring must overlap");
+          b_int[subdomain_to_interior[ring_to_subdomain[i]]] = eigenvectors[k][i];
         }
       }
 
-      // Set Dirichlet rows
-      for (std::size_t i = 0; i < Aint.N(); ++i) {
-        if (dirichlet_mask_ovlp[interior_to_subdomain[i]] > 0) {
-          for (auto ci = Aint[i].begin(); ci != Aint[i].end(); ++ci) {
-            *ci = (ci.index() == i) ? 1.0 : 0.0;
-          }
-        }
+      Dune::InverseOperatorResult res;
+      interior_solver.apply(solutions[k], b_int, res);
+    }
+    Logger::get().endEvent(solve_interior);
+
+    Vec zero(Aovlp.N());
+    std::vector<Vec> combined_vectors(eigenvectors.size(), zero);
+    for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
+      for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
+        combined_vectors[k][ring_to_subdomain[i]] = eigenvectors[k][i];
       }
-
-      for (std::size_t i = 0; i < Aint.N(); ++i) {
-        if (boundary_dst[interior_to_subdomain[i]] == 2 * overlap) {
-          for (auto ci = Aint[i].begin(); ci != Aint[i].end(); ++ci) {
-            *ci = (ci.index() == i) ? 1.0 : 0.0;
-          }
-        }
+      for (std::size_t i = 0; i < interior_to_subdomain.size(); ++i) {
+        combined_vectors[k][interior_to_subdomain[i]] = solutions[k][i];
       }
-
-      auto *factorise_interior = Logger::get().registerEvent("GenEO", "factorise interior");
-      auto *solve_interior = Logger::get().registerEvent("GenEO", "solve interior");
-      Logger::get().startEvent(factorise_interior);
-      Dune::UMFPack interior_solver(Aint);
-      Logger::get().endEvent(factorise_interior);
-
-      Vec x_int(Aint.N());
-      x_int = 0.0;
-      std::vector<Vec> solutions(eigenvectors.size(), x_int);
-      Vec b_int(Aint.N());
-
-      Logger::get().startEvent(solve_interior);
-      for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
-        b_int = 0;
-        for (std::size_t i = 0; i < eigenvectors[k].N(); ++i) {
-          if (boundary_dst[ring_to_subdomain[i]] == 2 * overlap) {
-            assert(subdomain_to_interior.contains(ring_to_subdomain[i]) && "Interior and ring must overlap");
-            b_int[subdomain_to_interior[ring_to_subdomain[i]]] = eigenvectors[k][i];
-          }
-        }
-
-        Dune::InverseOperatorResult res;
-        interior_solver.apply(solutions[k], b_int, res);
-      }
-      Logger::get().endEvent(solve_interior);
-
-      Vec zero(Aovlp.N());
-      std::vector<Vec> combined_vectors(eigenvectors.size(), zero);
-      for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
-        for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-          combined_vectors[k][ring_to_subdomain[i]] = eigenvectors[k][i];
-        }
-        for (std::size_t i = 0; i < interior_to_subdomain.size(); ++i) {
-          combined_vectors[k][interior_to_subdomain[i]] = solutions[k][i];
-        }
 
 #ifndef NDEBUG
-        double sum = 0;
-        for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-          sum += std::pow(eigenvectors[k][i] - combined_vectors[k][ring_to_subdomain[i]], 2);
-        }
-        sum = std::sqrt(sum);
-        if (sum > 1e-12) {
-          spdlog::get("all_ranks")->warn("Eigenvector on ring and computed solution in interior differ at boundary, difference is {}", sum);
-        }
-#endif
+      double sum = 0;
+      for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
+        sum += std::pow(eigenvectors[k][i] - combined_vectors[k][ring_to_subdomain[i]], 2);
       }
-
-      eigenvectors = std::move(combined_vectors);
+      sum = std::sqrt(sum);
+      if (sum > 1e-12) {
+        spdlog::get("all_ranks")->warn("Eigenvector on ring and computed solution in interior differ at boundary, difference is {}", sum);
+      }
+#endif
     }
+
+    eigenvectors = std::move(combined_vectors);
   }
 
   for (auto &vec : eigenvectors) {
