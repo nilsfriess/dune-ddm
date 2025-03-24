@@ -65,13 +65,9 @@ add_subdirectory(${blopex_all_SOURCE_DIR}/blopex_abstract)
 # )
 # add_dependencies(BLOPEX BLOPEX_BUILD)
 
-add_library(logger src/logger.cc)
-target_include_directories(logger PUBLIC ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(logger PUBLIC MPI::MPI_C spdlog::spdlog)
-
-add_library(dune-ddm src/logger.cc)
-target_include_directories(dune-ddm PUBLIC ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dune-ddm PUBLIC MPI::MPI_C Dune::ISTL spdlog::spdlog Spectra BLOPEX)
+add_library(dune-ddm INTERFACE)
+target_include_directories(dune-ddm PUBLIC INTERFACE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog Spectra BLOPEX)
 
 add_subdirectory(examples)
 add_subdirectory(tests)
