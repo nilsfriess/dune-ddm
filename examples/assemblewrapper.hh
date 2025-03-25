@@ -187,7 +187,7 @@ public:
   void jacobian_boundary(const IG &ig, const LFSU &lfsu_s, const X &x_s, const LFSV &lfsv_s, M &mat_ss) const
   {
     spdlog::trace("Called jacobian_boundary");
-    if (not integrateOnlyNeumannCorrection/* or should_do_element(lfsu_s)*/) {
+    if (not integrateOnlyNeumannCorrection or should_do_element(lfsu_s)) {
       Dune::PDELab::LocalOperatorApply::jacobianBoundary(*lop, ig, lfsu_s, x_s, lfsv_s, mat_ss);
     }
   }
