@@ -185,7 +185,7 @@ int main(int argc, char *argv[])
   const auto &helper = Dune::MPIHelper::instance(argc, argv);
   setup_loggers(helper.rank(), argc, argv);
 
-  Dune::ParameterTree ptree(helper.rank() == 0);
+  Dune::ParameterTree ptree;
   Dune::ParameterTreeParser ptreeparser;
   ptreeparser.readOptions(argc, argv, ptree);
   const auto verbose = ptree.get("verbose", 0);
