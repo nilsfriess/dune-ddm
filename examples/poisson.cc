@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <dune/istl/operators.hh>
 #define EIGEN_DEFAULT_DENSE_INDEX_TYPE std::int64_t
 
 #include "logger.hh" // Must be included at the very top if MPI calls should be logged
@@ -17,6 +18,7 @@
 #endif
 
 #define USE_UGGRID 0 // Set to zero to use YASPGrid
+#define GRID_DIM 3
 #define GRID_OVERLAP 0
 
 #include <dune/common/parallel/communicator.hh>
@@ -88,12 +90,16 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
   const auto meshfile = ptree.get("meshfile", "../data/unitsquare.msh");
   const auto verbose = ptree.get("verbose", 0);
 
-  using Grid = Dune::UGGrid<2>;
+  using Grid = Dune::UGGrid<GRID_DIM>;
   auto grid = Dune::GmshReader<Grid>::read(meshfile, verbose > 2, false);
 #else
-  using Grid = Dune::YaspGrid<2>;
+  using Grid = Dune::YaspGrid<GRID_DIM>;
   const auto gridsize = ptree.get("gridsize", 32);
+#if GRID_DIM == 2
   auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0}, {gridsize, gridsize}, std::bitset<2>(0ULL), GRID_OVERLAP));
+#elif GRID_DIM == 3
+  auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0, 0.5}, {gridsize, gridsize, gridsize / 2}, std::bitset<3>(0ULL), GRID_OVERLAP));
+#endif
 #endif
 
   grid->globalRefine(ptree.get("serial_refine", 2));
@@ -179,7 +185,7 @@ int main(int argc, char *argv[])
   const auto &helper = Dune::MPIHelper::instance(argc, argv);
   setup_loggers(helper.rank(), argc, argv);
 
-  Dune::ParameterTree ptree;
+  Dune::ParameterTree ptree(helper.rank() == 0);
   Dune::ParameterTreeParser ptreeparser;
   ptreeparser.readOptions(argc, argv, ptree);
   const auto verbose = ptree.get("verbose", 0);
@@ -197,7 +203,7 @@ int main(int argc, char *argv[])
   // Now we have a set of remote indices on the non-overlapping grid, and a stiffness matrix with the correct sparsity pattern.
   // We can use those to find out which dofs we need to treat differently when assembling the matrix. This is all done in the
   // following method.
-  const auto [remote_ncorr_triples, own_ncorr_triples] = problem.assembleJacobian(remoteindices, ptree.get("overlap", 1));
+  const auto [remote_ncorr_triples, own_ncorr_triples, interior_dof_mask] = problem.assembleJacobian(remoteindices, ptree.get("overlap", 1));
 
   using Vec = decltype(problem)::Vec;
   using Mat = decltype(problem)::Mat;
@@ -311,8 +317,8 @@ int main(int argc, char *argv[])
     prec.add(nicolaides);
   }
   else if (coarsespace == "geneo") {
-    auto basis_vecs = buildGenEOCoarseSpace(schwarz->getOverlappingIndices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, native(problem.getDirichletMask()),
-                                            *schwarz->getPartitionOfUnity(), ptree);
+    auto basis_vecs = buildGenEOCoarseSpace(schwarz->getOverlappingIndices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, interior_dof_mask,
+                                            native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(), ptree);
     native(visuvec) = basis_vecs[ptree.get("n_vis", 0)]; // Save one vectors for visualisation
 
     auto geneo = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
@@ -381,6 +387,10 @@ int main(int argc, char *argv[])
     // Plot the finite element solution
     Dune::P1VTKFunction solutionFunc(problem.getEntitySet(), problem.getX(), "Solution");
     writer.addVertexData(Dune::stackobject_to_shared_ptr(solutionFunc));
+
+    PermeabilityAdapter permdgf(problem.getEntitySet(), problem.getUnderlyingProblem()); // This is defined in PDELab but not in a namespace
+    typedef Dune::PDELab::VTKGridFunctionAdapter<decltype(permdgf)> PermVTKDGF;
+    writer.addCellData(std::make_shared<PermVTKDGF>(permdgf, "Permeability"));
 
     writer.write(ptree.get("filename", "Poisson"));
   }

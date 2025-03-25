@@ -35,35 +35,68 @@ public:
   typename Traits::PermTensorType A(const typename Traits::ElementType &e, const typename Traits::DomainType &x) const
   {
     auto xg = e.geometry().global(x);
-    const auto nx = 8;
+    if (GridView::dimension == 2) {
+      const auto nx = 8;
 
-    RF Dglobal = 1;
-    if ((((int)(xg[0] * nx) % 2 != 0) && ((int)(xg[1] * nx) % 2 != 0)) || (((int)(xg[0] * nx) % 2 == 0) && ((int)(xg[1] * nx) % 2 == 0))) {
-      Dglobal = 1;
-    }
-
-    typename Traits::PermTensorType I;
-    for (std::size_t i = 0; i < Traits::dimDomain; i++) {
-      for (std::size_t j = 0; j < Traits::dimDomain; j++) {
-        I[i][j] = (i == j) ? Dglobal : 0;
+      RF Dglobal = 1;
+      if ((((int)(xg[0] * nx) % 2 != 0) && ((int)(xg[1] * nx) % 2 != 0)) || (((int)(xg[0] * nx) % 2 == 0) && ((int)(xg[1] * nx) % 2 == 0))) {
+        Dglobal = 1;
       }
+
+      typename Traits::PermTensorType I;
+      for (std::size_t i = 0; i < Traits::dimDomain; i++) {
+        for (std::size_t j = 0; j < Traits::dimDomain; j++) {
+          I[i][j] = (i == j) ? Dglobal : 0;
+        }
+      }
+      return I;
     }
-    return I;
+    else if (GridView::dimension == 3) {
+      const auto radius = 0.02;
+
+      const auto square = [](auto &&v) { return v * v; };
+
+      RF val = 1;
+      int divx = 9;
+      int divy = 9;
+      for (int i = 0; i < divx - 1; ++i) {
+        for (int j = 0; j < divy - 1; ++j) {
+          typename Traits::DomainType centre{(i + 1.) / divx, (j + 1.) / divy};
+
+          if (square(xg[0] - centre[0]) + square(xg[1] - centre[1]) < square(radius)) {
+            val = 1e6;
+          }
+        }
+      }
+
+      typename Traits::PermTensorType I;
+      for (std::size_t i = 0; i < Traits::dimDomain; i++) {
+        for (std::size_t j = 0; j < Traits::dimDomain; j++) {
+          I[i][j] = (i == j) ? val : 0;
+        }
+      }
+      return I;
+    }
   }
 
-  typename Traits::RangeFieldType f(const typename Traits::ElementType &, const typename Traits::DomainType &) const { return 1.0; }
+  typename Traits::RangeFieldType f(const typename Traits::ElementType &, const typename Traits::DomainType &) const { return 0.0; }
 
-  typename Traits::RangeFieldType g(const typename Traits::ElementType &, const typename Traits::DomainType &) const { return 0.0; }
+  typename Traits::RangeFieldType g(const typename Traits::ElementType &e, const typename Traits::DomainType &xlocal) const
+  {
+    auto xglobal = e.geometry().global(xlocal);
+    return 1. - xglobal[0];
+  }
 
   BC bctype(const typename Traits::IntersectionType &is, const typename Traits::IntersectionDomainType &x) const
   {
-    auto center = is.geometry().global(x);
-    if (center[0] < 1e-6 or center[1] < 1e-6) {
-      return BC::Dirichlet;
+    auto xglobal = is.geometry().global(x);
+    if (xglobal[0] < 1e-6) {
+      return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet;
     }
-    else {
-      return BC::Neumann;
+    if (xglobal[0] > 1.0 - 1e-6) {
+      return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet;
     }
+    return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Neumann;
   }
 };
 
@@ -147,7 +180,7 @@ public:
 
   using ES = Dune::PDELab::NonOverlappingEntitySet<GridView>; // Skip ghost elements during assembly
 
-  // using ModelProblem = PoissonModelProblem<ES, RF>;
+  //using ModelProblem = PoissonModelProblem<ES, RF>;
   using ModelProblem = IslandsModelProblem<ES, RF>;
   using BC = Dune::PDELab::ConvectionDiffusionBoundaryConditionAdapter<ModelProblem>;
 
@@ -207,7 +240,7 @@ public:
 
   // TODO: This function is a horrible, inefficient mess
   template <class RemoteIndices>
-  std::pair<std::vector<TripleWithRank>, std::vector<TripleWithRank>> assembleJacobian(const RemoteIndices &remoteids, int overlap)
+  std::tuple<std::vector<TripleWithRank>, std::vector<TripleWithRank>, std::vector<bool>> assembleJacobian(const RemoteIndices &remoteids, int overlap)
   {
     using Dune::PDELab::Backend::native;
 
@@ -220,15 +253,15 @@ public:
 
     const auto &paridxs = remoteids.sourceIndexSet();
 
-#if 1
     const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
     Dune::Interface interface;
     interface.build(remoteids, allAttributes, allAttributes);
     Dune::VariableSizeCommunicator communicator(interface);
     IdentifyBoundaryDataHandle ibdh(native(*As), paridxs, ownrank);
     communicator.forward(ibdh);
-    auto subdomain_boundary_mask_for_rank = ibdh.getBoundaryMaskForRank();
 
+#if 1
+    auto subdomain_boundary_mask_for_rank = ibdh.getBoundaryMaskForRank();
     std::map<int, std::vector<int>> boundary_dst_for_rank;
     for (const auto &[rank, mask] : subdomain_boundary_mask_for_rank) {
       boundary_dst_for_rank[rank].resize(paridxs.size(), std::numeric_limits<int>::max() - 1);
@@ -240,7 +273,7 @@ public:
         }
       }
 
-      for (int round = 0; round <= overlap + 3; ++round) {
+      for (int round = 0; round <= overlap + 6; ++round) {
         for (int i = 0; i < boundary_dst_for_rank[rank].size(); ++i) {
           for (auto cIt = native(*As)[i].begin(); cIt != native(*As)[i].end(); ++cIt) {
             boundary_dst_for_rank[rank][i] = std::min(boundary_dst_for_rank[rank][i], boundary_dst_for_rank[rank][cIt.index()] + 1); // Increase distance from boundary by one
@@ -301,7 +334,6 @@ public:
              that we get doing it the way it's done above. Would be good to know why the two approaches differ.
     */
 
-    const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
     // First create a boolean mask that marks all indices on the subdomain boundary of each of our neighbouring ranks
     std::map<int, std::vector<bool>> boundary_mask_for_rank;
     {
@@ -459,11 +491,16 @@ public:
     go->jacobian(*x, innerA);
 
     auto &An = native(innerA);
+    std::vector<bool> interior(An.N(), false);
     for (auto ri = An.begin(); ri != An.end(); ++ri) {
+      auto row = ri.index();
+      if (boundary_dst[row] > overlap) {
+        interior[row] = true;
+      }
+
       for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
         if (std::abs(*ci) > 1e-12) {
           auto col = ci.index();
-          auto row = ri.index();
 
           if (boundary_dst[row] == overlap and boundary_dst[row] == boundary_dst[col]) {
             all_own_triples.push_back(TripleWithRank{.rank = ownrank, .row = row, .col = col, .val = *ci});
@@ -472,7 +509,7 @@ public:
       }
     }
 
-    return {all_triples, all_own_triples};
+    return {all_triples, all_own_triples, interior};
   }
 
   Vec &getXVec() { return *x0; }
@@ -485,6 +522,8 @@ public:
 
   const GFS &getGFS() const { return gfs; }
   const ES &getEntitySet() const { return es; }
+
+  const ModelProblem &getUnderlyingProblem() const { return modelProblem; }
 
 private:
   ES es;
