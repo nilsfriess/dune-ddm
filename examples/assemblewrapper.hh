@@ -164,33 +164,8 @@ public:
   {
     spdlog::trace("Called jacobian_volume");
 
-    if (not integrateOnlyNeumannCorrection) {
-      // We're in "normal" integration mode, so we just proceed as usual
+    if (not integrateOnlyNeumannCorrection or should_do_element(lfsu)) {
       Dune::PDELab::LocalOperatorApply::jacobianVolume(*lop, eg, lfsu, x, lfsv, mat);
-    }
-    else {
-      // We're in "only integrate the Neumann correction terms" mode, so first check, if we should integrate this element.
-      Dune::PDELab::LFSIndexCache cache(lfsu);
-      cache.update();
-
-      bool hasDofAtBoundary = false;
-      bool hasDofOutsideBoundary = false;
-      for (std::size_t i = 0; i < cache.size(); ++i) {
-        auto dofidx = cache.containerIndex(i)[0];
-
-        if ((*boundary_mask)[dofidx]) {
-          hasDofAtBoundary = true;
-        }
-
-        if ((*outside_mask)[dofidx]) {
-          hasDofOutsideBoundary = true;
-        }
-      }
-
-      if (hasDofAtBoundary and hasDofOutsideBoundary) {
-        // Found an element that is required when constructing the Neumann correction, so we assemble
-        Dune::PDELab::LocalOperatorApply::jacobianVolume(*lop, eg, lfsu, x, lfsv, mat);
-      }
     }
   }
 
@@ -212,7 +187,9 @@ public:
   void jacobian_boundary(const IG &ig, const LFSU &lfsu_s, const X &x_s, const LFSV &lfsv_s, M &mat_ss) const
   {
     spdlog::trace("Called jacobian_boundary");
-    Dune::PDELab::LocalOperatorApply::jacobianBoundary(*lop, ig, lfsu_s, x_s, lfsv_s, mat_ss);
+    if (not integrateOnlyNeumannCorrection/* or should_do_element(lfsu_s)*/) {
+      Dune::PDELab::LocalOperatorApply::jacobianBoundary(*lop, ig, lfsu_s, x_s, lfsv_s, mat_ss);
+    }
   }
 
   void setMasks(const std::vector<bool> *boundary_mask, const std::vector<bool> *outside_mask)
@@ -224,6 +201,34 @@ public:
   }
 
 private:
+  template <class LFSU>
+  bool should_do_element(const LFSU &lfsu) const
+  {
+    // We're in "only integrate the Neumann correction terms" mode, so first check, if we should integrate this element.
+    Dune::PDELab::LFSIndexCache cache(lfsu);
+    cache.update();
+
+    bool hasDofAtBoundary = false;
+    bool hasDofOutsideBoundary = false;
+    for (std::size_t i = 0; i < cache.size(); ++i) {
+      auto dofidx = cache.containerIndex(i)[0];
+
+      if ((*boundary_mask)[dofidx]) {
+        hasDofAtBoundary = true;
+      }
+
+      if ((*outside_mask)[dofidx]) {
+        hasDofOutsideBoundary = true;
+      }
+
+      if (hasDofAtBoundary and hasDofOutsideBoundary) {
+        return true; // Break early if we already found out that this element should be integrated over
+      }
+    }
+
+    return hasDofAtBoundary and hasDofOutsideBoundary;
+  }
+
   const std::vector<bool> *boundary_mask{nullptr};
   const std::vector<bool> *outside_mask{nullptr};
 
