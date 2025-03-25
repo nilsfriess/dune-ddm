@@ -275,17 +275,16 @@ private:
         all_all_comm->forward(advdh);
         Logger::get().endEvent(y_event);
 
-        Logger::get().startEvent(dot_vecs_event);
-
         // Again, we skip the computation if we know it will be zero. In fact, these dot products are often
         // the longest taking step in this loop, so skipping unecessary computations here is crucial.
         // Note that my_rows is initialised with zeros, so just skipping here is fine.
         if (col == rank or neighbours[col]) {
+          Logger::get().startEvent(dot_vecs_event);
           for (std::size_t k = 0; k < num_t; ++k) {
             my_rows[k][offset_per_rank[col] + i] = restr_vecs[k] * y;
           }
+          Logger::get().endEvent(dot_vecs_event);
         }
-        Logger::get().endEvent(dot_vecs_event);
       }
     }
 
