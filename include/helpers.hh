@@ -1,7 +1,10 @@
 #pragma once
 
+#include <spdlog/spdlog.h>
+
 #include <dune/istl/bcrsmatrix.hh>
 
+#include <dune/istl/io.hh>
 #include <mpi.h>
 
 #include <memory>
@@ -61,7 +64,7 @@ RemoteParallelIndices<RemoteIndices> makeRemoteParallelIndices(std::shared_ptr<R
     Pass 0 to include all values.
 */
 template <class Vec>
-Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_Comm comm, int verbose = 0, double clip_tolerance = 1e-12)
+Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_Comm comm, int verbose = 0, double clip_tolerance = 0)
 {
   int rank = 0;
   int size = 0;
@@ -72,19 +75,19 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
     DUNE_THROW(Dune::Exception, "No rows to build matrix from");
   }
 
-  int rowsize = rows[0].N();
+  std::size_t columns = rows[0].N();
   for (const auto &row : rows) {
-    if (row.N() != rowsize) {
+    if (row.N() != columns) {
       DUNE_THROW(Dune::Exception, "Rows have different sizes");
     }
   }
 
   // Check that all rows on all ranks have the same size
-  int min_rowsize = 0;
-  int max_rowsize = 0;
-  MPI_Allreduce(&rowsize, &min_rowsize, 1, MPI_INT, MPI_MIN, comm);
-  MPI_Allreduce(&rowsize, &max_rowsize, 1, MPI_INT, MPI_MAX, comm);
-  if (min_rowsize != max_rowsize) {
+  int min_columns = 0;
+  int max_columns = 0;
+  MPI_Allreduce(&columns, &min_columns, 1, MPI_INT, MPI_MIN, comm);
+  MPI_Allreduce(&columns, &max_columns, 1, MPI_INT, MPI_MAX, comm);
+  if (min_columns != max_columns) {
     DUNE_THROW(Dune::Exception, "Rows have different sizes");
   }
 
@@ -101,10 +104,10 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   MPI_Type_commit(&triple_type);
 
   std::vector<TripleWithRank> my_triples;
-  my_triples.reserve(rowsize * rows.size());
+  my_triples.reserve(columns * rows.size());
   for (std::size_t i = 0; i < rows.size(); ++i) {
     const auto &row = rows[i];
-    for (std::size_t col = 0; col < rowsize; ++col) {
+    for (std::size_t col = 0; col < columns; ++col) {
       if (std::abs(row[col]) >= clip_tolerance) {
         my_triples.push_back({rank, i, col, row[col]});
       }
@@ -112,17 +115,23 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   }
 
   // Now gather the number of local triples from each process
-  std::vector<int> num_triples;
+  std::vector<std::size_t> num_triples;
   if (rank == 0) {
     num_triples.resize(size);
   }
-  int num_my_triples = static_cast<int>(my_triples.size());
-  MPI_Gather(&num_my_triples, 1, MPI_INT, num_triples.data(), 1, MPI_INT, 0, comm);
+  auto num_my_triples = my_triples.size();
+  MPI_Gather(&num_my_triples, 1, MPI_UNSIGNED_LONG, rank == 0 ? num_triples.data() : nullptr, 1, MPI_UNSIGNED_LONG, 0, comm);
 
   std::vector<int> displacements;
   if (rank == 0) {
+    std::vector<std::size_t> displacements_sizet(size);
+    std::exclusive_scan(num_triples.begin(), num_triples.end(), displacements_sizet.begin(), 0);
     displacements.resize(size);
-    std::exclusive_scan(num_triples.begin(), num_triples.end(), displacements.begin(), 0);
+    std::transform(displacements_sizet.begin(), displacements_sizet.end(), displacements.begin(), [](auto &&v) { return static_cast<int>(v); });
+
+    for (std::size_t i = 0; i < num_triples.size(); ++i) {
+      spdlog::debug("From {} got {} triples", i, num_triples[i]);
+    }
   }
 
   std::vector<TripleWithRank> all_triples;
@@ -130,11 +139,11 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
     auto sum = std::reduce(num_triples.begin(), num_triples.end());
     all_triples.resize(sum);
 
-    if (verbose > 2) {
-      std::cout << "[" << rank << "] Total " << sum << " nonzeros in matrix built on rank 0\n";
-    }
+    spdlog::info("Total {} nonzeros in matrix built on rank 0", sum);
   }
-  MPI_Gatherv(my_triples.data(), static_cast<int>(my_triples.size()), triple_type, all_triples.data(), num_triples.data(), displacements.data(), triple_type, 0, comm);
+  std::vector<int> num_triples_int(num_triples.size());
+  std::transform(num_triples.begin(), num_triples.end(), num_triples_int.begin(), [](auto &&v) { return static_cast<int>(v); });
+  MPI_Gatherv(my_triples.data(), static_cast<int>(my_triples.size()), triple_type, all_triples.data(), num_triples_int.data(), displacements.data(), triple_type, 0, comm);
 
   Dune::BCRSMatrix<double> A0;
 
@@ -153,7 +162,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
 
     A0.setBuildMode(Dune::BCRSMatrix<double>::implicit);
     A0.setImplicitBuildModeParameters(all_triples.size() / size, 0.2); // TODO: Make this robust
-    A0.setSize(row_offsets[size - 1] + rows_per_rank[size - 1], rowsize);
+    A0.setSize(row_offsets[size - 1] + rows_per_rank[size - 1], columns);
 
     for (const auto &triple : all_triples) {
       A0.entry(row_offsets[triple.rank] + triple.row, triple.col) = triple.val;
