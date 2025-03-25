@@ -60,8 +60,8 @@ RemoteParallelIndices<RemoteIndices> makeRemoteParallelIndices(std::shared_ptr<R
     This function must be called collectively on the communicator \p comm. On rank 0 the returned
     matrix will contain all the rows; on all other ranks the returned matrix is empty.
 
-    Only values larger than or equal to (in absolute value) \p clip_tolerance will end up in the matrix.
-    Pass 0 to include all values.
+    Only values larger than (in absolute value) \p clip_tolerance will end up in the matrix.
+    Pass a negative value to include all values.
 */
 template <class Vec>
 Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_Comm comm, int verbose = 0, double clip_tolerance = 0)
@@ -108,7 +108,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   for (std::size_t i = 0; i < rows.size(); ++i) {
     const auto &row = rows[i];
     for (std::size_t col = 0; col < columns; ++col) {
-      if (std::abs(row[col]) >= clip_tolerance) {
+      if (std::abs(row[col]) > clip_tolerance) {
         my_triples.push_back({rank, i, col, row[col]});
       }
     }
