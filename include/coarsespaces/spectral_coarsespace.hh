@@ -11,7 +11,9 @@
 
 #include <dune/istl/solver.hh>
 #include <mpi.h>
+#include <string>
 #include <temp_multivector.h>
+
 #include <vector>
 
 #include <lobpcg.h>
@@ -146,13 +148,22 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
 
     // Find largest eigenvalue of the shifted problem (which corresponds to the smallest of the original problem)
     // with max. 1000 iterations and sort the resulting eigenvalues from small to large.
-    auto nconv = geigs.compute(Spectra::SortRule::LargestMagn, 1000, tolerance, Spectra::SortRule::SmallestAlge);
+    Eigen::Index nconv{};
+    try {
+      nconv = geigs.compute(Spectra::SortRule::LargestMagn, 1000, tolerance, Spectra::SortRule::SmallestAlge);
+    }
+    catch (const std::runtime_error &e) {
+      spdlog::get("all_ranks")->error("ERROR: Computation of eigenvalues failed (reason: {})", e.what());
+      MPI_Abort(MPI_COMM_WORLD, 5);
+    }
 
     if (geigs.info() == Spectra::CompInfo::Successful) {
       const auto evalues = geigs.eigenvalues();
       const auto evecs = geigs.eigenvectors();
 
-      spdlog::get("all_ranks")->info("Computed eigenvalues, smallest {}, largest {}", evalues[0], evalues[evalues.size() - 1]);
+      auto eigstring = std::accumulate(evalues.begin() + 1, evalues.end(), std::to_string(evalues[0]), [](const std::string &a, double b) { return a + "," + std::to_string(b); });
+
+      spdlog::get("all_ranks")->info("Computed eigenvalues: {}", eigstring);
 
       Vec vec(evecs.rows());
       eigenvectors.resize(nconv);
@@ -273,6 +284,10 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
   else {
     assert(false && "Unreachable");
     MPI_Abort(MPI_COMM_WORLD, 2);
+  }
+
+  for (auto &eigenvector : eigenvectors) {
+    eigenvector *= 1. / eigenvector.two_norm();
   }
 
   return eigenvectors;
