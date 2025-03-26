@@ -128,8 +128,8 @@ public:
   std::vector<bool> getBoundaryMask() const
   {
     std::vector<bool> boundaryMask(paridxs.size(), false);
-    for (std::size_t i = 0; i < boundaryMask.size(); ++i) {
-      for (const auto &[rank, mask] : boundaryMaskForRank) {
+    for (const auto &[rank, mask] : boundaryMaskForRank) {
+      for (std::size_t i = 0; i < boundaryMask.size(); ++i) {
         boundaryMask[i] = boundaryMask[i] || mask[i];
       }
     }
