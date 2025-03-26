@@ -1,5 +1,4 @@
 #include <cstddef>
-#include <dune/istl/operators.hh>
 #define EIGEN_DEFAULT_DENSE_INDEX_TYPE std::int64_t
 
 #include "logger.hh" // Must be included at the very top if MPI calls should be logged
