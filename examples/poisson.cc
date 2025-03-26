@@ -401,6 +401,10 @@ int main(int argc, char *argv[])
     Dune::P0VTKFunction rankFunc(problem.getEntitySet(), rankVec, "Rank");
     writer.addCellData(Dune::stackobject_to_shared_ptr(rankFunc));
 
+    // Write interior cells
+    Dune::P1VTKFunction interiorFunc(problem.getEntitySet(), interior_dof_mask, "Interior");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(interiorFunc));
+
     // Plot the finite element solution
     Dune::P1VTKFunction residualFunc(problem.getEntitySet(), problem.getD(), "Residual");
     writer.addVertexData(Dune::stackobject_to_shared_ptr(residualFunc));
@@ -411,7 +415,7 @@ int main(int argc, char *argv[])
 
     PermeabilityAdapter permdgf(problem.getEntitySet(), problem.getUnderlyingProblem()); // This is defined in PDELab but not in a namespace
     typedef Dune::PDELab::VTKGridFunctionAdapter<decltype(permdgf)> PermVTKDGF;
-    writer.addCellData(std::make_shared<PermVTKDGF>(permdgf, "Permeability"));
+    writer.addCellData(std::make_shared<PermVTKDGF>(permdgf, "log(K)"));
 
     writer.write(ptree.get("filename", "Poisson"));
   }
