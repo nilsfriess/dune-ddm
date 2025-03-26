@@ -5,6 +5,7 @@
 #include <Spectra/MatOp/SymShiftInvert.h>
 #include <Spectra/SymGEigsShiftSolver.h>
 
+#include <algorithm>
 #include <dune/common/fvector.hh>
 #include <dune/istl/bvector.hh>
 #include <dune/istl/foreach.hh>
@@ -21,31 +22,6 @@
 #include "fakemultivec.hh"
 #include "multivec.hh"
 #include "spdlog/spdlog.h"
-
-// struct WrappedVec {
-//   using field_type = double;
-//   using size_type = std::size_t;
-//   using block_type = double;
-
-//   Dune::FieldVector<double, 1> *data;
-//   std::size_t N;
-
-//   void axpy(double w, const WrappedVec &v)
-//   {
-//     for (std::size_t i = 0; i < N; ++i) {
-//       data[i] += w * v.data[i];
-//     }
-//   }
-
-//   void operator*=(double a)
-//   {
-//     for (std::size_t i = 0; i < N; ++i) {
-//       data[i] *= a;
-//     }
-//   }
-//   double &operator[](std::size_t i) { return data[i]; }
-//   const double &operator[](std::size_t i) const { return data[i]; }
-// };
 
 extern "C" { // Tell the linker that LAPACK functions are mangled as C functions
 BlopexInt dsygv_(BlopexInt *itype, char *jobz, char *uplo, BlopexInt *n, double *a, BlopexInt *lda, double *b, BlopexInt *ldb, double *w, double *work, BlopexInt *lwork, BlopexInt *info);
@@ -99,6 +75,15 @@ void applyPreconditioner(void *T_, void *r_, void *Tr_)
   }
 }
 
+// Helper to convert floats to string because std::to_string outputs with low precision
+template <typename T>
+std::string to_string_with_precision(const T a_value)
+{
+  std::ostringstream out;
+  out << a_value;
+  return std::move(out).str();
+}
+
 template <class Vec, class Mat, class Eigensolver, class Prec = void>
 std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, long nev, const Dune::ParameterTree &ptree, Prec *prec = nullptr)
 {
@@ -115,7 +100,7 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
     std::vector<Triplet> triplets;
     triplets.reserve(A.nonzeroes());
     Dune::flatMatrixForEach(A, [&](auto &&entry, std::size_t i, std::size_t j) {
-      if (std::abs(entry) > 1e-16) {
+      if (std::abs(entry) > 0) {
         triplets.push_back({static_cast<int>(i), static_cast<int>(j), entry});
       }
     });
@@ -124,7 +109,7 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
     triplets.clear();
     triplets.reserve(A.nonzeroes());
     Dune::flatMatrixForEach(B, [&](auto &&entry, std::size_t i, std::size_t j) {
-      if (std::abs(entry) > 1e-16) {
+      if (std::abs(entry) > 0) {
         triplets.push_back({static_cast<int>(i), static_cast<int>(j), entry});
       }
     });
@@ -133,7 +118,7 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
     A_.makeCompressed();
     B_.makeCompressed();
 
-    spdlog::info("nnz(A) = {}, nnz(B) = {}", A_.nonZeros(), B_.nonZeros());
+    spdlog::get("all_ranks")->debug("Solving eigenproblem Ax=lBx of size {} with nnz(A) = {}, nnz(B) = {}", A_.rows(), A_.nonZeros(), B_.nonZeros());
 
     using OpType = Spectra::SymShiftInvert<double, Eigen::Sparse, Eigen::Sparse>;
     using BOpType = Spectra::SparseSymMatProd<double>;
@@ -161,9 +146,18 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
       const auto evalues = geigs.eigenvalues();
       const auto evecs = geigs.eigenvectors();
 
-      auto eigstring = std::accumulate(evalues.begin() + 1, evalues.end(), std::to_string(evalues[0]), [](const std::string &a, double b) { return a + "," + std::to_string(b); });
+      if (spdlog::get("all_ranks")->level() <= spdlog::level::debug) {
+        auto eigstring = std::accumulate(evalues.begin() + 1, evalues.end(), to_string_with_precision(evalues[0]), [](const std::string &a, double b) { return a + ", " + std::to_string(b); });
 
-      spdlog::get("all_ranks")->info("Computed eigenvalues: {}", eigstring);
+        spdlog::get("all_ranks")->debug("Computed eigenvalues: {}", eigstring);
+      }
+      else {
+        spdlog::get("all_ranks")->info("Computed eigenvalues: smallest {}, largest {}", evalues[0], evalues[evalues.size() - 1]);
+      }
+
+      if (std::any_of(evalues.begin(), evalues.end(), [](auto x) { return x < -1e-5; })) {
+        spdlog::get("all_ranks")->warn("Computed a negative eigenvalue");
+      }
 
       Vec vec(evecs.rows());
       eigenvectors.resize(nconv);

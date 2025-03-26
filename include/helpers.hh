@@ -4,9 +4,7 @@
 
 #include <dune/istl/bcrsmatrix.hh>
 
-#include <dune/istl/io.hh>
 #include <mpi.h>
-
 #include <memory>
 #include <utility>
 #include <vector>
@@ -130,7 +128,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
     std::transform(displacements_sizet.begin(), displacements_sizet.end(), displacements.begin(), [](auto &&v) { return static_cast<int>(v); });
 
     for (std::size_t i = 0; i < num_triples.size(); ++i) {
-      spdlog::debug("From {} got {} triples", i, num_triples[i]);
+      spdlog::trace("In gatherMatrixFromRows: From rank {} got {} triples", i, num_triples[i]);
     }
   }
 
@@ -139,7 +137,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
     auto sum = std::reduce(num_triples.begin(), num_triples.end());
     all_triples.resize(sum);
 
-    spdlog::info("Total {} nonzeros in matrix built on rank 0", sum);
+    spdlog::debug("Total {} nonzeros in matrix built on rank 0", sum);
   }
   std::vector<int> num_triples_int(num_triples.size());
   std::transform(num_triples.begin(), num_triples.end(), num_triples_int.begin(), [](auto &&v) { return static_cast<int>(v); });
@@ -176,7 +174,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
 
 /** @brief Overload for special case of one vector per rank */
 template <class Vec>
-Dune::BCRSMatrix<double> gatherMatrixFromRows(const Vec &row, MPI_Comm comm, int verbose = 0, double clip_tolerance = 1e-12)
+Dune::BCRSMatrix<double> gatherMatrixFromRows(const Vec &row, MPI_Comm comm, int verbose = 0, double clip_tolerance = 0)
 {
   return gatherMatrixFromRows(std::vector<Vec>{row}, comm, verbose, clip_tolerance);
 }

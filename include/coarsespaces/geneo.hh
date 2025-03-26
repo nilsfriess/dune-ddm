@@ -98,7 +98,7 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
         A[lrow][lcol] -= triple.val;
       }
       else {
-        spdlog::trace("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
+        spdlog::debug("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
       }
     }
 
@@ -322,7 +322,8 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
 
     auto interior_dofs = std::count_if(interior_ovlp_mask.begin(), interior_ovlp_mask.end(), [](auto &&val) { return val != 0; });
     spdlog::get("all_ranks")
-        ->info("Total dofs {}, interior dofs {}, ring dofs {}, ring+interior dofs {}", Aovlp.N(), interior_dofs, ring_to_subdomain.size(), (interior_dofs + ring_to_subdomain.size()));
+        ->debug("For GenEO ring problem: total dofs {}, interior dofs {}, ring dofs {}, ring+interior dofs {}", Aovlp.N(), interior_dofs, ring_to_subdomain.size(),
+                (interior_dofs + ring_to_subdomain.size()));
     std::vector<std::size_t> interior_to_subdomain(interior_dofs);
     std::size_t cnt = 0;
     for (std::size_t i = 0; i < interior_ovlp_mask.size(); ++i) {
