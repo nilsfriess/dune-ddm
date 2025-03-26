@@ -107,9 +107,9 @@ class IslandsModelProblem : public Dune::PDELab::ConvectionDiffusionModelProblem
 public:
   using Traits = typename Dune::PDELab::ConvectionDiffusionModelProblem<GridView, RF>::Traits;
 
-  typename Traits::PermTensorType A(const typename Traits::ElementType &e, const typename Traits::DomainType &xlocal) const
+  typename Traits::PermTensorType A(const typename Traits::ElementType &e, const typename Traits::DomainType &) const
   {
-    auto xg = e.geometry().global(xlocal);
+    auto xg = e.geometry().center();
 
     int ix = std::floor(15.0 * xg[0]);
     int iy = std::floor(15.0 * xg[1]);
@@ -180,7 +180,7 @@ public:
 
   using ES = Dune::PDELab::NonOverlappingEntitySet<GridView>; // Skip ghost elements during assembly
 
-  //using ModelProblem = PoissonModelProblem<ES, RF>;
+  // using ModelProblem = PoissonModelProblem<ES, RF>;
   using ModelProblem = IslandsModelProblem<ES, RF>;
   using BC = Dune::PDELab::ConvectionDiffusionBoundaryConditionAdapter<ModelProblem>;
 
@@ -260,6 +260,7 @@ public:
     IdentifyBoundaryDataHandle ibdh(native(*As), paridxs, ownrank);
     communicator.forward(ibdh);
 
+// TODO: Find out why this branch sometimes does not produce the same results as the other one
 #if 1
     auto subdomain_boundary_mask_for_rank = ibdh.getBoundaryMaskForRank();
     std::map<int, std::vector<int>> boundary_dst_for_rank;
@@ -273,7 +274,7 @@ public:
         }
       }
 
-      for (int round = 0; round <= overlap + 6; ++round) {
+      for (int round = 0; round <= overlap + 4; ++round) {
         for (int i = 0; i < boundary_dst_for_rank[rank].size(); ++i) {
           for (auto cIt = native(*As)[i].begin(); cIt != native(*As)[i].end(); ++cIt) {
             boundary_dst_for_rank[rank][i] = std::min(boundary_dst_for_rank[rank][i], boundary_dst_for_rank[rank][cIt.index()] + 1); // Increase distance from boundary by one
@@ -403,7 +404,7 @@ public:
             continue;
           }
 
-          if (std::abs(*ci) > 1e-12) {
+          if (std::abs(*ci) > 0) {
             cnt++;
           }
         }
@@ -417,7 +418,7 @@ public:
             continue;
           }
 
-          if (std::abs(*ci) > 1e-12) {
+          if (std::abs(*ci) > 0) {
             auto col = ci.index();
             auto row = ri.index();
 
@@ -470,7 +471,7 @@ public:
       }
     }
 
-    for (int round = 0; round <= overlap + 3; ++round) {
+    for (int round = 0; round <= overlap + 6; ++round) {
       for (int i = 0; i < boundary_dst.size(); ++i) {
         for (auto cIt = native(*As)[i].begin(); cIt != native(*As)[i].end(); ++cIt) {
           boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cIt.index()] + 1); // Increase distance from boundary by one
@@ -491,21 +492,23 @@ public:
     go->jacobian(*x, innerA);
 
     auto &An = native(innerA);
-    std::vector<bool> interior(An.N(), false);
     for (auto ri = An.begin(); ri != An.end(); ++ri) {
       auto row = ri.index();
-      if (boundary_dst[row] > overlap) {
-        interior[row] = true;
-      }
-
       for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-        if (std::abs(*ci) > 1e-12) {
+        if (std::abs(*ci) > 0) {
           auto col = ci.index();
 
           if (boundary_dst[row] == overlap and boundary_dst[row] == boundary_dst[col]) {
             all_own_triples.push_back(TripleWithRank{.rank = ownrank, .row = row, .col = col, .val = *ci});
           }
         }
+      }
+    }
+
+    std::vector<bool> interior(boundary_dst.size(), false);
+    for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
+      if (boundary_dst[i] > overlap) {
+        interior[i] = true;
       }
     }
 
