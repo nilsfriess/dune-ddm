@@ -201,17 +201,11 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
     for (auto ri = Aovlp.begin(); ri != Aovlp.end(); ++ri) {
       for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
         if (subdomain_to_ring.contains(ri.index()) && subdomain_to_ring.contains(ci.index())) {
-          A.entry(subdomain_to_ring[ri.index()], subdomain_to_ring[ci.index()]) = 0.0;
+          A.entry(subdomain_to_ring[ri.index()], subdomain_to_ring[ci.index()]) = *ci;
         }
       }
     }
     A.compress();
-
-    for (auto ri = A.begin(); ri != A.end(); ++ri) {
-      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-        *ci = Aovlp[ring_to_subdomain[ri.index()]][ring_to_subdomain[ci.index()]];
-      }
-    }
 
     // We again need to apply the Neumann corrections. First do the "outside" boundary ...
     for (const auto &triple : remote_ncorr_triples) {
@@ -226,6 +220,9 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
         if (subdomain_to_ring.contains(lrow) && subdomain_to_ring.contains(lcol)) {
           A[subdomain_to_ring[lrow]][subdomain_to_ring[lcol]] -= triple.val;
         }
+        else {
+          spdlog::get("all_ranks")->error("Global index ({}, {}) does not exist in ring", triple.row, triple.col);
+        }
       }
       else {
         spdlog::trace("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
@@ -235,6 +232,9 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
     for (const auto &triple : own_ncorr_triples) {
       if (subdomain_to_ring.contains(triple.row) && subdomain_to_ring.contains(triple.col)) {
         A[subdomain_to_ring[triple.row]][subdomain_to_ring[triple.col]] -= triple.val;
+      }
+      else {
+        spdlog::get("all_ranks")->error("Local index ({}, {}) does not exist in ring", triple.row, triple.col);
       }
     }
 
