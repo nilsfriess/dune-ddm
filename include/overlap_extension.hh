@@ -9,14 +9,15 @@
 #include <mpi.h>
 
 // Creates a new parallel index set from the given index set, using the same local/global indices but the "public" state of the local indices
-// will be modified according to the functor isPublic(int local_index) -> bool.
+// will be modified according to the functor isPublic(int local_index) -> bool. Note that indices that were public in the old index set will
+// also be set as public in the returned one.
 template <class ParallelIndexSet, class IsPublic>
-ParallelIndexSet modifyIndexSetPublicState(const ParallelIndexSet &indexSet, const IsPublic &isPublic)
+ParallelIndexSet modifyIndexSetPublicState(const ParallelIndexSet &indexSet, IsPublic &&isPublic)
 {
   ParallelIndexSet newIndexSet;
   newIndexSet.beginResize();
   for (const auto &idx : indexSet) {
-    newIndexSet.add(idx.global(), {idx.local().local(), idx.local().attribute(), isPublic(idx.local().local())});
+    newIndexSet.add(idx.global(), {idx.local().local(), idx.local().attribute(), idx.local().isPublic() or isPublic(idx.local().local())});
   }
   newIndexSet.endResize();
   return newIndexSet;
@@ -81,7 +82,7 @@ void extendOverlapOnce(ParallelIndexSet &paridxs, RemoteIndices &remoteids, std:
   std::map<int, std::set<int>> additional_neighbours;
   for (const auto &[gi, nbs] : dh.neighbours_for_gidx) {
     if (not paridxs.exists(gi)) {
-      continue; // We already care about indices that we already knew
+      continue; // We only care about indices that we already knew
     }
 
     const auto li = paridxs[gi].local().local();
@@ -179,8 +180,7 @@ RemoteParallelIndices<RemoteIndices> extendOverlap(const RemoteIndices &remoteid
     DUNE_THROW(Dune::Exception, "Size of matrix does not match size of parallel index set");
   }
 
-  static auto *overlap_family = Logger::get().registerFamily("OverlapExtension");
-  static auto *extend_event = Logger::get().registerEvent(overlap_family, "extend");
+  auto *extend_event = Logger::get().registerOrGetEvent("OverlapExtension", "extend overlap");
   Logger::ScopedLog sl(extend_event);
 
   MPI_Comm comm = remoteids.communicator();
@@ -217,22 +217,26 @@ RemoteParallelIndices<RemoteIndices> extendOverlap(const RemoteIndices &remoteid
     }
   }
 
+  nextIndexSet = modifyIndexSetPublicState(nextIndexSet, [&](int li) { return boundary_dst[li] <= 1; });
+  nextRemoteIds->setIndexSets(nextIndexSet, nextIndexSet, comm, neighbours);
+  nextRemoteIds->template rebuild<false>();
+
   for (int round = 0; round < overlap; ++round) {
+    std::size_t public_before = std::count_if(nextIndexSet.begin(), nextIndexSet.end(), [](auto &idx) { return idx.local().isPublic(); });
+
     auto max_local_idx = nextIndexSet.size();
     extendOverlapOnce(nextIndexSet, *nextRemoteIds, neighbours, A);
 
-    // We mark those indices as public, that (i) just were added during the last round of overlap generation,
-    // or (ii) have to be communicated during the next round of overlap generation. Only public indices are
-    // considered in the data handles, so this way we save communication overhead.
+    std::size_t public_after = std::count_if(nextIndexSet.begin(), nextIndexSet.end(), [](auto &idx) { return idx.local().isPublic(); });
+
+    spdlog::get("all_ranks")->trace("Round {}, size before {}, size after {}, public before {}, public after {}", round, max_local_idx, nextIndexSet.size(), public_before, public_after);
+
+    // The newly added indices are already marked as public, but we also have to mark all indices as public that
+    // one of our neighbours might get to know when increasing the overlap again.
     nextIndexSet = modifyIndexSetPublicState(nextIndexSet, [&](int li) {
-      if (li < boundary_dst.size() && boundary_dst[li] <= round + 4) { // TODO: I have no idea why we have to mark all indices up to round + 4 as public
-        return true;
+      if (li < paridxs.size()) {              // Only check those indices that were already in our original index set
+        return boundary_dst[li] <= round + 4; // TODO: I pulled the '4' here out of thin air, a smaller value should work, in fact round + 1 should suffice.
       }
-
-      if (li >= max_local_idx) {
-        return true;
-      }
-
       return false;
     });
 
@@ -240,37 +244,17 @@ RemoteParallelIndices<RemoteIndices> extendOverlap(const RemoteIndices &remoteid
     nextRemoteIds->template rebuild<false>();
   }
 
-  Dune::GlobalLookupIndexSet glis(paridxs);
-
-  // After we're done, we have to mark all indices in the overlap region and all indices that were added as public.
-  nextIndexSet = modifyIndexSetPublicState(nextIndexSet, [&](int li) {
-    if (li < boundary_dst.size() && boundary_dst[li] <= overlap + 4) { // TODO: I have no idea why we have to mark all indices up to overlap + 4 as public
-      return true;
-    }
-
-    if (li >= paridxs.size()) {
-      return true;
-    }
-
-    if (glis.pair(li)->local().isPublic()) {
-      return true;
-    }
-
-    return false;
-  });
-
-  nextRemoteIds->setIndexSets(nextIndexSet, nextIndexSet, comm, neighbours);
-
-  // Wrap both the RemoteIndices and the corresponding ParallelIndexSet in one object, because
-  // the RemoteIndices only store a pointer to the ParallelIndexSet (which is a temporary)
+  if (spdlog::get("all_ranks")->level() <= spdlog::level::debug) {
+    std::size_t public_after = std::count_if(nextIndexSet.begin(), nextIndexSet.end(), [](auto &idx) { return idx.local().isPublic(); });
+    spdlog::get("all_ranks")->debug("After overlap extension: size of index set {}, public indices {}", nextIndexSet.size(), public_after);
+  }
   return makeRemoteParallelIndices(nextRemoteIds);
 }
 
 template <class Matrix, class RemoteIndices>
 Matrix createOverlappingMatrix(const Matrix &A, const RemoteIndices &remoteids)
 {
-  static auto *overlap_family = Logger::get().registerOrGetFamily("OverlapExtension");
-  static auto *matrix_event = Logger::get().registerEvent(overlap_family, "create Matrix");
+  auto *matrix_event = Logger::get().registerOrGetEvent("OverlapExtension", "create Matrix");
   Logger::ScopedLog sl(matrix_event);
 
   const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
