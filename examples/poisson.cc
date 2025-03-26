@@ -254,6 +254,27 @@ int main(int argc, char *argv[])
 
   Vec visuvec(gfs); // A vector that can be used for visualisation
 
+  // Check if partition of unity is actually a partition of unity
+  {
+    AttributeSet allAttributes{Attribute::owner, Attribute::copy};
+    Dune::Interface all_all_interface;
+    all_all_interface.build(*schwarz->getOverlappingIndices().first, allAttributes, allAttributes);
+    Dune::VariableSizeCommunicator all_all_comm(all_all_interface);
+    AddVectorDataHandle<Native<Vec>> advdh;
+
+    Native<Vec> pou = *schwarz->getPartitionOfUnity();
+    advdh.setVec(pou);
+    all_all_comm.forward(advdh);
+
+    auto all_one = std::all_of(pou.begin(), pou.end(), [](auto val) { return std::abs(val - 1.0) < 1e-18; });
+    if (!all_one) {
+      spdlog::get("all_ranks")->warn("Partition of unity does not add up to 1");
+    }
+    else {
+      spdlog::get("all_ranks")->debug("Partition of unity does add up to 1");
+    }
+  }
+
   const auto coarsespace = ptree.get("coarsespace", "geneo");
   if (coarsespace == "nicolaides") {
     int nvecs = ptree.get("nvecs", 1);
