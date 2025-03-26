@@ -143,6 +143,7 @@ auto makeRemoteIndices(const GFS &gfs, const Dune::MPIHelper &helper)
 
   using BooleanVec = Dune::PDELab::Backend::Vector<GFS, bool>;
   BooleanVec isPublic(gfs);
+  isPublic = false;
   Dune::PDELab::SharedDOFDataHandle shareddh(gfs, isPublic);
   gfs.gridView().communicate(shareddh, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
 
