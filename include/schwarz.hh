@@ -90,6 +90,20 @@ class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
 
   using ParallelIndexSet = typename RemoteIndices::ParallelIndexSet;
 
+  struct AddGatherScatter {
+    using DataType = double;
+
+    static DataType gather(const Vec &x, std::size_t i) { return x[i]; }
+    static void scatter(Vec &x, DataType v, std::size_t i) { x[i] += v; }
+  };
+
+  struct CopyGatherScatter {
+    using DataType = double;
+
+    static DataType gather(const Vec &x, std::size_t i) { return x[i]; }
+    static void scatter(Vec &x, DataType v, std::size_t i) { x[i] = v; }
+  };
+
 public:
   SchwarzPreconditioner(const Mat &A, const RemoteIndices &remoteindices, int overlap, SchwarzType type = SchwarzType::Restricted, PartitionOfUnityType pou_type = PartitionOfUnityType::None)
       : type(type), pou_type(pou_type)
@@ -146,8 +160,7 @@ public:
     }
 
     // 2. Get remaining values from other ranks
-    cvdh.setVec(*d_ovlp);
-    owner_copy_comm->forward(cvdh);
+    owner_copy_comm.forward<CopyGatherScatter>(*d_ovlp);
 
     // 3. Solve using the overlapping subdomain matrix
     Dune::InverseOperatorResult res;
@@ -156,20 +169,17 @@ public:
 
     // 4. Make the solution consistent according to the type of the Schwarz method
     if (type == SchwarzType::Standard) {
-      avdh.setVec(*x_ovlp);
-      all_all_comm->forward(avdh);
+      all_all_comm.forward<AddGatherScatter>(*x_ovlp);
     }
     else if (type == SchwarzType::Restricted) {
       if (pou_type == PartitionOfUnityType::Standard) {
         for (int i = 0; i < pou->N(); ++i) {
           (*x_ovlp)[i] *= (*pou)[i];
         }
-        avdh.setVec(*x_ovlp);
-        all_all_comm->forward(avdh);
+        all_all_comm.forward<AddGatherScatter>(*x_ovlp);
       }
       else {
-        cvdh.setVec(*x_ovlp);
-        owner_copy_comm->forward(cvdh);
+        owner_copy_comm.forward<CopyGatherScatter>(*x_ovlp);
       }
     }
 
@@ -196,10 +206,10 @@ private:
     ovlpindices = extendOverlap(remoteindices, A, overlap);
 
     all_all_interface.build(*ovlpindices.first, allAttributes, allAttributes);
-    all_all_comm = std::make_unique<Dune::VariableSizeCommunicator<>>(all_all_interface);
+    all_all_comm.build<Vec>(all_all_interface);
 
     owner_copy_interface.build(*ovlpindices.first, ownerAttribute, copyAttribute);
-    owner_copy_comm = std::make_unique<Dune::VariableSizeCommunicator<>>(owner_copy_interface);
+    owner_copy_comm.build<Vec>(owner_copy_interface);
 
     Aovlp = std::make_shared<Mat>(createOverlappingMatrix(A, *ovlpindices.first));
     solver = std::make_unique<Solver>(*Aovlp, 0);
@@ -213,7 +223,8 @@ private:
     int rank{};
     MPI_Comm_rank(ovlpindices.first->communicator(), &rank);
     IdentifyBoundaryDataHandle ibdh(A, *ovlpindices.second, rank);
-    all_all_comm->forward(ibdh);
+    Dune::VariableSizeCommunicator<> var_comm(all_all_interface);
+    var_comm.forward(ibdh);
     auto boundaryMask = ibdh.getBoundaryMask();
 
     switch (pou_type) {
@@ -226,8 +237,7 @@ private:
         }
       }
 
-      avdh.setVec(*pou);
-      all_all_comm->forward(avdh);
+      all_all_comm.forward<AddGatherScatter>(*pou);
 
       for (int i = 0; i < pou->N(); ++i) {
         if (!boundaryMask[i]) {
@@ -261,13 +271,10 @@ private:
   std::shared_ptr<Vec> pou; // partition of unity (might be null)
 
   Dune::Interface all_all_interface;
-  std::unique_ptr<Dune::VariableSizeCommunicator<>> all_all_comm;
+  Dune::BufferedCommunicator all_all_comm;
 
   Dune::Interface owner_copy_interface;
-  std::unique_ptr<Dune::VariableSizeCommunicator<>> owner_copy_comm;
-
-  CopyVectorDataHandle<Vec> cvdh;
-  AddVectorDataHandle<Vec> avdh;
+  Dune::BufferedCommunicator owner_copy_comm;
 
   RemoteParallelIndices<RemoteIndices> ovlpindices;
 

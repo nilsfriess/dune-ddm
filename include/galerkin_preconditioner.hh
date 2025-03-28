@@ -44,6 +44,20 @@
  */
 template <class Vec, class Mat, class RemoteIndices, class Solver = Dune::UMFPack<Dune::BCRSMatrix<double>>>
 class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
+  struct AddGatherScatter {
+    using DataType = double;
+
+    static DataType gather(const Vec &x, std::size_t i) { return x[i]; }
+    static void scatter(Vec &x, DataType v, std::size_t i) { x[i] += v; }
+  };
+
+  struct CopyGatherScatter {
+    using DataType = double;
+
+    static DataType gather(const Vec &x, std::size_t i) { return x[i]; }
+    static void scatter(Vec &x, DataType v, std::size_t i) { x[i] = v; }
+  };
+
 public:
   // GalerkinPreconditioner(const Mat &A, const Vec &pou, const Vec &t, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), restr_vecs(1, Vec(pou.N(), 0)), N(ris.second->size()), d_ovlp(N),
   // x_ovlp(N)
@@ -101,8 +115,7 @@ public:
     }
 
     // 1.5 Get remaining values from other ranks
-    cvdh.setVec(d_ovlp);
-    owner_copy_comm->forward(cvdh);
+    owner_copy_comm.forward<CopyGatherScatter>(d_ovlp);
 
     // 2. Compute local contribution of coarse defect
     std::vector<double> d_local(num_t, 0);
@@ -136,8 +149,8 @@ public:
       }
     }
 
-    advdh.setVec(x_ovlp);
-    all_all_comm->forward(advdh);
+    // advdh.setVec(x_ovlp);
+    all_all_comm.forward<AddGatherScatter>(x_ovlp);
 
     // 7. Restrict the solution to the non-overlapping subdomain
     for (std::size_t i = 0; i < x.size(); ++i) {
@@ -162,10 +175,10 @@ private:
     const AttributeSet copyAttribute{Attribute::copy};
 
     all_all_interface.build(*ris.first, allAttributes, allAttributes);
-    all_all_comm = std::make_unique<Dune::VariableSizeCommunicator<>>(all_all_interface);
+    all_all_comm.build<Vec>(all_all_interface);
 
     owner_copy_interface.build(*ris.first, ownerAttribute, copyAttribute);
-    owner_copy_comm = std::make_unique<Dune::VariableSizeCommunicator<>>(owner_copy_interface);
+    owner_copy_comm.build<Vec>(owner_copy_interface);
   }
 
   std::size_t getMaxTemplateVecs(std::size_t num_restr_vecs) const
@@ -250,8 +263,7 @@ private:
         }
 
         Logger::get().startEvent(s_event);
-        advdh.setVec(s);
-        all_all_comm->forward(advdh);
+        all_all_comm.forward<AddGatherScatter>(s);
         Logger::get().endEvent(s_event);
 
         y = 0;
@@ -271,8 +283,7 @@ private:
         }
 
         Logger::get().startEvent(y_event);
-        advdh.setVec(y);
-        all_all_comm->forward(advdh);
+        all_all_comm.forward<AddGatherScatter>(y);
         Logger::get().endEvent(y_event);
 
         // Again, we skip the computation if we know it will be zero. In fact, these dot products are often
@@ -314,13 +325,10 @@ private:
   std::vector<int> offset_per_rank;
 
   Dune::Interface all_all_interface;
-  std::unique_ptr<Dune::VariableSizeCommunicator<>> all_all_comm;
+  Dune::BufferedCommunicator all_all_comm;
 
   Dune::Interface owner_copy_interface;
-  std::unique_ptr<Dune::VariableSizeCommunicator<>> owner_copy_comm;
-
-  CopyVectorDataHandle<Vec> cvdh;
-  AddVectorDataHandle<Vec> advdh;
+  Dune::BufferedCommunicator owner_copy_comm;
 
   Dune::BCRSMatrix<double> A0;
 
