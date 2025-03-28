@@ -350,17 +350,11 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
     for (auto ri = Aovlp.begin(); ri != Aovlp.end(); ++ri) {
       for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
         if (subdomain_to_interior.contains(ri.index()) && subdomain_to_interior.contains(ci.index())) {
-          Aint.entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = 0.0;
+          Aint.entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = *ci;
         }
       }
     }
     Aint.compress();
-
-    for (auto ri = Aint.begin(); ri != Aint.end(); ++ri) {
-      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-        *ci = Aovlp[interior_to_subdomain[ri.index()]][interior_to_subdomain[ci.index()]];
-      }
-    }
 
     // Set Dirichlet rows
     for (std::size_t i = 0; i < Aint.N(); ++i) {
