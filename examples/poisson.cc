@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <dune/common/parallel/communication.hh>
 #define EIGEN_DEFAULT_DENSE_INDEX_TYPE std::int64_t
 
 #include "logger.hh" // Must be included at the very top if MPI calls should be logged
@@ -28,6 +29,7 @@
 #include <dune/grid/io/file/vtk/subsamplingvtkwriter.hh>
 #include <dune/grid/uggrid.hh>
 #include <dune/grid/utility/parmetisgridpartitioner.hh>
+#include <dune/grid/yaspgrid/partitioning.hh>
 #include <dune/istl/bccsmatrixinitializer.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/gsetc.hh>
@@ -97,7 +99,8 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
 #if GRID_DIM == 2
   auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0}, {gridsize, gridsize}, std::bitset<2>(0ULL), GRID_OVERLAP));
 #elif GRID_DIM == 3
-  auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0, 0.5}, {gridsize, gridsize, gridsize / 2}, std::bitset<3>(0ULL), GRID_OVERLAP));
+  Dune::Yasp::PowerDPartitioning<GRID_DIM> partitioner;
+  auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0, 1.0}, {gridsize, gridsize, gridsize}, std::bitset<3>(0ULL), GRID_OVERLAP, Grid::Communication(), &partitioner));
 #endif
 #endif
 
