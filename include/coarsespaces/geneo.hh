@@ -16,9 +16,9 @@
 #include <spdlog/spdlog.h>
 
 #include "datahandles.hh"
+#include "eigensolvers.hh"
 #include "helpers.hh"
 #include "logger.hh"
-#include "spectral_coarsespace.hh"
 
 template <class Vec, class Mat, class RemoteIndices>
 std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat &Aovlp, const std::vector<TripleWithRank> &remote_ncorr_triples, const std::vector<TripleWithRank> &own_ncorr_triples,
@@ -298,6 +298,7 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
   spdlog::info("Solving generalized eigenvalue problem for GenEO");
 
   std::vector<Vec> eigenvectors = solveGEVP<Vec>(A, B, eigensolver, ptree.get("nev", 10), ptree);
+  auto eigenvectors = solveGEVP(A, B, eigensolver, ptree.get("nev", 10), ptree);
   Logger::get().endEvent(eigensolver_event);
 
   // If we have only solved the eigenvalue problem on the ring, then we now need to extend the eigenvectors to the interior.

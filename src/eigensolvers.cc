@@ -1,92 +1,38 @@
-#pragma once
+#include <dune-istl-config.hh>
+
+#include <mpi.h>
+
+#include <dune/common/parametertree.hh>
+#include <dune/istl/bcrsmatrix.hh>
+#include <dune/istl/bvector.hh>
+
+#include <dune/istl/foreach.hh>
+#include <vector>
 
 #include <Eigen/SparseCore>
 #include <Spectra/MatOp/SparseSymMatProd.h>
 #include <Spectra/MatOp/SymShiftInvert.h>
 #include <Spectra/SymGEigsShiftSolver.h>
 
-#include <algorithm>
-#include <dune/common/fvector.hh>
-#include <dune/istl/bvector.hh>
-#include <dune/istl/foreach.hh>
+#include "coarsespaces/eigensolvers.hh"
 
-#include <dune/istl/solver.hh>
-#include <mpi.h>
-#include <string>
-#include <temp_multivector.h>
-
-#include <vector>
+#include <spdlog/spdlog.h>
 
 #include <lobpcg.h>
 
-#include "fakemultivec.hh"
-#include "multivec.hh"
-#include "spdlog/spdlog.h"
+#include "coarsespaces/fakemultivec.hh"
+#include "coarsespaces/multivec.hh"
 
 extern "C" { // Tell the linker that LAPACK functions are mangled as C functions
 BlopexInt dsygv_(BlopexInt *itype, char *jobz, char *uplo, BlopexInt *n, double *a, BlopexInt *lda, double *b, BlopexInt *ldb, double *w, double *work, BlopexInt *lwork, BlopexInt *info);
 BlopexInt dpotrf_(char *uplo, BlopexInt *n, double *a, BlopexInt *lda, BlopexInt *info);
 }
 
-enum class Eigensolver { Spectra, BLOPEX };
-
-template <class Prec>
-void applyPreconditionerFake(void *T_, void *r_, void *Tr_)
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &A, const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &B,
+                                                                       Eigensolver eigensolver, long nev, const Dune::ParameterTree &ptree)
 {
-  auto *T = static_cast<Prec *>(T_);
-  auto *r = static_cast<mv_TempMultiVector *>(r_);
-  auto *Tr = static_cast<mv_TempMultiVector *>(Tr_);
-
-  for (std::size_t i = 0; i < r->numVectors; ++i) {
-    if (r->mask && r->mask[i] == 0) {
-      continue;
-    }
-
-    auto *v = static_cast<Vector *>(r->vector[i]);
-    auto *res = static_cast<Vector *>(Tr->vector[i]);
-
-    Dune::InverseOperatorResult ior;
-    T->apply(*res, *v, ior);
-  }
-}
-
-template <class Prec>
-void applyPreconditioner(void *T_, void *r_, void *Tr_)
-{
-  auto *T = static_cast<Prec *>(T_);
-  auto *r = static_cast<Multivec *>(r_);
-  auto *Tr = static_cast<Multivec *>(Tr_);
-
-  Dune::BlockVector<Dune::FieldVector<double, 1>> v(r->N);
-  Dune::BlockVector<Dune::FieldVector<double, 1>> d(r->N);
-
-  Dune::InverseOperatorResult ior;
-  for (std::size_t i = 0; i < r->active_indices.size(); ++i) {
-    auto *rstart = r->entries.data() + r->active_indices[i] * r->N;
-    auto *Trstart = Tr->entries.data() + Tr->active_indices[i] * Tr->N;
-
-    std::copy(rstart, rstart + r->N, d.begin());
-    v = 0;
-
-    Dune::InverseOperatorResult res;
-    T->apply(v, d, res);
-
-    std::copy(v.begin(), v.end(), Trstart);
-  }
-}
-
-// Helper to convert floats to string because std::to_string outputs with low precision
-template <typename T>
-std::string to_string_with_precision(const T a_value)
-{
-  std::ostringstream out;
-  out << a_value;
-  return std::move(out).str();
-}
-
-template <class Vec, class Mat, class Eigensolver, class Prec = void>
-std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, long nev, const Dune::ParameterTree &ptree, Prec *prec = nullptr)
-{
+  using Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>;
+  using Mat = Dune::BCRSMatrix<double>;
   std::vector<Vec> eigenvectors;
 
   const double tolerance = ptree.get("eigensolver_tolerance", 1e-5);
@@ -182,7 +128,7 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
     lobpcg_tol.absolute = tolerance;
     lobpcg_tol.relative = tolerance;
 
-    int maxit = 100;
+    int maxit = 10000;
     int its = 0; // Iterations that were actually required
 
     Vector sample(A.N());
@@ -199,50 +145,52 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
     auto *xx = mv_MultiVectorWrap(&ii, &x, 0);
 
     int err = 0;
-    if constexpr (not std::is_same_v<Prec, void>) {
-      err = lobpcg_solve_double(xx,                        // The initial eigenvectors + pointers to interface routines
-                                (void *)&A,                // The lhs matrix
-                                MatMultiVec<Mat>,          // A function implementing matvec for the lhs matrix
-                                (void *)&B,                // The rhs matrix
-                                MatMultiVec<Mat>,          // A function implementing matvec for the rhs matrix
-                                (void *)prec,              // The preconditioner for the lhs
-                                applyPreconditioner<Prec>, // A function implementing the preconditioner
-                                nullptr,                   // Input matrix Y (no idea what this is)
-                                blap_fn,                   // The LAPACK functions that BLOPEX should use for the small gevp
-                                lobpcg_tol,                // Tolerance that should be achieved
-                                maxit,                     // Maximum number of iterations
-                                0,                         // Verbosity level
-                                &its,                      // Iterations that were required
-                                eigenvalues.data(),        // The computed eigenvalues
-                                nullptr,                   // History of the compute eigenvalues
-                                0,                         // Size of the history
-                                residuals.data(),          // residual norms
-                                nullptr,                   // residual norms history
-                                0                          // Size of the norms history
-      );
-    }
-    else {
-      err = lobpcg_solve_double(xx,                 // The initial eigenvectors + pointers to interface routines
-                                (void *)&A,         // The lhs matrix
-                                MatMultiVec<Mat>,   // A function implementing matvec for the lhs matrix
-                                (void *)&B,         // The rhs matrix
-                                MatMultiVec<Mat>,   // A function implementing matvec for the rhs matrix
-                                nullptr,            // The preconditioner for the lhs
-                                nullptr,            // A function implementing the preconditioner
-                                nullptr,            // Input matrix Y (no idea what this is)
-                                blap_fn,            // The LAPACK functions that BLOPEX should use for the small gevp
-                                lobpcg_tol,         // Tolerance that should be achieved
-                                maxit,              // Maximum number of iterations
-                                1,                  // Verbosity level
-                                &its,               // Iterations that were required
-                                eigenvalues.data(), // The computed eigenvalues
-                                nullptr,            // History of the compute eigenvalues
-                                0,                  // Size of the history
-                                residuals.data(),   // residual norms
-                                nullptr,            // residual norms history
-                                0                   // Size of the norms history
-      );
-    }
+    // using Prec = void;
+    // Prec *prec = nullptr;
+    // if constexpr (not std::is_same_v<Prec, void>) {
+    //   err = lobpcg_solve_double(xx,                        // The initial eigenvectors + pointers to interface routines
+    //                             (void *)&A,                // The lhs matrix
+    //                             MatMultiVec<Mat>,          // A function implementing matvec for the lhs matrix
+    //                             (void *)&B,                // The rhs matrix
+    //                             MatMultiVec<Mat>,          // A function implementing matvec for the rhs matrix
+    //                             (void *)prec,              // The preconditioner for the lhs
+    //                             applyPreconditioner<Prec>, // A function implementing the preconditioner
+    //                             nullptr,                   // Input matrix Y (no idea what this is)
+    //                             blap_fn,                   // The LAPACK functions that BLOPEX should use for the small gevp
+    //                             lobpcg_tol,                // Tolerance that should be achieved
+    //                             maxit,                     // Maximum number of iterations
+    //                             0,                         // Verbosity level
+    //                             &its,                      // Iterations that were required
+    //                             eigenvalues.data(),        // The computed eigenvalues
+    //                             nullptr,                   // History of the compute eigenvalues
+    //                             0,                         // Size of the history
+    //                             residuals.data(),          // residual norms
+    //                             nullptr,                   // residual norms history
+    //                             0                          // Size of the norms history
+    //   );
+    // }
+    // else {
+    err = lobpcg_solve_double(xx,                 // The initial eigenvectors + pointers to interface routines
+                              (void *)&A,         // The lhs matrix
+                              MatMultiVec<Mat>,   // A function implementing matvec for the lhs matrix
+                              (void *)&B,         // The rhs matrix
+                              MatMultiVec<Mat>,   // A function implementing matvec for the rhs matrix
+                              nullptr,            // The preconditioner for the lhs
+                              nullptr,            // A function implementing the preconditioner
+                              nullptr,            // Input matrix Y (no idea what this is)
+                              blap_fn,            // The LAPACK functions that BLOPEX should use for the small gevp
+                              lobpcg_tol,         // Tolerance that should be achieved
+                              maxit,              // Maximum number of iterations
+                              1,                  // Verbosity level
+                              &its,               // Iterations that were required
+                              eigenvalues.data(), // The computed eigenvalues
+                              nullptr,            // History of the compute eigenvalues
+                              0,                  // Size of the history
+                              residuals.data(),   // residual norms
+                              nullptr,            // residual norms history
+                              0                   // Size of the norms history
+    );
+    // }
 
     if (err != 0) {
       std::cerr << "Eigensolver failed" << std::endl;
@@ -280,9 +228,9 @@ std::vector<Vec> solveGEVP(const Mat &A, const Mat &B, Eigensolver eigensolver, 
     MPI_Abort(MPI_COMM_WORLD, 2);
   }
 
-  for (auto &eigenvector : eigenvectors) {
-    eigenvector *= 1. / eigenvector.two_norm();
-  }
+  // for (auto &eigenvector : eigenvectors) {
+  //   eigenvector *= 1. / eigenvector.two_norm();
+  // }
 
   return eigenvectors;
 }

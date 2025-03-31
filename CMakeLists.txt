@@ -65,9 +65,15 @@ add_subdirectory(${blopex_all_SOURCE_DIR}/blopex_abstract)
 # )
 # add_dependencies(BLOPEX BLOPEX_BUILD)
 
+add_library(eigensolvers src/eigensolvers.cc)
+target_include_directories(eigensolvers PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(eigensolvers PRIVATE Dune::ISTL spdlog::spdlog Spectra BLOPEX MPI::MPI_C)
+add_dune_eigen_flags(eigensolvers)
+add_dune_mpi_flags(eigensolvers)
+
 add_library(dune-ddm INTERFACE)
 target_include_directories(dune-ddm PUBLIC INTERFACE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog Spectra BLOPEX)
+target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog eigensolvers)
 
 add_subdirectory(examples)
 add_subdirectory(tests)
