@@ -15,6 +15,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "coarsespaces/energy_minimal_extension.hh"
 #include "datahandles.hh"
 #include "eigensolvers.hh"
 #include "helpers.hh"
@@ -297,8 +298,36 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
   Logger::get().startEvent(eigensolver_event);
   spdlog::info("Solving generalized eigenvalue problem for GenEO");
 
-  std::vector<Vec> eigenvectors = solveGEVP<Vec>(A, B, eigensolver, ptree.get("nev", 10), ptree);
   auto eigenvectors = solveGEVP(A, B, eigensolver, ptree.get("nev", 10), ptree);
+
+  if (geneo_type != "ring") {
+    for (auto &vec : eigenvectors) {
+      for (std::size_t i = 0; i < vec.N(); ++i) {
+        if (dirichlet_mask_ovlp[i] > 0) {
+          vec[i] = 0;
+        }
+        else {
+          if (ptree.get("basis_vec_mult_pou", true)) {
+            vec[i] *= pou[i];
+          }
+        }
+      }
+    }
+  }
+  else { // geneo_type == "ring"
+    for (auto &vec : eigenvectors) {
+      for (std::size_t i = 0; i < vec.N(); ++i) {
+        if (dirichlet_mask_ovlp[ring_to_subdomain[i]] > 0) {
+          vec[i] = 0;
+        }
+        else {
+          if (ptree.get("basis_vec_mult_pou", true)) {
+            vec[i] *= pou[ring_to_subdomain[i]];
+          }
+        }
+      }
+    }
+  }
   Logger::get().endEvent(eigensolver_event);
 
   // If we have only solved the eigenvalue problem on the ring, then we now need to extend the eigenvectors to the interior.
@@ -315,117 +344,23 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
       }
     }
 
-    // We also create the inverse mapping (subdomain-to-interior)
-    std::unordered_map<std::size_t, std::size_t> subdomain_to_interior;
-    subdomain_to_interior.reserve(interior_to_subdomain.size());
-    for (std::size_t i = 0; i < interior_to_subdomain.size(); ++i) {
-      subdomain_to_interior[interior_to_subdomain[i]] = i;
-    }
-
-    Mat Aint;
-    auto avg = Aovlp.nonzeroes() / Aovlp.N() + 2;
-    Aint.setBuildMode(Mat::implicit);
-    Aint.setImplicitBuildModeParameters(avg, 0.2);
-    Aint.setSize(N, N);
-
-    for (auto ri = Aovlp.begin(); ri != Aovlp.end(); ++ri) {
-      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-        if (subdomain_to_interior.contains(ri.index()) and subdomain_to_interior.contains(ci.index())) {
-          Aint.entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = *ci;
-        }
-      }
-    }
-    Aint.compress();
-
-    Vec x_int(Aint.N());
-    x_int = 0.0;
-    std::vector<Vec> solutions(eigenvectors.size(), x_int);
-
     auto *factorise_interior = Logger::get().registerEvent("GenEO", "factorise interior");
     auto *solve_interior = Logger::get().registerEvent("GenEO", "solve interior");
 
-    std::unique_ptr<Dune::InverseOperator<Vec, Vec>> interior_solver;
-
     Logger::get().startEvent(factorise_interior);
-    if (ptree.get("geneo_ring_approximate_interior", false)) {
-      auto prec = std::make_shared<Dune::SeqILU<Mat, Vec, Vec>>(Aint, 1.0);
-      auto sp = std::make_shared<Dune::SeqScalarProduct<Vec>>();
-      auto adapter = std::make_shared<Dune::MatrixAdapter<Mat, Vec, Vec>>(Aint);
-      interior_solver = std::make_unique<Dune::RestartedGMResSolver<Vec>>(adapter, sp, prec, ptree.get("geneo_ring_inexact_interior_solver_tol", 1e-8), 50,
-                                                                          ptree.get("geneo_ring_inexact_interior_solver_maxit", 10), ptree.get("geneo_ring_inexact_interior_solver_verbosity", 0));
-    }
-    else {
-      interior_solver = std::make_unique<Dune::UMFPack<Mat>>(Aint);
-    }
+    EnergyMinimalExtension extension(Aovlp, interior_to_subdomain, ring_to_subdomain);
     Logger::get().endEvent(factorise_interior);
 
-    Vec b_full(Aovlp.N());
-    Vec x_full(Aovlp.N());
-    Vec b_int(Aint.N());
-
+    std::vector<Vec> combined_vectors;
+    combined_vectors.reserve(eigenvectors.size());
     Logger::get().startEvent(solve_interior);
-    for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
-      b_int = 0;
-
-      // To compute the right hand side, we create a vector on the overlapping subdomain, set the values of the current eigenvectors
-      // at the correct location (and zero everywhere else), and multiply with the matrix. The right hand side is the result of this
-      // product at the interior dofs. When we then apply the inverse of the interior matrix, multiply the result by -1 and stich
-      // it together with the eigenvector in the ring, we have computed the energy-minimal extension of the eigenvector.
-      x_full = 0;
-      for (std::size_t i = 0; i < eigenvectors[k].N(); ++i) {
-        x_full[ring_to_subdomain[i]] = eigenvectors[k][i];
-      }
-      b_full = 0;
-      Aovlp.mv(x_full, b_full);
-      for (std::size_t i = 0; i < interior_to_subdomain.size(); ++i) {
-        b_int[i] = b_full[interior_to_subdomain[i]];
-      }
-
-      Dune::InverseOperatorResult res;
-      interior_solver->apply(solutions[k], b_int, res);
-
-      solutions[k] *= -1;
+    for (const auto &evec : eigenvectors) {
+      combined_vectors.push_back(extension.extend(evec));
     }
     Logger::get().endEvent(solve_interior);
-    // {
-    //   Logger::get().startEvent(factorise_interior);
-    //   Dune::SeqILU<Mat, Vec, Vec> ilu_solver(Aint, 1.0);
-    //   Logger::get().endEvent(factorise_interior);
-
-    //   Vec x_int(Aint.N());
-    //   x_int = 0.0;
-    //   Vec b_int(Aint.N());
-
-    //   Dune::MatrixAdapter<Mat, Vec, Vec> adapter(Aint);
-    //   Dune::RestartedGMResSolver<Vec> solver(adapter, ilu_solver, 1e-8, 50, ptree.get("geneo_ring_inexact_interior_solver_maxit", 10), ptree.get("geneo_ring_inexact_interior_solver_verbosity", 0));
-
-    //   Logger::get().startEvent(solve_interior);
-    //   for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
-    //     b_int = 0;
-    //     for (std::size_t i = 0; i < eigenvectors[k].N(); ++i) {
-    //       if (interior_ovlp_mask[ring_to_subdomain[i]] > 1) {
-    //         assert(subdomain_to_interior.contains(ring_to_subdomain[i]) && "Interior and ring must overlap");
-    //         b_int[subdomain_to_interior[ring_to_subdomain[i]]] = eigenvectors[k][i];
-    //       }
-    //     }
-
-    //     Dune::InverseOperatorResult res;
-    //     solver.apply(solutions[k], b_int, res);
-    //   }
-    //   Logger::get().endEvent(solve_interior);
-    // }
-
-    Vec zero(Aovlp.N());
-    std::vector<Vec> combined_vectors(eigenvectors.size(), zero);
-    for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
-      for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-        combined_vectors[k][ring_to_subdomain[i]] = eigenvectors[k][i];
-      }
-      for (std::size_t i = 0; i < interior_to_subdomain.size(); ++i) {
-        combined_vectors[k][interior_to_subdomain[i]] = solutions[k][i];
-      }
 
 #ifndef NDEBUG
+    for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
       double sum = 0;
       for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
         sum += std::pow(eigenvectors[k][i] - combined_vectors[k][ring_to_subdomain[i]], 2);
@@ -434,25 +369,15 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
       if (sum > 1e-12) {
         spdlog::get("all_ranks")->warn("Eigenvector on ring and computed solution in interior differ at boundary, difference is {}", sum);
       }
-#endif
     }
+#endif
 
     eigenvectors = std::move(combined_vectors);
   }
 
   for (auto &vec : eigenvectors) {
     vec *= 1. / vec.two_norm();
-
-    for (std::size_t i = 0; i < vec.N(); ++i) {
-      if (dirichlet_mask_ovlp[i] > 0) {
-        vec[i] = 0;
-      }
-      else {
-        if (ptree.get("basis_vec_mult_pou", true)) {
-          vec[i] *= pou[i];
-        }
-      }
-    }
   }
+
   return eigenvectors;
 }
