@@ -298,7 +298,7 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
   Logger::get().startEvent(eigensolver_event);
   spdlog::info("Solving generalized eigenvalue problem for GenEO");
 
-  auto eigenvectors = solveGEVP(A, B, eigensolver, ptree.get("nev", 10), ptree);
+  auto eigenvectors = solveGEVP(A, B, eigensolver, ptree);
 
   if (geneo_type != "ring") {
     for (auto &vec : eigenvectors) {

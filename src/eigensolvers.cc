@@ -29,7 +29,7 @@ BlopexInt dpotrf_(char *uplo, BlopexInt *n, double *a, BlopexInt *lda, BlopexInt
 }
 
 std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &A, const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &B,
-                                                                       Eigensolver eigensolver, long nev, const Dune::ParameterTree &ptree)
+                                                                       Eigensolver eigensolver, const Dune::ParameterTree &ptree)
 {
   using Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>;
   using Mat = Dune::BCRSMatrix<double>;
@@ -74,50 +74,92 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
     OpType op(A_, B_);
     BOpType Bop(B_);
 
-    Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, 3 * nev, 0.001);
-    geigs.init();
-
-    // Find largest eigenvalue of the shifted problem (which corresponds to the smallest of the original problem)
-    // with max. 1000 iterations and sort the resulting eigenvalues from small to large.
-    Eigen::Index nconv{};
-    try {
-      nconv = geigs.compute(Spectra::SortRule::LargestMagn, 1000, tolerance, Spectra::SortRule::SmallestAlge);
+    auto nev = ptree.get("eigensolver_nev", 10);
+    auto nev_max = nev;
+    double threshold = -1;
+    if (ptree.hasKey("eigensolver_nev_target") and not ptree.hasKey("eigensolver_nev_threshold")) {
+      spdlog::warn("Parameter 'eigensolver_nev_target' is set but no 'eigensolver_nev_threshold' is provided, using a default threshold of 0.5");
+      threshold = 0.5;
+      nev = ptree.get<int>("eigensolver_nev_target");
     }
-    catch (const std::runtime_error &e) {
-      spdlog::get("all_ranks")->error("ERROR: Computation of eigenvalues failed (reason: {})", e.what());
-      MPI_Abort(MPI_COMM_WORLD, 5);
+    else if (ptree.hasKey("eigensolver_nev_target") and ptree.hasKey("eigensolver_nev_threshold")) {
+      threshold = ptree.get<double>("eigensolver_nev_threshold");
+      nev = ptree.get<int>("eigensolver_nev_target");
     }
 
-    if (geigs.info() == Spectra::CompInfo::Successful) {
-      const auto evalues = geigs.eigenvalues();
-      const auto evecs = geigs.eigenvectors();
+    if (ptree.hasKey("eigensolver_nev_target") and not ptree.hasKey("eigensolver_nev_max")) {
+      nev_max = 2 * nev;
+      spdlog::warn("Parameter 'eigensolver_nev_target' is set but no 'eigensolver_nev_max' is provided, using a maximum number of computed eigenvectors of 2*nev = {}", nev_max);
+    }
+    else if (ptree.hasKey("eigensolver_nev_target") and ptree.hasKey("eigensolver_nev_max")) {
+      nev_max = ptree.get<int>("eigensolver_nev_max");
+    }
 
-      if (spdlog::get("all_ranks")->level() <= spdlog::level::debug) {
-        auto eigstring = std::accumulate(evalues.begin() + 1, evalues.end(), to_string_with_precision(evalues[0]), [](const std::string &a, double b) { return a + ", " + std::to_string(b); });
+    bool done = threshold < 0; // In user has not provided a treshold, then we're done after one iteration
 
-        spdlog::get("all_ranks")->debug("Computed eigenvalues: {}", eigstring);
+    do {
+      Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, 2.5 * nev, 0.00001);
+      geigs.init();
+
+      // Find largest eigenvalue of the shifted problem (which corresponds to the smallest of the original problem)
+      // with max. 1000 iterations and sort the resulting eigenvalues from small to large.
+      Eigen::Index nconv{};
+      try {
+        nconv = geigs.compute(Spectra::SortRule::LargestMagn, 1000, tolerance, Spectra::SortRule::SmallestAlge);
       }
-      else {
-        spdlog::get("all_ranks")->info("Computed eigenvalues: smallest {}, largest {}", evalues[0], evalues[evalues.size() - 1]);
+      catch (const std::runtime_error &e) {
+        spdlog::get("all_ranks")->error("ERROR: Computation of eigenvalues failed (reason: {})", e.what());
+        MPI_Abort(MPI_COMM_WORLD, 5);
       }
 
-      if (std::any_of(evalues.begin(), evalues.end(), [](auto x) { return x < -1e-5; })) {
-        spdlog::get("all_ranks")->warn("Computed a negative eigenvalue");
-      }
+      if (geigs.info() == Spectra::CompInfo::Successful) {
+        const auto evalues = geigs.eigenvalues();
+        const auto evecs = geigs.eigenvectors();
 
-      Vec vec(evecs.rows());
-      eigenvectors.resize(nconv);
-      std::fill(eigenvectors.begin(), eigenvectors.end(), vec);
+        if (evalues[nconv - 1] >= threshold or nev >= nev_max) {
+          if (ptree.get("eigensolver_keep_strict", false)) {
+            // If this parameter is set, we only keep those eigenvectors that correspond to eigenvalues below the threshold.
+            // This is mainly useful for testing.
+            std::size_t cnt = 0;
+            while (cnt < nconv - 1 and evalues[cnt] < threshold) {
+              ++cnt;
+            }
+            nconv = cnt;
+          }
 
-      for (int i = 0; i < nconv; ++i) {
-        for (int j = 0; j < evecs.rows(); ++j) {
-          eigenvectors[i][j] = evecs(j, i);
+          if (spdlog::get("all_ranks")->level() <= spdlog::level::debug) {
+            auto eigstring =
+                std::accumulate(evalues.begin() + 1, evalues.begin() + nconv, to_string_with_precision(evalues[0]), [](const std::string &a, double b) { return a + ", " + std::to_string(b); });
+
+            spdlog::get("all_ranks")->debug("Computed {} eigenvalues: {}", nconv, eigstring);
+          }
+          else {
+            spdlog::get("all_ranks")->info("Computed {} eigenvalues: smallest {}, largest {}", nconv, evalues[0], evalues[nconv]);
+          }
+
+          if (std::any_of(evalues.begin(), evalues.end(), [](auto x) { return x < -1e-5; })) {
+            spdlog::get("all_ranks")->warn("Computed a negative eigenvalue");
+          }
+
+          Vec vec(evecs.rows());
+          eigenvectors.resize(nconv);
+          std::fill(eigenvectors.begin(), eigenvectors.end(), vec);
+
+          for (int i = 0; i < nconv; ++i) {
+            for (int j = 0; j < evecs.rows(); ++j) {
+              eigenvectors[i][j] = evecs(j, i);
+            }
+          }
+
+          done = true;
         }
       }
-    }
-    else {
-      std::cerr << "ERROR: Eigensolver did not converge";
-    }
+      else {
+        std::cerr << "ERROR: Eigensolver did not converge";
+      }
+
+      nev *= 1.6;
+    } while (not done);
   }
   else if (eigensolver == Eigensolver::BLOPEX) {
     lobpcg_BLASLAPACKFunctions blap_fn;
@@ -133,6 +175,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
 
     Vector sample(A.N());
 
+    auto nev = ptree.get("eigensolver_nev", 10);
     std::vector<double> eigenvalues(nev);
     std::vector<double> residuals(nev);
 
