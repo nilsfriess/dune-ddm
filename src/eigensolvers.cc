@@ -77,13 +77,13 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
     auto nev = ptree.get("eigensolver_nev", 10);
     auto nev_max = nev;
     double threshold = -1;
-    if (ptree.hasKey("eigensolver_nev_target") and not ptree.hasKey("eigensolver_nev_threshold")) {
-      spdlog::warn("Parameter 'eigensolver_nev_target' is set but no 'eigensolver_nev_threshold' is provided, using a default threshold of 0.5");
+    if (ptree.hasKey("eigensolver_nev_target") and not ptree.hasKey("eigensolver_threshold")) {
+      spdlog::warn("Parameter 'eigensolver_nev_target' is set but no 'eigensolver_threshold' is provided, using a default threshold of 0.5");
       threshold = 0.5;
       nev = ptree.get<int>("eigensolver_nev_target");
     }
-    else if (ptree.hasKey("eigensolver_nev_target") and ptree.hasKey("eigensolver_nev_threshold")) {
-      threshold = ptree.get<double>("eigensolver_nev_threshold");
+    else if (ptree.hasKey("eigensolver_nev_target") and ptree.hasKey("eigensolver_threshold")) {
+      threshold = ptree.get<double>("eigensolver_threshold");
       nev = ptree.get<int>("eigensolver_nev_target");
     }
 
@@ -112,12 +112,14 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
         MPI_Abort(MPI_COMM_WORLD, 5);
       }
 
+      spdlog::get("all_ranks")->trace("Eigensolver computed {} eigenvalues", nconv);
+      
       if (geigs.info() == Spectra::CompInfo::Successful) {
         const auto evalues = geigs.eigenvalues();
         const auto evecs = geigs.eigenvectors();
 
         if (evalues[nconv - 1] >= threshold or nev >= nev_max) {
-          if (ptree.get("eigensolver_keep_strict", false)) {
+          if (threshold > 0 and ptree.get("eigensolver_keep_strict", false)) {
             // If this parameter is set, we only keep those eigenvectors that correspond to eigenvalues below the threshold.
             // This is mainly useful for testing.
             std::size_t cnt = 0;
