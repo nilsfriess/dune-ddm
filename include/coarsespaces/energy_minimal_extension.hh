@@ -5,14 +5,15 @@
 #include <unordered_map>
 #include <vector>
 
+#include <dune/istl/operators.hh>
+#include <dune/istl/preconditioners.hh>
+#include <dune/istl/solver.hh>
 #include <dune/istl/umfpack.hh>
 
-template <class Mat>
+template <class Mat, class Vec>
 class EnergyMinimalExtension {
-  using Solver = Dune::UMFPack<Mat>;
-
 public:
-  EnergyMinimalExtension(const Mat &A, const std::vector<std::size_t> &interior_to_subdomain, const std::vector<std::size_t> &ring_to_subdomain)
+  EnergyMinimalExtension(const Mat &A, const std::vector<std::size_t> &interior_to_subdomain, const std::vector<std::size_t> &ring_to_subdomain, bool inexact = false)
       : A(A), interior_to_subdomain(interior_to_subdomain), ring_to_subdomain(ring_to_subdomain)
   {
     std::unordered_map<std::size_t, std::size_t> subdomain_to_interior;
@@ -22,21 +23,29 @@ public:
     }
 
     const auto N = interior_to_subdomain.size();
-    Mat Aint;
+    auto Aint = std::make_shared<Mat>();
     auto avg = A.nonzeroes() / A.N() + 2;
-    Aint.setBuildMode(Mat::implicit);
-    Aint.setImplicitBuildModeParameters(avg, 0.2);
-    Aint.setSize(N, N);
+    Aint->setBuildMode(Mat::implicit);
+    Aint->setImplicitBuildModeParameters(avg, 0.2);
+    Aint->setSize(N, N);
     for (auto ri = A.begin(); ri != A.end(); ++ri) {
       for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
         if (subdomain_to_interior.contains(ri.index()) and subdomain_to_interior.contains(ci.index())) {
-          Aint.entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = *ci;
+          Aint->entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = *ci;
         }
       }
     }
-    Aint.compress();
+    Aint->compress();
 
-    solver = std::make_unique<Solver>(Aint);
+    if (not inexact) {
+      solver = std::make_unique<Dune::UMFPack<Mat>>(*Aint);
+    }
+    else {
+      auto prec = std::make_shared<Dune::SeqILU<Mat, Vec, Vec>>(*Aint, 1.0);
+      auto op = std::make_shared<Dune::MatrixAdapter<Mat, Vec, Vec>>(Aint);
+      auto sp = std::make_shared<Dune::SeqScalarProduct<Vec>>();
+      solver = std::make_unique<Dune::RestartedGMResSolver<Vec>>(op, sp, prec, 1e-8, 50, 100, 0);
+    }
   }
 
   EnergyMinimalExtension(const EnergyMinimalExtension &) = delete;
@@ -45,7 +54,6 @@ public:
   EnergyMinimalExtension &operator=(const EnergyMinimalExtension &&) = delete;
   ~EnergyMinimalExtension() = default;
 
-  template <class Vec>
   Vec extend(const Vec &v_ring)
   {
     // Copy the values on the ring to a vector that lives on the whole subdomain
@@ -70,13 +78,9 @@ public:
     v_res = 0;
     Dune::InverseOperatorResult res;
     solver->apply(v_res, v_int, res);
+    v_res *= -1.;
 
-    // Combine with the original vector; reuse vfull for that
-    for (std::size_t i = 0; i < interior_to_subdomain.size(); ++i) {
-      v_full[interior_to_subdomain[i]] = -1 * v_res[i];
-    }
-
-    return v_full;
+    return v_res;
   }
 
 private:
@@ -84,5 +88,5 @@ private:
   const std::vector<std::size_t> &interior_to_subdomain;
   const std::vector<std::size_t> &ring_to_subdomain;
 
-  std::unique_ptr<Solver> solver;
+  std::unique_ptr<Dune::InverseOperator<Vec, Vec>> solver;
 };

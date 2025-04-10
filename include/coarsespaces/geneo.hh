@@ -300,34 +300,44 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
 
   auto eigenvectors = solveGEVP(A, B, eigensolver, ptree);
 
-  if (geneo_type != "ring") {
-    for (auto &vec : eigenvectors) {
-      for (std::size_t i = 0; i < vec.N(); ++i) {
-        if (dirichlet_mask_ovlp[i] > 0) {
-          vec[i] = 0;
-        }
-        else {
-          if (ptree.get("basis_vec_mult_pou", true)) {
-            vec[i] *= pou[i];
-          }
-        }
-      }
-    }
-  }
-  else { // geneo_type == "ring"
-    for (auto &vec : eigenvectors) {
-      for (std::size_t i = 0; i < vec.N(); ++i) {
-        if (dirichlet_mask_ovlp[ring_to_subdomain[i]] > 0) {
-          vec[i] = 0;
-        }
-        else {
-          if (ptree.get("basis_vec_mult_pou", true)) {
-            vec[i] *= pou[ring_to_subdomain[i]];
-          }
-        }
-      }
-    }
-  }
+  // if (geneo_type != "ring") {
+  //   // for (auto &vec : eigenvectors) {
+  //   //   for (std::size_t i = 0; i < vec.N(); ++i) {
+  //   //     if (dirichlet_mask_ovlp[i] > 0) {
+  //   //       vec[i] = 0;
+  //   //     }
+  //   //     else {
+  //   //       if (ptree.get("basis_vec_mult_pou", true)) {
+  //   //         vec[i] *= pou[i];
+  //   //       }
+  //   //     }
+  //   //   }
+  //   // }
+  // }
+  // else { // geneo_type == "ring"
+
+  //   // // If we used Dirichlet boundary conditions on the inner boundary, we have to add the null space vectors manually
+  //   // // For now just assume this is the constant 1 vector
+  //   // // TODO: Allow to pass the null space as a parameter
+  //   // if (not ptree.get("geneo_ring_inner_neumann", true) and ptree.get("geneo_ring_add_constant", true)) {
+  //   //   Vec one(eigenvectors[0].N());
+  //   //   one = 1;
+  //   //   eigenvectors.push_back(std::move(one));
+  //   // }
+
+  //   // for (auto &vec : eigenvectors) {
+  //   //   for (std::size_t i = 0; i < vec.N(); ++i) {
+  //   //     if (dirichlet_mask_ovlp[ring_to_subdomain[i]] > 0) {
+  //   //       vec[i] = 0;
+  //   //     }
+  //   //     else {
+  //   //       if (ptree.get("basis_vec_mult_pou", true)) {
+  //   //         vec[i] *= pou[ring_to_subdomain[i]];
+  //   //       }
+  //   //     }
+  //   //   }
+  //   // }
+  // }
   Logger::get().endEvent(eigensolver_event);
 
   // If we have only solved the eigenvalue problem on the ring, then we now need to extend the eigenvectors to the interior.
@@ -347,15 +357,69 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
     auto *factorise_interior = Logger::get().registerEvent("GenEO", "factorise interior");
     auto *solve_interior = Logger::get().registerEvent("GenEO", "solve interior");
 
+    // The energy-minimal extension is computed using the values of the eigenvectors "one layer into the ring"
+    std::set<std::size_t> ring_boundary; // dofs on the interior ring boundary (using overlapping subdomain numbering)
+    for (const auto &idx : ring_to_subdomain) {
+      for (auto cit = Aovlp[idx].begin(); cit != Aovlp[idx].end(); ++cit) {
+        if (not subdomain_to_ring.contains(cit.index())) {
+          ring_boundary.insert(idx);
+          break;
+        }
+      }
+    }
+
+    // The interior now becomes the old interior+the ring boundary
+    for (const auto &idx : ring_boundary) {
+      interior_to_subdomain.push_back(idx);
+    }
+
+    std::vector<std::size_t> inside_ring_boundary_to_subdomain;
+    inside_ring_boundary_to_subdomain.reserve(ring_boundary.size());
+    for (const auto &idx : ring_to_subdomain) {
+      for (auto cit = Aovlp[idx].begin(); cit != Aovlp[idx].end(); ++cit) {
+        if (not ring_boundary.contains(idx) and ring_boundary.contains(cit.index())) {
+          inside_ring_boundary_to_subdomain.push_back(idx);
+          break;
+        }
+      }
+    }
+    spdlog::get("all_ranks")->debug("Identified {} dofs on the inside ring boundary", inside_ring_boundary_to_subdomain.size());
+
+    // Invert the mapping
+    std::unordered_map<std::size_t, std::size_t> subdomain_to_inside_ring_boundary;
+    subdomain_to_inside_ring_boundary.reserve(inside_ring_boundary_to_subdomain.size());
+    for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) {
+      subdomain_to_inside_ring_boundary[inside_ring_boundary_to_subdomain[i]] = i;
+    }
+
     Logger::get().startEvent(factorise_interior);
-    EnergyMinimalExtension extension(Aovlp, interior_to_subdomain, ring_to_subdomain);
+    EnergyMinimalExtension<Mat, Vec> extension(Aovlp, interior_to_subdomain, inside_ring_boundary_to_subdomain, ptree.get("geneo_ring_inexact_interior_solver", false));
     Logger::get().endEvent(factorise_interior);
 
-    std::vector<Vec> combined_vectors;
-    combined_vectors.reserve(eigenvectors.size());
+    Vec zero(Aovlp.N());
+    zero = 0;
+    std::vector<Vec> combined_vectors(eigenvectors.size(), zero);
     Logger::get().startEvent(solve_interior);
-    for (const auto &evec : eigenvectors) {
-      combined_vectors.push_back(extension.extend(evec));
+    for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
+      const auto &evec = eigenvectors[k];
+
+      Vec evec_dirichlet(inside_ring_boundary_to_subdomain.size());
+      for (std::size_t i = 0; i < evec.N(); ++i) {
+        auto subdomain_idx = ring_to_subdomain[i];
+        if (subdomain_to_inside_ring_boundary.contains(subdomain_idx)) {
+          evec_dirichlet[subdomain_to_inside_ring_boundary[subdomain_idx]] = evec[i];
+        }
+      }
+
+      auto interior_vec = extension.extend(evec_dirichlet);
+      // First set the values in the ring
+      for (std::size_t i = 0; i < evec.N(); ++i) {
+        combined_vectors[k][ring_to_subdomain[i]] = evec[i];
+      }
+      // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
+      for (std::size_t i = 0; i < interior_vec.N(); ++i) {
+        combined_vectors[k][interior_to_subdomain[i]] = interior_vec[i];
+      }
     }
     Logger::get().endEvent(solve_interior);
 
@@ -373,6 +437,19 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
 #endif
 
     eigenvectors = std::move(combined_vectors);
+  }
+
+  for (auto &vec : eigenvectors) {
+    for (std::size_t i = 0; i < vec.N(); ++i) {
+      if (dirichlet_mask_ovlp[i] > 0) {
+        vec[i] = 0;
+      }
+      else {
+        if (ptree.get("basis_vec_mult_pou", true)) {
+          vec[i] *= pou[i];
+        }
+      }
+    }
   }
 
   for (auto &vec : eigenvectors) {
