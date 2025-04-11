@@ -1,29 +1,46 @@
 #pragma once
 
-#include <algorithm>
-#include <dune/common/parallel/indexset.hh>
-#include <dune/common/parallel/variablesizecommunicator.hh>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <mpi.h>
+
 #include <dune/common/version.hh>
+
+#include <dune/common/exceptions.hh>
+#include <dune/common/parallel/indexset.hh>
+#include <dune/common/parallel/interface.hh>
+#include <dune/common/parallel/mpihelper.hh>
+#include <dune/common/parallel/variablesizecommunicator.hh>
+#include <dune/grid/common/gridenums.hh>
 #include <dune/istl/io.hh>
 #include <dune/pdelab/backend/interface.hh>
 #include <dune/pdelab/backend/istl/bcrsmatrixbackend.hh>
-#include <dune/pdelab/backend/istl/parallelhelper.hh>
+#include <dune/pdelab/backend/istl/vector.hh>
+#include <dune/pdelab/common/partitionviewentityset.hh>
 #include <dune/pdelab/constraints/common/constraints.hh>
 #include <dune/pdelab/constraints/conforming.hh>
 #include <dune/pdelab/finiteelementmap/pkfem.hh>
 #include <dune/pdelab/finiteelementmap/qkfem.hh>
+#include <dune/pdelab/gridfunctionspace/genericdatahandle.hh>
+#include <dune/pdelab/gridfunctionspace/gridfunctionspace.hh>
 #include <dune/pdelab/gridfunctionspace/interpolate.hh>
 #include <dune/pdelab/gridoperator/gridoperator.hh>
 #include <dune/pdelab/localoperator/convectiondiffusionfem.hh>
 #include <dune/pdelab/localoperator/convectiondiffusionparameter.hh>
 
+#include <iostream>
+#include <limits>
+#include <map>
 #include <memory>
-#include <mpi.h>
+#include <tuple>
 #include <type_traits>
+#include <vector>
 
 #include "assemblewrapper.hh"
 #include "datahandles.hh"
 #include "helpers.hh"
+#include "spdlog/spdlog.h"
 
 template <class GridView, class RF>
 class PoissonModelProblem : public Dune::PDELab::ConvectionDiffusionModelProblem<GridView, RF> {
@@ -35,69 +52,43 @@ public:
   typename Traits::PermTensorType A(const typename Traits::ElementType &e, const typename Traits::DomainType &x) const
   {
     auto xg = e.geometry().global(x);
-    if (GridView::dimension == 2) {
-      const auto nx = 8;
+    const auto radius = 0.02;
 
-      RF Dglobal = 1;
-      if ((((int)(xg[0] * nx) % 2 != 0) && ((int)(xg[1] * nx) % 2 != 0)) || (((int)(xg[0] * nx) % 2 == 0) && ((int)(xg[1] * nx) % 2 == 0))) {
-        Dglobal = 1;
-      }
+    const auto square = [](auto &&v) { return v * v; };
 
-      typename Traits::PermTensorType I;
-      for (std::size_t i = 0; i < Traits::dimDomain; i++) {
-        for (std::size_t j = 0; j < Traits::dimDomain; j++) {
-          I[i][j] = (i == j) ? Dglobal : 0;
+    RF val = 1;
+    int divx = 10;
+    int divy = 10;
+    for (int i = 0; i < divx - 1; ++i) {
+      for (int j = 0; j < divy - 1; ++j) {
+        typename Traits::DomainType centre{(i + 1.) / divx, (j + 1.) / divy};
+
+        if (square(xg[0] - centre[0]) + square(xg[1] - centre[1]) < square(radius)) {
+          val = 1e6;
         }
       }
-      return I;
     }
-    else if (GridView::dimension == 3) {
-      const auto radius = 0.02;
 
-      const auto square = [](auto &&v) { return v * v; };
-
-      RF val = 1;
-      int divx = 9;
-      int divy = 9;
-      for (int i = 0; i < divx - 1; ++i) {
-        for (int j = 0; j < divy - 1; ++j) {
-          typename Traits::DomainType centre{(i + 1.) / divx, (j + 1.) / divy};
-
-          if (square(xg[0] - centre[0]) + square(xg[1] - centre[1]) < square(radius)) {
-            val = 1e6;
-          }
-        }
+    if constexpr (GridView::dimension == 3) {
+      if (xg[2] < 0.05 or xg[2] > 1 - 0.05) {
+        val = 1;
       }
+    }
 
-      typename Traits::PermTensorType I;
-      for (std::size_t i = 0; i < Traits::dimDomain; i++) {
-        for (std::size_t j = 0; j < Traits::dimDomain; j++) {
-          I[i][j] = (i == j) ? val : 0;
-        }
+    typename Traits::PermTensorType I;
+    for (std::size_t i = 0; i < Traits::dimDomain; i++) {
+      for (std::size_t j = 0; j < Traits::dimDomain; j++) {
+        I[i][j] = (i == j) ? val : 0;
       }
-      return I;
     }
+    return I;
   }
 
-  typename Traits::RangeFieldType f(const typename Traits::ElementType &, const typename Traits::DomainType &) const { return 0.0; }
+  typename Traits::RangeFieldType f(const typename Traits::ElementType &, const typename Traits::DomainType &) const { return 1.0; }
 
-  typename Traits::RangeFieldType g(const typename Traits::ElementType &e, const typename Traits::DomainType &xlocal) const
-  {
-    auto xglobal = e.geometry().global(xlocal);
-    return 1. - xglobal[0];
-  }
+  typename Traits::RangeFieldType g(const typename Traits::ElementType &, const typename Traits::DomainType &) const { return 0; }
 
-  BC bctype(const typename Traits::IntersectionType &is, const typename Traits::IntersectionDomainType &x) const
-  {
-    auto xglobal = is.geometry().global(x);
-    if (xglobal[0] < 1e-6) {
-      return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet;
-    }
-    if (xglobal[0] > 1.0 - 1e-6) {
-      return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet;
-    }
-    return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Neumann;
-  }
+  BC bctype(const typename Traits::IntersectionType &, const typename Traits::IntersectionDomainType &) const { return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet; }
 };
 
 template <class GridView, class RF>
@@ -132,6 +123,23 @@ public:
 
     if (ix % 2 == 0 && iy % 2 == 0) {
       kappa = pow(10, 5.0) * (1.0 + ix + iy);
+    }
+
+    if (GridView::Grid::dimension == 3) {
+      const auto radius = 0.02;
+      const auto square = [](auto &&v) { return v * v; };
+
+      int divx = 9;
+      int divz = 9;
+      for (int i = 0; i < divx - 1; ++i) {
+        for (int j = 0; j < divz - 1; ++j) {
+          typename Traits::DomainType centre{(i + 1.) / divx, (j + 1.) / divz};
+
+          if (square(xg[0] - centre[0]) + square(xg[2] - centre[1]) < square(radius)) {
+            kappa = 1e6;
+          }
+        }
+      }
     }
 
     typename Traits::PermTensorType I;
@@ -180,8 +188,8 @@ public:
 
   using ES = Dune::PDELab::NonOverlappingEntitySet<GridView>; // Skip ghost elements during assembly
 
-  // using ModelProblem = PoissonModelProblem<ES, RF>;
-  using ModelProblem = IslandsModelProblem<ES, RF>;
+  using ModelProblem = PoissonModelProblem<ES, RF>;
+  // using ModelProblem = IslandsModelProblem<ES, RF>;
   using BC = Dune::PDELab::ConvectionDiffusionBoundaryConditionAdapter<ModelProblem>;
 
   using FEM = std::conditional_t<isYASPGrid<Grid>(),                                          // If YASP grid...
@@ -204,6 +212,7 @@ public:
 
   PoissonProblem(const GridView &gv, const Dune::MPIHelper &helper) : es(gv), fem(gv), gfs(es, fem), bc(es, modelProblem), lop(modelProblem), x(std::make_unique<Vec>(gfs, 0.0))
   {
+    using Dune::PDELab::Backend::native;
     // Name the GFS for visualisation
     gfs.name("Solution");
 
@@ -226,9 +235,10 @@ public:
 
     spdlog::info("Assembling residual");
     d = std::make_unique<Vec>(gfs, 0.);
-    go->residual(*x, *d);
 
     x0 = std::make_unique<Vec>(gfs, 0.);
+    go->residual(*x, *d);
+
     *x0 = *x;
 
     if (helper.size() > 1) {
@@ -512,6 +522,7 @@ public:
       }
     }
 
+    MPI_Type_free(&triple_type);
     return {all_triples, all_own_triples, interior};
   }
 
@@ -547,5 +558,4 @@ private:
   std::unique_ptr<Vec> dirichlet_mask; // vector with ones at the dirichlet dofs
   std::unique_ptr<Mat> As;
   std::map<int, Mat> neumannCorrForRank;
-  //  std::shared_ptr<NativeMat> A; // stiffness matrix
 };
