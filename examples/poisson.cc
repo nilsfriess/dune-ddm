@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cassert>
 #include <iostream>
+#include "metis.hh"
 
 #include <spdlog/cfg/argv.h>
 #include <spdlog/spdlog.h>
@@ -28,7 +29,6 @@
 #include <dune/grid/io/file/gmshreader.hh>
 #include <dune/grid/io/file/vtk/subsamplingvtkwriter.hh>
 #include <dune/grid/uggrid.hh>
-#include <dune/grid/utility/parmetisgridpartitioner.hh>
 #include <dune/grid/yaspgrid/partitioning.hh>
 #include <dune/istl/bccsmatrixinitializer.hh>
 #include <dune/istl/bcrsmatrix.hh>
@@ -108,7 +108,7 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
 
 #if USE_UGGRID
   auto gv = grid->leafGridView();
-  auto part = Dune::ParMetisGridPartitioner<decltype(gv)>::partition(gv, helper);
+  auto part = partitionMETIS(gv, helper);
 
   grid->loadBalance(part, 0);
 #else
