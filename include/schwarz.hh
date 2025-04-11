@@ -105,8 +105,9 @@ class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   };
 
 public:
-  SchwarzPreconditioner(const Mat &A, const RemoteIndices &remoteindices, int overlap, SchwarzType type = SchwarzType::Restricted, PartitionOfUnityType pou_type = PartitionOfUnityType::None)
-      : type(type), pou_type(pou_type)
+  SchwarzPreconditioner(const Mat &A, const RemoteIndices &remoteindices, int overlap, SchwarzType type = SchwarzType::Restricted, PartitionOfUnityType pou_type = PartitionOfUnityType::None,
+                        bool factorise_at_first_iteration = false)
+      : type(type), pou_type(pou_type), factorise_at_first_iteration(factorise_at_first_iteration)
   {
     spdlog::info("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
 
@@ -114,7 +115,7 @@ public:
     createPOU(*Aovlp);
   }
 
-  SchwarzPreconditioner(const Mat &A, const RemoteIndices &remoteindices, const Dune::ParameterTree &ptree)
+  SchwarzPreconditioner(const Mat &A, const RemoteIndices &remoteindices, const Dune::ParameterTree &ptree) : factorise_at_first_iteration(ptree.get("schwarz_factorise_at_first_iteration", false))
   {
     auto type_string = ptree.get("type", "restricted");
     if (type_string == "restricted") {
@@ -153,6 +154,9 @@ public:
   {
     Logger::ScopedLog sl(apply_event);
 
+    if (!solver) {
+      solver = std::make_unique<Solver>(*Aovlp, 0);
+    }
     // 1. Copy local values from non-overlapping to overlapping defect
     *d_ovlp = 0;
     for (std::size_t i = 0; i < d.size(); ++i) {
@@ -212,7 +216,12 @@ private:
     owner_copy_comm.build<Vec>(owner_copy_interface);
 
     Aovlp = std::make_shared<Mat>(createOverlappingMatrix(A, *ovlpindices.first));
-    solver = std::make_unique<Solver>(*Aovlp, 0);
+    if (not factorise_at_first_iteration) {
+      solver = std::make_unique<Solver>(*Aovlp, 0);
+    }
+    else {
+      solver = nullptr;
+    }
 
     d_ovlp = std::make_unique<Vec>(Aovlp->N());
     x_ovlp = std::make_unique<Vec>(Aovlp->N());
@@ -280,6 +289,8 @@ private:
 
   SchwarzType type = SchwarzType::Restricted;
   PartitionOfUnityType pou_type;
+
+  bool factorise_at_first_iteration;
 
   Logger::Event *apply_event{};
 };
