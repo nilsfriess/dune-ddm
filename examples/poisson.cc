@@ -188,6 +188,11 @@ int main(int argc, char *argv[])
   const auto &helper = Dune::MPIHelper::instance(argc, argv);
   setup_loggers(helper.rank(), argc, argv);
 
+  auto *matrix_setup = Logger::get().registerEvent("Total", "setup problem");
+  auto *prec_setup = Logger::get().registerEvent("Total", "setup preconditioner");
+  auto *solve = Logger::get().registerEvent("Total", "solve");
+
+  Logger::get().startEvent(matrix_setup);
   Dune::ParameterTree ptree;
   Dune::ParameterTreeParser ptreeparser;
   ptreeparser.readOptions(argc, argv, ptree);
@@ -250,7 +255,9 @@ int main(int argc, char *argv[])
     applymode = ApplyMode::Additive;
     spdlog::warn("Unknown apply mode for combined preconditioner, using 'additive' instead");
   }
+  Logger::get().endEvent(matrix_setup);
 
+  Logger::get().startEvent(prec_setup);
   auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(problem.getA(), remoteindices, ptree);
 
   CombinedPreconditioner<Native<Vec>> prec(applymode, {schwarz}, op);
@@ -364,7 +371,9 @@ int main(int argc, char *argv[])
 #else
   using SolverVec = Native<Vec>;
 #endif
+  Logger::get().endEvent(prec_setup);
 
+  Logger::get().startEvent(solve);
   std::unique_ptr<Dune::IterativeSolver<SolverVec, SolverVec>> solver;
   auto maxit = ptree.get("maxit", 1000);
   auto tol = ptree.get("tolerance", 1e-8);
@@ -394,6 +403,7 @@ int main(int argc, char *argv[])
   v = 0;
   solver->apply(v, b, res);
   problem.getX() -= v;
+  Logger::get().endEvent(solve);
 
   // Visualisation
   if (ptree.get("visualise", true)) {
