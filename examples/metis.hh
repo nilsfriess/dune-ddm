@@ -12,6 +12,7 @@ std::vector<unsigned int> partitionMETIS(const GridView &gv, const Dune::MPIHelp
   if (helper.rank() == 0) {
     constexpr auto dimension = GridView::dimension;
     // setup METIS parameters
+    idx_t constraints = 1;
     idx_t parts = helper.size();
     idx_t ncommonnodes = dimension; // number of nodes elements must have in common to be considered adjacent to each other
                                     // In 2d we want 2 vertices, in 3d we want 3
@@ -28,23 +29,24 @@ std::vector<unsigned int> partitionMETIS(const GridView &gv, const Dune::MPIHelp
     int vertices = 0;
     cells.push_back(vertices);
     for (const auto &element : elements(gv)) {
-      const auto &ref_element = referenceElement<double, dimension>(element.type());
-      vertices += ref_element.size(dimension);
-      cells.push_back(vertices);
-
-      for (int k = 0; k != ref_element.size(dimension); ++k) {
-        nodes.push_back(gv.indexSet().subIndex(element, k, dimension));
+      int cnt = 0;
+      for (const auto &is : intersections(gv, element)) {
+        if (is.neighbor()) {
+          auto other = is.outside();
+          nodes.push_back(gv.indexSet().index(other));
+          cnt++;
+        }
       }
+      vertices += cnt;
+      cells.push_back(vertices);
     }
 
     idx_t element_count = cells.size() - 1;
     idx_t node_count = nodes.size();
     element_part.assign(element_count, 0);
-    node_part.assign(node_count, 0);
 
     // actual partition of elements
-    auto result =
-        METIS_PartMeshDual(&element_count, &node_count, cells.data(), nodes.data(), nullptr, nullptr, &ncommonnodes, &parts, nullptr, options, &objval, element_part.data(), node_part.data());
+    auto result = METIS_PartGraphKway(&element_count, &constraints, cells.data(), nodes.data(), nullptr, nullptr, nullptr, &parts, nullptr, nullptr, options, &objval, element_part.data());
 
     if (result != METIS_OK) {
       DUNE_THROW(Dune::Exception, "Metis could not partition the grid");
