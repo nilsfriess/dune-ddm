@@ -113,7 +113,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
       }
 
       spdlog::get("all_ranks")->trace("Eigensolver computed {} eigenvalues", nconv);
-      
+
       if (geigs.info() == Spectra::CompInfo::Successful) {
         const auto evalues = geigs.eigenvalues();
         const auto evecs = geigs.eigenvectors();
@@ -136,7 +136,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
             spdlog::get("all_ranks")->debug("Computed {} eigenvalues: {}", nconv, eigstring);
           }
           else {
-            spdlog::get("all_ranks")->info("Computed {} eigenvalues: smallest {}, largest {}", nconv, evalues[0], evalues[nconv]);
+            spdlog::get("all_ranks")->info("Computed {} eigenvalues: smallest {}, largest {}", nconv, evalues[0], evalues[nconv - 1]);
           }
 
           if (std::any_of(evalues.begin(), evalues.end(), [](auto x) { return x < -1e-5; })) {
