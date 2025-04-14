@@ -232,6 +232,8 @@ public:
    */
   void report(MPI_Comm comm, std::ostream &out = std::cout) const
   {
+    using namespace std::literals;
+
     int rank = 0;
     MPI_Comm_rank(comm, &rank);
     int size = 0;
@@ -257,9 +259,9 @@ public:
         const auto [mean, min, max] = meanMinMaxTime(comm, event);
         if (rank == 0) {
           out << "  " << std::left << std::setw(20) << event.name;
-          out << "| " << std::right << std::setw(15) << std::chrono::duration_cast<std::chrono::duration<double>>(mean) << ' ';
-          out << "| " << std::right << std::setw(15) << std::chrono::duration_cast<std::chrono::duration<double>>(min) << ' ';
-          out << "| " << std::right << std::setw(15) << std::chrono::duration_cast<std::chrono::duration<double>>(max) << ' ';
+          out << "| " << std::right << std::setw(15) << mean / 1.0s << ' ';
+          out << "| " << std::right << std::setw(15) << min / 1.0s << ' ';
+          out << "| " << std::right << std::setw(15) << max / 1.0s << ' ';
           out << "| " << std::right << std::setw(12) << event.times_called;
 
           out << '\n';
