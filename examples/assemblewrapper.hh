@@ -1,12 +1,15 @@
 #pragma once
 
+#include "helpers.hh"
 #include "spdlog/spdlog.h"
 
+#include <cstdlib>
 #include <dune/common/exceptions.hh>
 #include <dune/pdelab/gridfunctionspace/lfsindexcache.hh>
 #include <dune/pdelab/localoperator/callswitch.hh>
 #include <map>
 
+// TODO: Implement the remaining missing functions
 template <class LocalOperator>
 class AssembleWrapper {
 public:
@@ -164,9 +167,75 @@ public:
   {
     spdlog::trace("Called jacobian_volume");
 
-    if (not integrateOnlyNeumannCorrection or should_do_element(lfsu)) {
-      Dune::PDELab::LocalOperatorApply::jacobianVolume(*lop, eg, lfsu, x, lfsv, mat);
+    auto M_before = mat.container();
+    Dune::PDELab::LocalOperatorApply::jacobianVolume(*lop, eg, lfsu, x, lfsv, mat);
+    auto M_after = mat.container();
+
+    Dune::PDELab::LFSIndexCache cache(lfsu);
+    cache.update();
+
+    for (std::size_t i = 0; i < lfsu.size(); ++i) {
+      auto gi = cache.containerIndex(i)[0];
+      for (std::size_t j = 0; j < lfsu.size(); ++j) { // TODO: We assume lfsu == lfsv
+        auto gj = cache.containerIndex(j)[0];
+
+        // TODO: Here and below we assume that an unordered_map zero initialises a double when inserting a new entry. Is this true?
+        curr_neumann_corrections[gi][gj] += M_after(lfsu, i, lfsv, j) - M_before(lfsu, i, lfsv, j);
+      }
     }
+
+    // Corrections for other ranks
+    for (const auto &[rank, mask] : *on_boundary_mask_for_rank) {
+      bool hasDofAtBoundary = false;
+      bool hasDofOutsideBoundary = false;
+      for (std::size_t i = 0; i < cache.size(); ++i) {
+        auto dofidx = cache.containerIndex(i)[0];
+
+        if ((*on_boundary_mask_for_rank).at(rank)[dofidx]) {
+          hasDofAtBoundary = true;
+        }
+
+        if ((*outside_boundary_mask_for_rank).at(rank)[dofidx]) {
+          hasDofOutsideBoundary = true;
+        }
+      }
+
+      if (hasDofAtBoundary and hasDofOutsideBoundary) {
+        for (const auto &[row, cols] : curr_neumann_corrections) {
+          for (const auto &[col, val] : cols) {
+            if ((*on_boundary_mask_for_rank).at(rank)[row] and (*on_boundary_mask_for_rank).at(rank)[col]) {
+              neumann_correction_matrices[rank][row][col] += val;
+            }
+          }
+        }
+      }
+    }
+
+    // Corrections for ourselves
+    bool hasDofAtBoundary = false;
+    bool hasDofOutsideBoundary = false;
+    for (std::size_t i = 0; i < cache.size(); ++i) {
+      auto dofidx = cache.containerIndex(i)[0];
+
+      if ((*on_boundary_mask)[dofidx]) {
+        hasDofAtBoundary = true;
+      }
+
+      if ((*outside_boundary_mask)[dofidx]) {
+        hasDofOutsideBoundary = true;
+      }
+    }
+    if (hasDofAtBoundary and hasDofOutsideBoundary) {
+      for (const auto &[row, cols] : curr_neumann_corrections) {
+        for (const auto &[col, val] : cols) {
+          if ((*on_boundary_mask)[row] and (*on_boundary_mask)[col]) {
+            neumann_correction_matrices[-1][row][col] += val; // -1 means our own corrections
+          }
+        }
+      }
+    }
+
+    curr_neumann_corrections.clear();
   }
 
   template <typename EG, typename LFSU, typename X, typename LFSV, typename M>
@@ -187,51 +256,108 @@ public:
   void jacobian_boundary(const IG &ig, const LFSU &lfsu_s, const X &x_s, const LFSV &lfsv_s, M &mat_ss) const
   {
     spdlog::trace("Called jacobian_boundary");
-    if (not integrateOnlyNeumannCorrection or should_do_element(lfsu_s)) {
-      Dune::PDELab::LocalOperatorApply::jacobianBoundary(*lop, ig, lfsu_s, x_s, lfsv_s, mat_ss);
-    }
+    Dune::PDELab::LocalOperatorApply::jacobianBoundary(*lop, ig, lfsu_s, x_s, lfsv_s, mat_ss);
   }
 
-  void setMasks(const std::vector<bool> *boundary_mask, const std::vector<bool> *outside_mask)
+  template <class Mat>
+  void setMasks(const Mat &A, const std::map<int, std::vector<bool>> *on_boundary_mask_for_rank, const std::map<int, std::vector<bool>> *outside_boundary_mask_for_rank,
+                const std::vector<bool> *on_boundary_mask, const std::vector<bool> *outside_boundary_mask)
   {
-    this->boundary_mask = boundary_mask;
-    this->outside_mask = outside_mask;
+    this->on_boundary_mask_for_rank = on_boundary_mask_for_rank;
+    this->outside_boundary_mask_for_rank = outside_boundary_mask_for_rank;
+    this->on_boundary_mask = on_boundary_mask;
+    this->outside_boundary_mask = outside_boundary_mask;
 
-    integrateOnlyNeumannCorrection = true;
+    const auto avg = A.nonzeroes() / A.N();
+    for (const auto &[rank, mask] : *on_boundary_mask_for_rank) {
+      auto &An = neumann_correction_matrices[rank];
+      An.setBuildMode(Dune::BCRSMatrix<double>::implicit);
+      An.setImplicitBuildModeParameters(avg, 0.4);
+      An.setSize(A.N(), A.M());
+
+      for (auto ri = A.begin(); ri != A.end(); ++ri) {
+        if (mask[ri.index()]) {
+          for (auto ci = A[ri.index()].begin(); ci != A[ri.index()].end(); ++ci) {
+            if (mask[ci.index()]) {
+              An.entry(ri.index(), ci.index()) = 0.0;
+            }
+          }
+        }
+      }
+      An.compress();
+    }
+
+    // Set up an additional correction matrix for our own local correction
+    auto &An = neumann_correction_matrices[-1];
+    An.setBuildMode(Dune::BCRSMatrix<double>::implicit);
+    An.setImplicitBuildModeParameters(avg, 0.4);
+    An.setSize(A.N(), A.M());
+
+    for (auto ri = A.begin(); ri != A.end(); ++ri) {
+      if ((*on_boundary_mask)[ri.index()]) {
+        for (auto ci = A[ri.index()].begin(); ci != A[ri.index()].end(); ++ci) {
+          if ((*on_boundary_mask)[ci.index()]) {
+            An.entry(ri.index(), ci.index()) = 0.0;
+          }
+        }
+      }
+    }
+    An.compress();
+  }
+
+  template <class GLIS>
+  std::unordered_map<int, std::vector<TripleWithRank>> get_correction_triples(const GLIS &glis) const
+  {
+    std::unordered_map<int, std::vector<TripleWithRank>> triples_for_rank;
+
+    for (const auto &[rank, An] : neumann_correction_matrices) {
+      triples_for_rank[rank].reserve(An.nonzeroes());
+      if (rank != -1) {
+        for (auto ri = An.begin(); ri != An.end(); ++ri) {
+          auto grow = glis.pair(ri.index())->global();
+          for (auto ci = An[ri.index()].begin(); ci != An[ri.index()].end(); ++ci) {
+            auto gcol = glis.pair(ci.index())->global();
+            if (std::abs(*ci) > 0) {
+              triples_for_rank[rank].emplace_back(TripleWithRank{
+                  .rank = rank,
+                  .row = grow,
+                  .col = gcol,
+                  .val = *ci,
+              });
+            }
+          }
+        }
+      }
+      else {
+        for (auto ri = An.begin(); ri != An.end(); ++ri) {
+          for (auto ci = An[ri.index()].begin(); ci != An[ri.index()].end(); ++ci) {
+            if (std::abs(*ci) > 0) {
+              triples_for_rank[rank].emplace_back(TripleWithRank{
+                  .rank = rank,
+                  .row = ri.index(),
+                  .col = ci.index(),
+                  .val = *ci,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    return triples_for_rank;
   }
 
 private:
-  template <class LFSU>
-  bool should_do_element(const LFSU &lfsu) const
-  {
-    // We're in "only integrate the Neumann correction terms" mode, so first check, if we should integrate this element.
-    Dune::PDELab::LFSIndexCache cache(lfsu);
-    cache.update();
+  const std::map<int, std::vector<bool>> *on_boundary_mask_for_rank{nullptr};
+  const std::map<int, std::vector<bool>> *outside_boundary_mask_for_rank{nullptr};
+  const std::vector<bool> *on_boundary_mask{nullptr}; // Masks for the "inner" corrections
+  const std::vector<bool> *outside_boundary_mask{nullptr};
+  // std::map<int, std::vector<TripleWithRank>> neumann_corrections;
 
-    bool hasDofAtBoundary = false;
-    bool hasDofOutsideBoundary = false;
-    for (std::size_t i = 0; i < cache.size(); ++i) {
-      auto dofidx = cache.containerIndex(i)[0];
+  mutable std::unordered_map<std::size_t, std::unordered_map<std::size_t, double>> curr_neumann_corrections; // maps from row -> col -> value
 
-      if ((*boundary_mask)[dofidx]) {
-        hasDofAtBoundary = true;
-      }
-
-      if ((*outside_mask)[dofidx]) {
-        hasDofOutsideBoundary = true;
-      }
-
-      if (hasDofAtBoundary and hasDofOutsideBoundary) {
-        return true; // Break early if we already found out that this element should be integrated over
-      }
-    }
-
-    return hasDofAtBoundary and hasDofOutsideBoundary;
-  }
-
-  const std::vector<bool> *boundary_mask{nullptr};
-  const std::vector<bool> *outside_mask{nullptr};
+  mutable std::unordered_map<int, Dune::BCRSMatrix<double>> neumann_correction_matrices;
 
   LocalOperator *lop;
-  bool integrateOnlyNeumannCorrection = false;
+  // bool integrateOnlyNeumannCorrection = false;
 };

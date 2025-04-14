@@ -248,7 +248,7 @@ public:
     // Dune::PDELab::set_nonconstrained_dofs(cc, 0, *x0);
   }
 
-  // TODO: This function is a horrible, inefficient mess
+  // TODO: This function needs some cleaning up.
   template <class RemoteIndices>
   std::tuple<std::vector<TripleWithRank>, std::vector<TripleWithRank>, std::vector<bool>> assembleJacobian(const RemoteIndices &remoteids, int overlap)
   {
@@ -270,8 +270,17 @@ public:
     IdentifyBoundaryDataHandle ibdh(native(*As), paridxs, ownrank);
     communicator.forward(ibdh);
 
-// TODO: Find out why this branch sometimes does not produce the same results as the other one
-#if 1
+    // First we create (for each rank) two boolean masks:
+    //   - One marks the dofs that have distance 'overlap' from the subdomain boundary
+    //     that we share with a given rank.
+    //   - The other one marks the dofs that have distance 'overlap + 1' from the
+    //     subdomain boundary that we share with a given rank.
+    // All elements that contain dofs from both sets corresponding to these masks are
+    // exactly those elements that we would need to skip during assembly in order to
+    // assemble a matrix that corresponds to a "Neumann" matrix for the given remote
+    // rank. Instead of skipping those elements, we compute the contributions from
+    // them and send those contributions around. Our neighbouring ranks can then
+    // subtract those contributions from their matrices if they need Neumann matrices.
     auto subdomain_boundary_mask_for_rank = ibdh.getBoundaryMaskForRank();
     std::map<int, std::vector<int>> boundary_dst_for_rank;
     for (const auto &[rank, mask] : subdomain_boundary_mask_for_rank) {
@@ -293,185 +302,21 @@ public:
       }
     }
 
-    std::map<int, std::vector<bool>> boundary_mask_for_rank;
-    std::map<int, std::vector<bool>> outside_mask_for_rank;
+    std::map<int, std::vector<bool>> on_boundary_mask_for_rank;
+    std::map<int, std::vector<bool>> outside_boundary_mask_for_rank;
     for (const auto &[rank, dstmap] : boundary_dst_for_rank) {
-      boundary_mask_for_rank[rank].resize(paridxs.size(), false);
-      outside_mask_for_rank[rank].resize(paridxs.size(), false);
+      on_boundary_mask_for_rank[rank].resize(paridxs.size(), false);
+      outside_boundary_mask_for_rank[rank].resize(paridxs.size(), false);
 
       for (std::size_t i = 0; i < paridxs.size(); ++i) {
-        boundary_mask_for_rank[rank][i] = dstmap[i] == overlap;
-        outside_mask_for_rank[rank][i] = dstmap[i] == overlap + 1;
+        on_boundary_mask_for_rank[rank][i] = dstmap[i] == overlap;
+        outside_boundary_mask_for_rank[rank][i] = dstmap[i] == overlap + 1;
       }
     }
-#else
 
-    const auto ovlpindices_before = extendOverlap(remoteids, native(*As), overlap - 1);
-    auto Aovlp = createOverlappingMatrix(native(*As), *ovlpindices_before.first);
-
-    const auto ovlpindices = extendOverlap(*ovlpindices_before.first, Aovlp, 1);
-    Aovlp = std::move(createOverlappingMatrix(Aovlp, *ovlpindices.first));
-
-    const auto ovlpindices_after = extendOverlap(*ovlpindices.first, Aovlp, 1);
-
-    const auto paridxs2vec = [](const auto &paridxs) {
-      std::vector<std::size_t> indices(paridxs.size());
-      std::transform(paridxs.begin(), paridxs.end(), indices.begin(), [](auto &idx) { return idx.local().local(); });
-      return indices;
-    };
-
-    // TODO: This is pretty inefficient and we could get the same information for free during overlap generation.
-    //       Maybe the whole overlap extension should be factored into a class that stores some of the information
-    //       we construct below.
-    auto indices_before = paridxs2vec(*ovlpindices_before.second);
-    std::sort(indices_before.begin(), indices_before.end());
-    auto indices = paridxs2vec(*ovlpindices.second);
-    std::sort(indices.begin(), indices.end());
-    auto indices_after = paridxs2vec(*ovlpindices_after.second);
-    std::sort(indices_after.begin(), indices_after.end());
-
-    std::vector<std::size_t> indices_at_boundary(indices.size() - indices_before.size());
-    std::set_difference(indices.begin(), indices.end(), indices_before.begin(), indices_before.end(), indices_at_boundary.begin());
-    std::vector<std::size_t> indices_outside_boundary(indices_after.size(), indices.size());
-    std::set_difference(indices_after.begin(), indices_after.end(), indices.begin(), indices.end(), indices_outside_boundary.begin());
-
-    /* Now we have two sets of indices that contain:
-       1. All indices that lie on the boundary of our overlapping subdomain.
-       2. All indices that lie just outside the boundary of our overlapping subdomain.
-       We know send those around so that the other ranks know which elements they have to treat differently
-       when assembling the stiffness matrix.
-
-       TODO: It's possible to generate this information locally, I tried and it didn't match the information
-             that we get doing it the way it's done above. Would be good to know why the two approaches differ.
-    */
-
-    // First create a boolean mask that marks all indices on the subdomain boundary of each of our neighbouring ranks
-    std::map<int, std::vector<bool>> boundary_mask_for_rank;
-    {
-      Dune::Interface interface;
-      interface.build(*ovlpindices.first, allAttributes, allAttributes);
-      Dune::VariableSizeCommunicator communicator(interface);
-
-      MarkIndicesForRank handle(indices_at_boundary, ownrank, *ovlpindices.second);
-      communicator.forward(handle);
-      boundary_mask_for_rank = std::move(handle.mask_from_rank);
-    }
-
-    // Next, create a boolean mask that marks all indices just outside the subdomain boundary of each of our neighbouring ranks
-    std::map<int, std::vector<bool>> outside_mask_for_rank;
-    {
-      Dune::Interface interface;
-      interface.build(*ovlpindices_after.first, allAttributes, allAttributes);
-      Dune::VariableSizeCommunicator communicator(interface);
-
-      MarkIndicesForRank handle(indices_outside_boundary, ownrank, *ovlpindices_after.second);
-      communicator.forward(handle);
-      outside_mask_for_rank = std::move(handle.mask_from_rank);
-    }
-
-    assert(outside_mask_for_rank.size() == boundary_mask_for_rank.size() && "Both boolean masks should have equal size. Might actually happen that one is larger, have to think about that");
-#endif
-
-    spdlog::info("Assembling full stiffness matrix");
-    go->jacobian(*x, *As);
-
-    // Full stiffness matrix is assembled, now we can proceed assembling the individual Neumann correction matrices for each of our MPI neighbours.
-    Dune::GlobalLookupIndexSet glis(remoteids.sourceIndexSet());
-    spdlog::info("Assembling Neumann correction matrices");
-    for (const auto &[rank, boundary_mask] : boundary_mask_for_rank) {
-      neumannCorrForRank[rank] = *As;
-      neumannCorrForRank[rank] = 0.0;
-
-      wrapper->setMasks(&boundary_mask, &(outside_mask_for_rank[rank]));
-      go->jacobian(*x, neumannCorrForRank[rank]);
-    }
-
-    // Now we have a set of matrices that represent corrections that remote ranks have to apply after overlap extension to turn
-    // the matrices that they've obtained into matrices that correspond to a PDE with Neumann boundary conditions at the overlapping
-    // subdomain boundary. Let's exchange this info with our neighbours.
-    constexpr int nitems = 4;
-    std::array<int, nitems> blocklengths = {1, 1, 1, 1};
-    std::array<MPI_Datatype, nitems> types = {MPI_INT, MPI_UNSIGNED_LONG, MPI_UNSIGNED_LONG, MPI_DOUBLE};
-    MPI_Datatype triple_type = MPI_DATATYPE_NULL;
-    std::array<MPI_Aint, nitems> offsets{0};
-    offsets[0] = offsetof(TripleWithRank, rank);
-    offsets[1] = offsetof(TripleWithRank, row);
-    offsets[2] = offsetof(TripleWithRank, col);
-    offsets[3] = offsetof(TripleWithRank, val);
-    MPI_Type_create_struct(nitems, blocklengths.data(), offsets.data(), types.data(), &triple_type);
-    MPI_Type_commit(&triple_type);
-
-    std::vector<MPI_Request> requests;
-    requests.reserve(neumannCorrForRank.size());
-    std::map<int, std::vector<TripleWithRank>> my_triples;
-    for (const auto &[rank, Anp] : neumannCorrForRank) {
-      const auto &An = native(Anp);
-      std::size_t cnt = 0;
-      for (auto ri = An.begin(); ri != An.end(); ++ri) {
-        for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-          // We can skip all contributions from outside the overlapping subdomain, they won't be present in the overlapping matrix anyways.
-          if ((not boundary_mask_for_rank[rank][ri.index()]) or (not boundary_mask_for_rank[rank][ci.index()])) {
-            continue;
-          }
-
-          if (std::abs(*ci) > 0) {
-            cnt++;
-          }
-        }
-      }
-
-      my_triples[rank].resize(cnt);
-      cnt = 0;
-      for (auto ri = An.begin(); ri != An.end(); ++ri) {
-        for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-          if ((not boundary_mask_for_rank[rank][ri.index()]) or (not boundary_mask_for_rank[rank][ci.index()])) {
-            continue;
-          }
-
-          if (std::abs(*ci) > 0) {
-            auto col = ci.index();
-            auto row = ri.index();
-
-            // Convert the row and col to global indices
-            auto gcol = glis.pair(col)->global();
-            auto grow = glis.pair(row)->global();
-            my_triples[rank][cnt++] = TripleWithRank{.rank = ownrank, .row = grow, .col = gcol, .val = *ci};
-
-            spdlog::trace("New triple: ({}, {}) => {}", grow, gcol, static_cast<double>(*ci));
-          }
-        }
-      }
-
-      // Here we can already post the asynchronous sends
-      MPI_Isend(my_triples[rank].data(), my_triples[rank].size(), triple_type, rank, 0, remoteids.communicator(), &requests.emplace_back());
-    }
-
-    std::map<int, std::vector<TripleWithRank>> remote_triples;
-    std::size_t num_triples = 0;
-    for (const auto &[rank, Anp] : neumannCorrForRank) {
-      MPI_Status status;
-      int count{};
-
-      MPI_Probe(rank, 0, remoteids.communicator(), &status);
-      MPI_Get_count(&status, triple_type, &count);
-      num_triples += count;
-
-      remote_triples[rank].resize(count);
-      MPI_Recv(remote_triples[rank].data(), count, triple_type, rank, 0, remoteids.communicator(), MPI_STATUS_IGNORE);
-    }
-    MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE);
-
-    // Now combine all triples we received into a single list
-    std::vector<TripleWithRank> all_triples;
-    all_triples.reserve(num_triples);
-    for (const auto &[rank, triples] : remote_triples) {
-      all_triples.insert(all_triples.end(), triples.begin(), triples.end());
-    }
-
-    // Now we have to do the same thing once again but now for the "interior" boundary of our overlap region.
-    std::vector<TripleWithRank> all_own_triples;
-
-    // TODO: There are about 100 instances where we do the same thing as below, this should be refactored into a function or even better just computed once and for all in some class.
+    // Now we have the two boolean masks as explained above. Since we might also have to apply these
+    // "Neumann corrections" to some of our own indices (e.g., in the case of the GenEO ring coarse
+    // space), we create two additional boolean masks corresponding to those interior corrections.
     auto boundary_mask = ibdh.getBoundaryMask();
     std::vector<int> boundary_dst(boundary_mask.size(), std::numeric_limits<int>::max() - 1);
     for (const auto &idxpair : paridxs) {
@@ -496,24 +341,67 @@ public:
       outside_boundary_mask[i] = boundary_dst[i] == overlap + 1;
     }
 
-    auto innerA = *As;
-    innerA = 0;
-    wrapper->setMasks(&on_boundary_mask, &outside_boundary_mask);
-    go->jacobian(*x, innerA);
+    spdlog::info("Assembling full stiffness matrix and corrections");
+    wrapper->setMasks(native(*As), &on_boundary_mask_for_rank, &outside_boundary_mask_for_rank, &on_boundary_mask, &outside_boundary_mask);
+    go->jacobian(*x, *As);
 
-    auto &An = native(innerA);
-    for (auto ri = An.begin(); ri != An.end(); ++ri) {
-      auto row = ri.index();
-      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-        if (std::abs(*ci) > 0) {
-          auto col = ci.index();
+    Dune::GlobalLookupIndexSet glis(remoteids.sourceIndexSet());
+    auto triples_for_rank = wrapper->get_correction_triples(glis);
 
-          if (boundary_dst[row] == overlap and boundary_dst[row] == boundary_dst[col]) {
-            all_own_triples.push_back(TripleWithRank{.rank = ownrank, .row = row, .col = col, .val = *ci});
-          }
-        }
+    // Now we have a set of {row, col, value} triples that represent corrections that remote ranks have to apply after overlap extension to turn
+    // the matrices that they've obtained into matrices that correspond to a PDE with Neumann boundary conditions at the overlapping
+    // subdomain boundary. Let's exchange this info with our neighbours.
+    constexpr int nitems = 4;
+    std::array<int, nitems> blocklengths = {1, 1, 1, 1};
+    std::array<MPI_Datatype, nitems> types = {MPI_INT, MPI_UNSIGNED_LONG, MPI_UNSIGNED_LONG, MPI_DOUBLE};
+    MPI_Datatype triple_type = MPI_DATATYPE_NULL;
+    std::array<MPI_Aint, nitems> offsets{0};
+    offsets[0] = offsetof(TripleWithRank, rank);
+    offsets[1] = offsetof(TripleWithRank, row);
+    offsets[2] = offsetof(TripleWithRank, col);
+    offsets[3] = offsetof(TripleWithRank, val);
+    MPI_Type_create_struct(nitems, blocklengths.data(), offsets.data(), types.data(), &triple_type);
+    MPI_Type_commit(&triple_type);
+
+    std::vector<MPI_Request> requests;
+    requests.reserve(triples_for_rank.size());
+    for (const auto &[rank, triples] : triples_for_rank) {
+      if (rank == -1) {
+        // rank == -1 corresponds to corrections that we have to apply locally, so we can skip them here
+        continue;
       }
+
+      MPI_Isend(triples.data(), triples.size(), triple_type, rank, 0, remoteids.communicator(), &requests.emplace_back());
     }
+
+    std::map<int, std::vector<TripleWithRank>> remote_triples;
+    std::size_t num_triples = 0;
+    for (const auto &[rank, triples] : triples_for_rank) {
+      if (rank == -1) {
+        // rank == -1 corresponds to corrections that we have to apply locally, so we can skip them here
+        continue;
+      }
+
+      MPI_Status status;
+      int count{};
+
+      MPI_Probe(rank, 0, remoteids.communicator(), &status);
+      MPI_Get_count(&status, triple_type, &count);
+      num_triples += count;
+
+      remote_triples[rank].resize(count);
+      MPI_Recv(remote_triples[rank].data(), count, triple_type, rank, 0, remoteids.communicator(), MPI_STATUS_IGNORE);
+    }
+    MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE);
+
+    // Now combine all triples we received into a single list
+    std::vector<TripleWithRank> all_triples;
+    all_triples.reserve(num_triples);
+    for (const auto &[rank, triples] : remote_triples) {
+      all_triples.insert(all_triples.end(), triples.begin(), triples.end());
+    }
+
+    std::vector<TripleWithRank> all_own_triples(std::move(triples_for_rank.at(-1)));
 
     std::vector<bool> interior(boundary_dst.size(), false);
     for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
@@ -557,5 +445,5 @@ private:
   std::unique_ptr<Vec> d;              // residual vector
   std::unique_ptr<Vec> dirichlet_mask; // vector with ones at the dirichlet dofs
   std::unique_ptr<Mat> As;
-  std::map<int, Mat> neumannCorrForRank;
+  // std::map<int, Mat> neumannCorrForRank; //
 };
