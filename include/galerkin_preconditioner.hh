@@ -305,7 +305,7 @@ private:
 
     Logger::get().startEvent(factor_A0);
     if (rank == 0) {
-      spdlog::debug("Size of coarse space matrix: {}x{}", A0.N(), A0.M());
+      spdlog::info("Size of coarse space matrix: {}x{}", A0.N(), A0.M());
       solver = std::make_unique<Solver>(A0);
     }
     Logger::get().endEvent(factor_A0);
