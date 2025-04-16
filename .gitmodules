@@ -1,6 +1,3 @@
-[submodule "dune-modules/dune-common"]
-	path = dune-modules/dune-common
-	url = https://gitlab.dune-project.org/nils.friess/dune-common.git 
 [submodule "extern/dune-common"]
 	path = extern/dune-common
 	url = https://gitlab.dune-project.org/nils.friess/dune-common.git
