@@ -58,6 +58,48 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
     static void scatter(Vec &x, DataType v, std::size_t i) { x[i] = v; }
   };
 
+  struct VecDistributor {
+    using value_type = double;
+
+    VecDistributor(const Vec &temp, const std::vector<int> &neighbours)
+    {
+      for (const auto &nb : neighbours) {
+        others.emplace(nb, temp);
+        others[nb] = 0;
+      }
+    }
+
+    void clear()
+    {
+      for (auto &[rank, vec] : others) {
+        vec = 0;
+      }
+    }
+
+    VecDistributor(const VecDistributor &) = delete;
+    VecDistributor(const VecDistributor &&) = delete;
+    VecDistributor &operator=(const VecDistributor &) = delete;
+    VecDistributor &operator=(const VecDistributor &&) = delete;
+    ~VecDistributor() = default;
+
+    Vec *own = nullptr;
+    std::map<int, Vec> others;
+  };
+
+  struct CopyGatherScatterWithRank {
+    using DataType = double;
+
+    static DataType gather(const VecDistributor &vd, std::size_t i) { return (*vd.own)[i]; }
+    static void scatter(VecDistributor &vd, DataType v, std::size_t i, int rank)
+    {
+      if (not vd.others.contains(rank)) {
+        spdlog::get("all_ranks")->error("Rank {} is no neighbour");
+        MPI_Abort(MPI_COMM_WORLD, 17);
+      }
+      vd.others[rank][i] = v;
+    }
+  };
+
 public:
   // GalerkinPreconditioner(const Mat &A, const Vec &pou, const Vec &t, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), restr_vecs(1, Vec(pou.N(), 0)), N(ris.second->size()), d_ovlp(N),
   // x_ovlp(N)
@@ -253,6 +295,54 @@ private:
 
     Logger::get().endEvent(prepare_event);
 
+    Vec empty;
+
+#if 1
+    auto max_num_t = *std::max_element(num_t_per_rank.begin(), num_t_per_rank.end());
+
+    Vec zerovec(s);
+    zerovec = 0;
+    std::vector<int> neighbour_vec(ris.first->getNeighbours().begin(), ris.first->getNeighbours().end());
+    VecDistributor vd(zerovec, neighbour_vec);
+
+    const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
+    Dune::Interface intf;
+    Dune::BufferedCommunicator bcomm;
+    intf.build(*ris.first, allAttributes, allAttributes);
+    bcomm.build<VecDistributor>(intf);
+
+    for (std::size_t idx = 0; idx < max_num_t; ++idx) {
+      if (idx < num_t) {
+        vd.own = &restr_vecs[idx];
+      }
+      else {
+        vd.own = &zerovec;
+      }
+
+      vd.clear();
+      bcomm.forward<CopyGatherScatterWithRank>(vd);
+
+      // Compute scalar products for local * A * local vectors
+      if (idx < num_t) {
+        A.mv(restr_vecs[idx], y);
+        for (std::size_t k = 0; k < num_t; ++k) {
+          my_rows[k][offset_per_rank[rank] + idx] = restr_vecs[k] * y;
+        }
+      }
+
+      // Compute scalar products for local * A * remote vectors
+      for (const auto &nb : neighbour_vec) {
+        if (idx >= num_t_per_rank[nb]) {
+          continue;
+        }
+
+        A.mv(vd.others[nb], y);
+        for (std::size_t k = 0; k < num_t; ++k) {
+          my_rows[k][offset_per_rank[nb] + idx] = restr_vecs[k] * y;
+        }
+      }
+    }
+#else
     for (int col = 0; col < size; ++col) {
       for (std::size_t i = 0; i < num_t_per_rank[col]; ++i) {
         if (col == rank) {
@@ -298,6 +388,7 @@ private:
         }
       }
     }
+#endif
 
     Logger::get().startEvent(gather_A0);
     A0 = gatherMatrixFromRows(my_rows, ris.first->communicator());
