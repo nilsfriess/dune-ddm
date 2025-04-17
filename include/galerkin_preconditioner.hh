@@ -320,7 +320,7 @@ private:
       }
 
       vd.clear();
-      bcomm.forward<CopyGatherScatterWithRank>(vd);
+      bcomm.forwardBegin<CopyGatherScatterWithRank>(vd);
 
       // Compute scalar products for local * A * local vectors
       if (idx < num_t) {
@@ -329,6 +329,9 @@ private:
           my_rows[k][offset_per_rank[rank] + idx] = restr_vecs[k] * y;
         }
       }
+
+      // Wait for communication to finish
+      bcomm.forwardEnd<CopyGatherScatterWithRank>(vd);
 
       // Compute scalar products for local * A * remote vectors
       for (const auto &nb : neighbour_vec) {
