@@ -61,7 +61,7 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   struct VecDistributor {
     using value_type = double;
 
-    VecDistributor(const Vec &temp, const std::vector<int> &neighbours)
+    VecDistributor(const Vec &temp, const std::vector<int> &neighbours) : temp{temp}
     {
       for (const auto &nb : neighbours) {
         others.emplace(nb, temp);
@@ -72,6 +72,7 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
     void clear()
     {
       for (auto &[rank, vec] : others) {
+        vec = temp;
         vec = 0;
       }
     }
@@ -84,6 +85,7 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
 
     Vec *own = nullptr;
     std::map<int, Vec> others;
+    Vec temp;
   };
 
   struct CopyGatherScatterWithRank {
@@ -93,7 +95,7 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
     static void scatter(VecDistributor &vd, DataType v, std::size_t i, int rank)
     {
       if (not vd.others.contains(rank)) {
-        spdlog::get("all_ranks")->error("Rank {} is no neighbour");
+        spdlog::get("all_ranks")->error("Rank {} is no neighbour", rank);
         MPI_Abort(MPI_COMM_WORLD, 17);
       }
       vd.others[rank][i] = v;
@@ -253,10 +255,10 @@ private:
   {
     Logger::ScopedLog se(build_solver_event);
 
-    auto *dot_vecs_event = Logger::get().registerEvent("GalerkinPrec", "dot products");
-    auto *s_event = Logger::get().registerEvent("GalerkinPrec", "comm s");
-    auto *y_event = Logger::get().registerEvent("GalerkinPrec", "comm y");
-    auto *Asy_event = Logger::get().registerEvent("GalerkinPrec", "compute y=As");
+    auto *comm_begin_event = Logger::get().registerEvent("GalerkinPrec", "begin comm");
+    auto *comm_end_event = Logger::get().registerEvent("GalerkinPrec", "end comm");
+    auto *local_local_sp_event = Logger::get().registerEvent("GalerkinPrec", "dot (local<>local)");
+    auto *local_remote_sp_event = Logger::get().registerEvent("GalerkinPrec", "dot (local<>remote)");
     auto *gather_A0 = Logger::get().registerEvent("GalerkinPrec", "gather A0");
     auto *factor_A0 = Logger::get().registerEvent("GalerkinPrec", "factor A0");
     auto *prepare_event = Logger::get().registerEvent("GalerkinPrec", "prepare");
@@ -305,11 +307,10 @@ private:
     std::vector<int> neighbour_vec(ris.first->getNeighbours().begin(), ris.first->getNeighbours().end());
     VecDistributor vd(zerovec, neighbour_vec);
 
-    const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
-    Dune::Interface intf;
     Dune::BufferedCommunicator bcomm;
-    intf.build(*ris.first, allAttributes, allAttributes);
-    bcomm.build<VecDistributor>(intf);
+    bcomm.build<VecDistributor>(all_all_interface);
+
+    std::map<int, Vec> basis_vector_buffer;
 
     for (std::size_t idx = 0; idx < max_num_t; ++idx) {
       if (idx < num_t) {
@@ -319,33 +320,70 @@ private:
         vd.own = &zerovec;
       }
 
+      if (idx > 0) {
+        for (auto &&[rank, basis_vec] : vd.others) {
+          basis_vector_buffer[rank] = std::move(basis_vec);
+        }
+      }
+
       vd.clear();
+      Logger::get().startEvent(comm_begin_event);
       bcomm.forwardBegin<CopyGatherScatterWithRank>(vd);
+      Logger::get().endEvent(comm_begin_event);
 
       // Compute scalar products for local * A * local vectors
+      Logger::get().startEvent(local_local_sp_event);
       if (idx < num_t) {
         A.mv(restr_vecs[idx], y);
         for (std::size_t k = 0; k < num_t; ++k) {
           my_rows[k][offset_per_rank[rank] + idx] = restr_vecs[k] * y;
         }
       }
+      Logger::get().endEvent(local_local_sp_event);
+
+      if (idx > 0) {
+        // Compute scalar products for local * A * remote vectors.
+        // The remote vectors are those that were send and received in the previous iteration.
+        Logger::get().startEvent(local_remote_sp_event);
+        for (const auto &nb : neighbour_vec) {
+          if (idx - 1 >= num_t_per_rank[nb]) {
+            continue;
+          }
+
+          A.mv(basis_vector_buffer[nb], y);
+          for (std::size_t k = 0; k < num_t; ++k) {
+            my_rows[k][offset_per_rank[nb] + idx - 1] = restr_vecs[k] * y;
+          }
+        }
+        Logger::get().endEvent(local_remote_sp_event);
+      }
 
       // Wait for communication to finish
+      Logger::get().startEvent(comm_end_event);
       bcomm.forwardEnd<CopyGatherScatterWithRank>(vd);
+      Logger::get().endEvent(comm_end_event);
+    }
 
-      // Compute scalar products for local * A * remote vectors
-      for (const auto &nb : neighbour_vec) {
-        if (idx >= num_t_per_rank[nb]) {
-          continue;
-        }
+    // Compute scalar products for local * A * remote vectors for the last basis vectors
+    // that we missed above.
+    Logger::get().startEvent(local_remote_sp_event);
+    for (const auto &nb : neighbour_vec) {
+      if (max_num_t - 1 >= num_t_per_rank[nb]) {
+        continue;
+      }
 
-        A.mv(vd.others[nb], y);
-        for (std::size_t k = 0; k < num_t; ++k) {
-          my_rows[k][offset_per_rank[nb] + idx] = restr_vecs[k] * y;
-        }
+      A.mv(vd.others[nb], y);
+      for (std::size_t k = 0; k < num_t; ++k) {
+        my_rows[k][offset_per_rank[nb] + max_num_t - 1] = restr_vecs[k] * y;
       }
     }
+    Logger::get().endEvent(local_remote_sp_event);
 #else
+    auto *dot_vecs_event = Logger::get().registerEvent("GalerkinPrec", "dot products");
+    auto *s_event = Logger::get().registerEvent("GalerkinPrec", "comm s");
+    auto *y_event = Logger::get().registerEvent("GalerkinPrec", "comm y");
+    auto *Asy_event = Logger::get().registerEvent("GalerkinPrec", "compute y=As");
+
     for (int col = 0; col < size; ++col) {
       for (std::size_t i = 0; i < num_t_per_rank[col]; ++i) {
         if (col == rank) {
