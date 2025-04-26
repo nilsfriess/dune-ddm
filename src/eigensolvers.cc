@@ -1,5 +1,6 @@
 #include <dune-istl-config.hh>
 
+#include <dune/istl/umfpack.hh>
 #include <mpi.h>
 
 #include <dune/common/parametertree.hh>
@@ -7,6 +8,7 @@
 #include <dune/istl/bvector.hh>
 
 #include <dune/istl/foreach.hh>
+#include <algorithm>
 #include <vector>
 
 #include <Eigen/SparseCore>
