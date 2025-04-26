@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <mpi.h>
+#include <umfpack.h>
 
 #include "datahandles.hh"
 #include "helpers.hh"
@@ -218,6 +219,7 @@ private:
     Aovlp = std::make_shared<Mat>(createOverlappingMatrix(A, *ovlpindices.first));
     if (not factorise_at_first_iteration) {
       solver = std::make_unique<Solver>(*Aovlp, 0);
+      solver->setOption(UMFPACK_IRSTEP, 0);
     }
     else {
       solver = nullptr;

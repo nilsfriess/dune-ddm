@@ -439,6 +439,7 @@ private:
     if (rank == 0) {
       spdlog::info("Size of coarse space matrix: {}x{}", A0.N(), A0.M());
       solver = std::make_unique<Solver>(A0);
+      solver->setOption(UMFPACK_IRSTEP, 0);
     }
     Logger::get().endEvent(factor_A0);
   }

@@ -39,6 +39,8 @@ public:
 
     if (not inexact) {
       solver = std::make_unique<Dune::UMFPack<Mat>>(*Aint);
+      auto *usolver = static_cast<Dune::UMFPack<Mat>*>(solver.get());
+      usolver->setOption(UMFPACK_IRSTEP, 0);
     }
     else {
       auto prec = std::make_shared<Dune::SeqILU<Mat, Vec, Vec>>(*Aint, 1.0);
