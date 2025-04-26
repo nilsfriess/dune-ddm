@@ -65,10 +65,13 @@ add_subdirectory(${blopex_all_SOURCE_DIR}/blopex_abstract)
 # )
 # add_dependencies(BLOPEX BLOPEX_BUILD)
 
+find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK)
+
 add_library(eigensolvers src/eigensolvers.cc)
 target_include_directories(eigensolvers PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(eigensolvers PRIVATE Dune::ISTL spdlog::spdlog Spectra BLOPEX MPI::MPI_C)
 add_dune_eigen_flags(eigensolvers)
+add_dune_suitesparse_flags(eigensolvers)
 add_dune_mpi_flags(eigensolvers)
 
 add_library(dune-ddm INTERFACE)

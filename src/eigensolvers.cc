@@ -28,6 +28,66 @@ BlopexInt dsygv_(BlopexInt *itype, char *jobz, char *uplo, BlopexInt *n, double 
 BlopexInt dpotrf_(char *uplo, BlopexInt *n, double *a, BlopexInt *lda, BlopexInt *info);
 }
 
+class SymShiftInvert {
+public:
+  using Scalar = double;
+
+  SymShiftInvert(const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &A, const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &B) : A(A), B(B), b(A.N()) {}
+
+  void set_shift(double sigma)
+  {
+    auto A_minus_sigma_B = A;
+    // TODO: This assumes that the sparsity pattern of B is a subset of that of A
+    for (auto ri = B.begin(); ri != B.end(); ++ri) {
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+        A_minus_sigma_B[ri.index()][ci.index()] -= sigma * B[ri.index()][ci.index()];
+      }
+    }
+
+    solver = std::make_unique<Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>(A_minus_sigma_B, 0);
+    solver->setOption(UMFPACK_IRSTEP, 0);
+  }
+
+  void perform_op(const Scalar *x_in, Scalar *y_out) const
+  {
+    auto *x_in_mut = const_cast<Scalar *>(x_in); // TODO: Here we just hope that either (i) the solver doesn't modify the rhs or (ii) it's not a problem if it does.
+    solver->apply(y_out, x_in_mut);
+  }
+
+  Eigen::Index rows() const { return static_cast<Eigen::Index>(A.N()); }
+  Eigen::Index cols() const { return static_cast<Eigen::Index>(A.M()); }
+
+private:
+  const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &A;
+  const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &B;
+
+  mutable std::vector<double> b;
+
+  std::unique_ptr<Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>> solver{nullptr};
+};
+
+class MatOp {
+public:
+  using Scalar = double;
+
+  explicit MatOp(const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &A) : A(A), x(A.N()), y(A.M()) {}
+
+  void perform_op(const Scalar *x_in, Scalar *y_out) const
+  {
+    for (auto ri = A.begin(); ri != A.end(); ++ri) {
+      y_out[ri.index()] = 0;
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+        y_out[ri.index()] += *ci * x_in[ci.index()];
+      }
+    }
+  }
+
+private:
+  const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &A;
+
+  mutable Dune::BlockVector<Dune::FieldVector<double, 1>> x;
+  mutable Dune::BlockVector<Dune::FieldVector<double, 1>> y;
+};
 std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &A, const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &B,
                                                                        Eigensolver eigensolver, const Dune::ParameterTree &ptree)
 {
@@ -38,41 +98,13 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
   const double tolerance = ptree.get("eigensolver_tolerance", 1e-5);
 
   if (eigensolver == Eigensolver::Spectra) {
-    using Triplet = Eigen::Triplet<double>;
-    auto N = static_cast<Eigen::Index>(A.N());
-    Eigen::SparseMatrix<double> A_(N, N);
-    Eigen::SparseMatrix<double> B_(N, N);
+    spdlog::get("all_ranks")->debug("Solving eigenproblem Ax=lBx of size {} with nnz(A) = {}, nnz(B) = {}", A.N(), A.nonzeroes(), B.nonzeroes());
 
-    std::vector<Triplet> triplets;
-    triplets.reserve(A.nonzeroes());
-    Dune::flatMatrixForEach(A, [&](auto &&entry, std::size_t i, std::size_t j) {
-      if (std::abs(entry) > 0) {
-        triplets.push_back({static_cast<int>(i), static_cast<int>(j), entry});
-      }
-    });
-    A_.setFromTriplets(triplets.begin(), triplets.end());
+    using OpType = SymShiftInvert;
+    using BOpType = MatOp;
 
-    triplets.clear();
-    triplets.reserve(A.nonzeroes());
-    Dune::flatMatrixForEach(B, [&](auto &&entry, std::size_t i, std::size_t j) {
-      if (std::abs(entry) > 0) {
-        triplets.push_back({static_cast<int>(i), static_cast<int>(j), entry});
-      }
-    });
-    B_.setFromTriplets(triplets.begin(), triplets.end());
-
-    A_.makeCompressed();
-    B_.makeCompressed();
-
-    spdlog::get("all_ranks")->debug("Solving eigenproblem Ax=lBx of size {} with nnz(A) = {}, nnz(B) = {}", A_.rows(), A_.nonZeros(), B_.nonZeros());
-
-    using OpType = Spectra::SymShiftInvert<double, Eigen::Sparse, Eigen::Sparse>;
-    using BOpType = Spectra::SparseSymMatProd<double>;
-    using Matrix = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic>;
-    using Vector = Eigen::Matrix<double, Eigen::Dynamic, 1>;
-
-    OpType op(A_, B_);
-    BOpType Bop(B_);
+    OpType op(A, B);
+    BOpType Bop(B);
 
     auto nev = ptree.get("eigensolver_nev", 10);
     auto nev_max = nev;
@@ -122,7 +154,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
           if (threshold > 0 and ptree.get("eigensolver_keep_strict", false)) {
             // If this parameter is set, we only keep those eigenvectors that correspond to eigenvalues below the threshold.
             // This is mainly useful for testing.
-            std::size_t cnt = 0;
+            long cnt = 0;
             while (cnt < nconv - 1 and evalues[cnt] < threshold) {
               ++cnt;
             }
