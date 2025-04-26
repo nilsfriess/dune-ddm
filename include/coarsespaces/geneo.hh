@@ -396,11 +396,14 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
     EnergyMinimalExtension<Mat, Vec> extension(Aovlp, interior_to_subdomain, inside_ring_boundary_to_subdomain, ptree.get("geneo_ring_inexact_interior_solver", false));
     Logger::get().endEvent(factorise_interior);
 
+    double eigenvectors_use_portion = ptree.get("geneo_ring_eigenvectors_use_portion", 1.0);
+    auto eigenvectors_actual = static_cast<std::size_t>(std::ceil(eigenvectors.size() * eigenvectors_use_portion));
+
     Vec zero(Aovlp.N());
     zero = 0;
-    std::vector<Vec> combined_vectors(eigenvectors.size(), zero);
+    std::vector<Vec> combined_vectors(eigenvectors_actual, zero);
     Logger::get().startEvent(solve_interior);
-    for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
+    for (std::size_t k = 0; k < eigenvectors_actual; ++k) {
       const auto &evec = eigenvectors[k];
 
       Vec evec_dirichlet(inside_ring_boundary_to_subdomain.size());
