@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <dune/istl/solvers.hh>
 #include <vector>
 
 #include <dune/common/parallel/interface.hh>
@@ -10,8 +9,6 @@
 #include <dune/common/parametertree.hh>
 #include <dune/istl/foreach.hh>
 #include <dune/istl/io.hh>
-#include <dune/istl/preconditioners.hh>
-#include <dune/istl/umfpack.hh>
 
 #include <spdlog/spdlog.h>
 
@@ -22,10 +19,10 @@
 #include "logger.hh"
 
 template <class Vec, class Mat, class RemoteIndices>
-std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat &Aovlp, const std::vector<TripleWithRank> &remote_ncorr_triples, const std::vector<TripleWithRank> &own_ncorr_triples,
-                                       const std::vector<bool> &interior_dof_mask, const Vec &dirichlet_mask_novlp, const Vec &pou, const Dune::ParameterTree &ptree)
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat &Aovlp, const std::vector<TripleWithRank> &remote_ncorr_triples,
+                                                                                   const std::vector<TripleWithRank> &own_ncorr_triples, const std::vector<bool> &interior_dof_mask,
+                                                                                   const Vec &dirichlet_mask_novlp, const Vec &pou, const Dune::ParameterTree &ptree)
 {
-  MPI_Barrier(MPI_COMM_WORLD);
   auto *eigensolver_event = Logger::get().registerEvent("GenEO", "solve eigenproblem");
   auto *neumann_corr = Logger::get().registerEvent("GenEO", "create matrix");
 
@@ -48,34 +45,9 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
   advdh.setVec(dirichlet_mask_ovlp);
   communicator.forward(advdh);
 
-  // We begin by assigning to some dofs their distance to the overlapping subdomain boundary. This information
-  // is used, e.g., to identify the overlap region below.
-  // TODO: Actually, I don't think this information is necessary and we can get away with less communication.
-  //       Secondly, this code appears multiple times over the whole codebase, we should just refactor it into a function or class.
   int rank{};
   MPI_Comm_rank(ovlp_ids.first->communicator(), &rank);
   const auto &ovlp_paridxs = *ovlp_ids.second;
-  // IdentifyBoundaryDataHandle ibdh(Aovlp, ovlp_paridxs, rank);
-  // communicator.forward(ibdh);
-  // auto boundaryMask = ibdh.getBoundaryMask();
-
-  // std::vector<int> boundary_dst(ovlp_paridxs.size(), std::numeric_limits<int>::max() - 1);
-  // for (const auto &idxpair : ovlp_paridxs) {
-  //   auto li = idxpair.local();
-  //   if (boundaryMask[li]) {
-  //     boundary_dst[li] = 0;
-  //   }
-  // }
-
-  // // Here we take 2 * overlap plus some safety margin because we compute the distance from the overlapping subdomain boundary
-  // const auto overlap = ptree.get("overlap", 1);
-  // for (int round = 0; round <= 2 * (overlap + 10); ++round) {
-  //   for (int i = 0; i < boundary_dst.size(); ++i) {
-  //     for (auto cIt = Aovlp[i].begin(); cIt != Aovlp[i].end(); ++cIt) {
-  //       boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cIt.index()] + 1); // Increase distance from boundary by one
-  //     }
-  //   }
-  // }
 
   std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
   std::vector<std::size_t> ring_to_subdomain(ovlp_paridxs.size());
@@ -88,15 +60,20 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
     // earlier.
     A = Aovlp;
 
+    std::set<std::size_t> correction_dofs;
     for (const auto &triple : remote_ncorr_triples) {
       // The triples use global indices, so we first have to convert them to local indices
       // on the overlapping subdomain. Also, we might have received some indices that are
       // outside of our overlapping subdomain, so we first have to check that.
+      // TODO: Should we simply assume that we only received valid indices?
       if (ovlp_paridxs.exists(triple.row) && ovlp_paridxs.exists(triple.col)) {
         auto lrow = ovlp_paridxs[triple.row].local();
         auto lcol = ovlp_paridxs[triple.col].local();
 
         A[lrow][lcol] -= triple.val;
+
+        correction_dofs.insert(lrow);
+        correction_dofs.insert(lcol);
       }
       else {
         spdlog::debug("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
@@ -155,13 +132,6 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
           }
         }
       }
-
-#ifndef NDEBUG
-      if (rank == ptree.get("debug_rank", 0)) {
-        Dune::writeMatrixToMatlab(A, "A.mat");
-        Dune::writeMatrixToMatlab(B, "B.mat");
-      }
-#endif
     }
 
     // In both cases, the right-hand side matrix has to multiplied by the partition of unity from the left and right.
@@ -173,8 +143,8 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
   }
   else if (geneo_type == "ring") {
     // In this case, we solve the eigenvalue problem only in ther overlapping region (which we will refer to here as the ring).
-    // The solution on the whole overlapping subdomain is then obtained by extending each eigenvector to the interior in a
-    // certain way (see below, after the solution of the eigenproblem).
+    // The solution on the whole overlapping subdomain is then obtained by extending each eigenvector energy-minimally to
+    // the interior.
 
     // First we have to create the matrix on the ring. To this end, we first need to identify all degrees of freedom inside the ring.
     // These are simply all dofs not in the interior.
@@ -208,6 +178,8 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
     }
     A.compress();
 
+    std::size_t apply_cnt = 0;
+    std::set<std::size_t> correction_dofs;
     // We again need to apply the Neumann corrections. First do the "outside" boundary ...
     for (const auto &triple : remote_ncorr_triples) {
       // The triples use global indices, so we first have to convert them to local indices
@@ -220,24 +192,38 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
         // Check if the given entry corresponds to a dof inside the ring
         if (subdomain_to_ring.contains(lrow) && subdomain_to_ring.contains(lcol)) {
           A[subdomain_to_ring[lrow]][subdomain_to_ring[lcol]] -= triple.val;
+          apply_cnt++;
+
+          correction_dofs.insert(lrow);
+          correction_dofs.insert(lcol);
         }
         else {
           spdlog::get("all_ranks")->error("Global index ({}, {}) does not exist in ring", triple.row, triple.col);
         }
       }
       else {
-        spdlog::trace("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
+        spdlog::debug("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
       }
     }
+    spdlog::get("all_ranks")->debug("Applied {} outer corrections", apply_cnt);
+    apply_cnt = 0;
+    correction_dofs.clear();
+
     // ... then the "inside" boundary
     for (const auto &triple : own_ncorr_triples) {
       if (subdomain_to_ring.contains(triple.row) && subdomain_to_ring.contains(triple.col)) {
         A[subdomain_to_ring[triple.row]][subdomain_to_ring[triple.col]] -= triple.val;
+        apply_cnt++;
+
+        correction_dofs.insert(triple.row);
+        correction_dofs.insert(triple.col);
       }
       else {
         spdlog::get("all_ranks")->error("Local index ({}, {}) does not exist in ring", triple.row, triple.col);
       }
     }
+
+    spdlog::get("all_ranks")->debug("Applied {} inner corrections", apply_cnt);
 
     // Dirichlet conditions
     for (std::size_t i = 0; i < A.N(); ++i) {
@@ -256,6 +242,31 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
     }
 
     B = A; // B starts as A, but has to be multiplied by the partition of unity
+
+    if (not ptree.get("geneo_ring_inner_neumann", true)) {
+      // If the rhs matrix should not have Neumann boundary conditions on the inner boundary, we re-extract the corresponding values from the original matrix again
+      for (const auto &triple : own_ncorr_triples) {
+        if (subdomain_to_ring.contains(triple.row) && subdomain_to_ring.contains(triple.col)) {
+          B[subdomain_to_ring[triple.row]][subdomain_to_ring[triple.col]] = Aovlp[triple.row][triple.col];
+        }
+      }
+
+      // Reapply Dirichlet conditions
+      for (std::size_t i = 0; i < B.N(); ++i) {
+        if (dirichlet_mask_ovlp[ring_to_subdomain[i]] > 0) {
+          for (auto ci = B[i].begin(); ci != B[i].end(); ++ci) {
+            *ci = (ci.index() == i) ? 1.0 : 0.0;
+          }
+        }
+        else {
+          for (auto ci = B[i].begin(); ci != B[i].end(); ++ci) {
+            if (dirichlet_mask_ovlp[ring_to_subdomain[ci.index()]] > 0) {
+              *ci = 0.0;
+            }
+          }
+        }
+      }
+    }
 
     for (auto ri = B.begin(); ri != B.end(); ++ri) {
       for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
@@ -292,7 +303,7 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
     eigensolver = Eigensolver::BLOPEX;
   }
   else {
-    spdlog::warn("Unknow eigensolver type '{}' using Spectra instead", eigensolver_string);
+    spdlog::warn("Unknown eigensolver type '{}' using Spectra instead", eigensolver_string);
   }
 
   Logger::get().startEvent(eigensolver_event);
@@ -300,146 +311,100 @@ std::vector<Vec> buildGenEOCoarseSpace(const RemoteIndices &ovlp_ids, const Mat 
 
   auto eigenvectors = solveGEVP(A, B, eigensolver, ptree);
 
-  // if (geneo_type != "ring") {
-  //   // for (auto &vec : eigenvectors) {
-  //   //   for (std::size_t i = 0; i < vec.N(); ++i) {
-  //   //     if (dirichlet_mask_ovlp[i] > 0) {
-  //   //       vec[i] = 0;
-  //   //     }
-  //   //     else {
-  //   //       if (ptree.get("basis_vec_mult_pou", true)) {
-  //   //         vec[i] *= pou[i];
-  //   //       }
-  //   //     }
-  //   //   }
-  //   // }
-  // }
-  // else { // geneo_type == "ring"
-
-  //   // // If we used Dirichlet boundary conditions on the inner boundary, we have to add the null space vectors manually
-  //   // // For now just assume this is the constant 1 vector
-  //   // // TODO: Allow to pass the null space as a parameter
-  //   // if (not ptree.get("geneo_ring_inner_neumann", true) and ptree.get("geneo_ring_add_constant", true)) {
-  //   //   Vec one(eigenvectors[0].N());
-  //   //   one = 1;
-  //   //   eigenvectors.push_back(std::move(one));
-  //   // }
-
-  //   // for (auto &vec : eigenvectors) {
-  //   //   for (std::size_t i = 0; i < vec.N(); ++i) {
-  //   //     if (dirichlet_mask_ovlp[ring_to_subdomain[i]] > 0) {
-  //   //       vec[i] = 0;
-  //   //     }
-  //   //     else {
-  //   //       if (ptree.get("basis_vec_mult_pou", true)) {
-  //   //         vec[i] *= pou[ring_to_subdomain[i]];
-  //   //       }
-  //   //     }
-  //   //   }
-  //   // }
-  // }
   Logger::get().endEvent(eigensolver_event);
 
   // If we have only solved the eigenvalue problem on the ring, then we now need to extend the eigenvectors to the interior.
   if (geneo_type == "ring") {
-    // Create the matrix that lives on the interior dofs. To this end, first create a interior-to-subdomain map.
-    auto N = std::count_if(interior_dof_mask.begin(), interior_dof_mask.end(), [](auto val) { return val; });
-    spdlog::get("all_ranks")
-        ->debug("For GenEO ring problem: total dofs {}, interior dofs {}, ring dofs {}, ring+interior dofs {}", Aovlp.N(), N, ring_to_subdomain.size(), (N + ring_to_subdomain.size()));
-    std::vector<std::size_t> interior_to_subdomain(N);
-    std::size_t cnt = 0;
-    for (std::size_t i = 0; i < interior_dof_mask.size(); ++i) {
-      if (interior_dof_mask[i] > 0) {
-        interior_to_subdomain[cnt++] = i;
-      }
-    }
-
-    auto *factorise_interior = Logger::get().registerEvent("GenEO", "factorise interior");
-    auto *solve_interior = Logger::get().registerEvent("GenEO", "solve interior");
-
-    // The energy-minimal extension is computed using the values of the eigenvectors "one layer into the ring"
-    std::set<std::size_t> ring_boundary; // dofs on the interior ring boundary (using overlapping subdomain numbering)
-    for (const auto &idx : ring_to_subdomain) {
-      for (auto cit = Aovlp[idx].begin(); cit != Aovlp[idx].end(); ++cit) {
-        if (not subdomain_to_ring.contains(cit.index())) {
-          ring_boundary.insert(idx);
-          break;
-        }
-      }
-    }
-
-    // The interior now becomes the old interior+the ring boundary
-    for (const auto &idx : ring_boundary) {
-      interior_to_subdomain.push_back(idx);
-    }
-
-    std::vector<std::size_t> inside_ring_boundary_to_subdomain;
-    inside_ring_boundary_to_subdomain.reserve(ring_boundary.size());
-    for (const auto &idx : ring_to_subdomain) {
-      for (auto cit = Aovlp[idx].begin(); cit != Aovlp[idx].end(); ++cit) {
-        if (not ring_boundary.contains(idx) and ring_boundary.contains(cit.index())) {
-          inside_ring_boundary_to_subdomain.push_back(idx);
-          break;
-        }
-      }
-    }
-    spdlog::get("all_ranks")->debug("Identified {} dofs on the inside ring boundary", inside_ring_boundary_to_subdomain.size());
-
-    // Invert the mapping
-    std::unordered_map<std::size_t, std::size_t> subdomain_to_inside_ring_boundary;
-    subdomain_to_inside_ring_boundary.reserve(inside_ring_boundary_to_subdomain.size());
-    for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) {
-      subdomain_to_inside_ring_boundary[inside_ring_boundary_to_subdomain[i]] = i;
-    }
-
-    Logger::get().startEvent(factorise_interior);
-    EnergyMinimalExtension<Mat, Vec> extension(Aovlp, interior_to_subdomain, inside_ring_boundary_to_subdomain, ptree.get("geneo_ring_inexact_interior_solver", false));
-    Logger::get().endEvent(factorise_interior);
-
-    double eigenvectors_use_portion = ptree.get("geneo_ring_eigenvectors_use_portion", 1.0);
-    auto eigenvectors_actual = static_cast<std::size_t>(std::ceil(eigenvectors.size() * eigenvectors_use_portion));
-
-    Vec zero(Aovlp.N());
-    zero = 0;
-    std::vector<Vec> combined_vectors(eigenvectors_actual, zero);
-    Logger::get().startEvent(solve_interior);
-    for (std::size_t k = 0; k < eigenvectors_actual; ++k) {
-      const auto &evec = eigenvectors[k];
-
-      Vec evec_dirichlet(inside_ring_boundary_to_subdomain.size());
-      for (std::size_t i = 0; i < evec.N(); ++i) {
-        auto subdomain_idx = ring_to_subdomain[i];
-        if (subdomain_to_inside_ring_boundary.contains(subdomain_idx)) {
-          evec_dirichlet[subdomain_to_inside_ring_boundary[subdomain_idx]] = evec[i];
+    if (ptree.get("geneo_ring_extend_exact", true)) {
+      // Create the matrix that lives on the interior dofs. To this end, first create a interior-to-subdomain map.
+      auto N = std::count_if(interior_dof_mask.begin(), interior_dof_mask.end(), [](auto val) { return val; });
+      spdlog::get("all_ranks")
+          ->debug("For GenEO ring problem: total dofs {}, interior dofs {}, ring dofs {}, ring+interior dofs {}", Aovlp.N(), N, ring_to_subdomain.size(), (N + ring_to_subdomain.size()));
+      std::vector<std::size_t> interior_to_subdomain(N);
+      std::size_t cnt = 0;
+      for (std::size_t i = 0; i < interior_dof_mask.size(); ++i) {
+        if (interior_dof_mask[i] > 0) {
+          interior_to_subdomain[cnt++] = i;
         }
       }
 
-      auto interior_vec = extension.extend(evec_dirichlet);
-      // First set the values in the ring
-      for (std::size_t i = 0; i < evec.N(); ++i) {
-        combined_vectors[k][ring_to_subdomain[i]] = evec[i];
-      }
-      // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
-      for (std::size_t i = 0; i < interior_vec.N(); ++i) {
-        combined_vectors[k][interior_to_subdomain[i]] = interior_vec[i];
-      }
-    }
-    Logger::get().endEvent(solve_interior);
+      auto *factorise_interior = Logger::get().registerEvent("GenEO", "factorise interior");
+      auto *solve_interior = Logger::get().registerEvent("GenEO", "solve interior");
 
-#ifndef NDEBUG
-    for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
-      double sum = 0;
-      for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-        sum += std::pow(eigenvectors[k][i] - combined_vectors[k][ring_to_subdomain[i]], 2);
+      // The energy-minimal extension is computed using the values of the eigenvectors "one layer into the ring"
+      std::set<std::size_t> ring_boundary; // dofs on the interior ring boundary (using overlapping subdomain numbering)
+      for (const auto &idx : ring_to_subdomain) {
+        for (auto cit = Aovlp[idx].begin(); cit != Aovlp[idx].end(); ++cit) {
+          if (not subdomain_to_ring.contains(cit.index())) {
+            ring_boundary.insert(idx);
+            break;
+          }
+        }
       }
-      sum = std::sqrt(sum);
-      if (sum > 1e-12) {
-        spdlog::get("all_ranks")->warn("Eigenvector on ring and computed solution in interior differ at boundary, difference is {}", sum);
-      }
-    }
-#endif
 
-    eigenvectors = std::move(combined_vectors);
+      // The interior now becomes the old interior+the ring boundary
+      for (const auto &idx : ring_boundary) {
+        interior_to_subdomain.push_back(idx);
+      }
+
+      std::vector<std::size_t> inside_ring_boundary_to_subdomain;
+      inside_ring_boundary_to_subdomain.reserve(ring_boundary.size());
+      for (const auto &idx : ring_to_subdomain) {
+        for (auto cit = Aovlp[idx].begin(); cit != Aovlp[idx].end(); ++cit) {
+          if (not ring_boundary.contains(idx) and ring_boundary.contains(cit.index())) {
+            inside_ring_boundary_to_subdomain.push_back(idx);
+            break;
+          }
+        }
+      }
+      spdlog::get("all_ranks")->debug("Identified {} dofs on the inside ring boundary", inside_ring_boundary_to_subdomain.size());
+
+      // Invert the mapping
+      std::unordered_map<std::size_t, std::size_t> subdomain_to_inside_ring_boundary;
+      subdomain_to_inside_ring_boundary.reserve(inside_ring_boundary_to_subdomain.size());
+      for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) {
+        subdomain_to_inside_ring_boundary[inside_ring_boundary_to_subdomain[i]] = i;
+      }
+
+      Logger::get().startEvent(factorise_interior);
+      EnergyMinimalExtension<Mat, Vec> extension(Aovlp, interior_to_subdomain, inside_ring_boundary_to_subdomain, ptree.get("geneo_ring_inexact_interior_solver", false));
+      Logger::get().endEvent(factorise_interior);
+
+      double eigenvectors_use_portion = ptree.get("geneo_ring_eigenvectors_use_portion", 1.0);
+      auto eigenvectors_actual = static_cast<std::size_t>(std::ceil(eigenvectors.size() * eigenvectors_use_portion));
+
+      Vec zero(Aovlp.N());
+      zero = 0;
+      std::vector<Vec> combined_vectors(eigenvectors_actual, zero);
+      Logger::get().startEvent(solve_interior);
+      for (std::size_t k = 0; k < eigenvectors_actual; ++k) {
+        const auto &evec = eigenvectors[k];
+
+        Vec evec_dirichlet(inside_ring_boundary_to_subdomain.size());
+        for (std::size_t i = 0; i < evec.N(); ++i) {
+          auto subdomain_idx = ring_to_subdomain[i];
+          if (subdomain_to_inside_ring_boundary.contains(subdomain_idx)) {
+            evec_dirichlet[subdomain_to_inside_ring_boundary[subdomain_idx]] = evec[i];
+          }
+        }
+
+        auto interior_vec = extension.extend(evec_dirichlet);
+        // First set the values in the ring
+        for (std::size_t i = 0; i < evec.N(); ++i) {
+          combined_vectors[k][ring_to_subdomain[i]] = evec[i];
+        }
+        // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
+        for (std::size_t i = 0; i < interior_vec.N(); ++i) {
+          combined_vectors[k][interior_to_subdomain[i]] = interior_vec[i];
+        }
+      }
+      Logger::get().endEvent(solve_interior);
+
+      eigenvectors = std::move(combined_vectors);
+    }
+    else {
+      assert(false && "Not implemented");
+    }
   }
 
   for (auto &vec : eigenvectors) {

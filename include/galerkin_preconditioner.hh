@@ -1,21 +1,23 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <dune/common/parallel/interface.hh>
 #include <numeric>
 
 #include <mpi.h>
 
-#include <dune/common/parallel/variablesizecommunicator.hh>
+#include <dune/common/parallel/communicator.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/io.hh>
 #include <dune/istl/preconditioner.hh>
 #include <dune/istl/solver.hh>
 #include <dune/istl/umfpack.hh>
 
+#include <spdlog/fmt/ranges.h>
 #include <spdlog/spdlog.h>
 
-#include "datahandles.hh"
 #include "helpers.hh"
 #include "logger.hh"
 
@@ -72,7 +74,6 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
     void clear()
     {
       for (auto &[rank, vec] : others) {
-        vec = temp;
         vec = 0;
       }
     }
@@ -129,7 +130,7 @@ public:
     Vec zero(ts[0].N());
     zero = 0;
     restr_vecs.resize(max_num_t, Vec(ts[0].N()));
-    for (std::size_t i = 0; i < num_t; ++i) {
+    for (int i = 0; i < num_t; ++i) {
       restr_vecs[i] = ts[i];
     }
 
@@ -163,7 +164,7 @@ public:
 
     // 2. Compute local contribution of coarse defect
     std::vector<double> d_local(num_t, 0);
-    for (std::size_t k = 0; k < num_t; ++k) {
+    for (int k = 0; k < num_t; ++k) {
       for (std::size_t i = 0; i < restr_vecs[0].N(); ++i) {
         d_local[k] += restr_vecs[k][i] * d_ovlp[i];
       }
@@ -187,7 +188,7 @@ public:
 
     // 6. Prolongate
     x_ovlp = 0;
-    for (std::size_t k = 0; k < num_t; ++k) {
+    for (int k = 0; k < num_t; ++k) {
       for (std::size_t j = 0; j < x_ovlp.N(); ++j) {
         x_ovlp[j] += coarse_solution[k] * restr_vecs[k][j];
       }
@@ -310,9 +311,9 @@ private:
     Dune::BufferedCommunicator bcomm;
     bcomm.build<VecDistributor>(all_all_interface);
 
-    std::map<int, Vec> basis_vector_buffer;
+    std::map<int, Vec> basis_vector_buffer; // TODO: Check if using this extra buffer actually helps (it allows to do more computation during communication but requires copying around some vectors).
 
-    for (std::size_t idx = 0; idx < max_num_t; ++idx) {
+    for (int idx = 0; idx < max_num_t; ++idx) {
       if (idx < num_t) {
         vd.own = &restr_vecs[idx];
       }
@@ -320,22 +321,21 @@ private:
         vd.own = &zerovec;
       }
 
-      if (idx > 0) {
-        for (auto &&[rank, basis_vec] : vd.others) {
-          basis_vector_buffer[rank] = std::move(basis_vec);
-        }
-      }
-
-      vd.clear();
       Logger::get().startEvent(comm_begin_event);
       bcomm.forwardBegin<CopyGatherScatterWithRank>(vd);
       Logger::get().endEvent(comm_begin_event);
+
+      if (idx > 0) {
+        for (auto &&[rank, basis_vec] : vd.others) {
+          basis_vector_buffer[rank] = basis_vec;
+        }
+      }
 
       // Compute scalar products for local * A * local vectors
       Logger::get().startEvent(local_local_sp_event);
       if (idx < num_t) {
         A.mv(restr_vecs[idx], y);
-        for (std::size_t k = 0; k < num_t; ++k) {
+        for (int k = 0; k < num_t; ++k) {
           my_rows[k][offset_per_rank[rank] + idx] = restr_vecs[k] * y;
         }
       }
@@ -351,13 +351,14 @@ private:
           }
 
           A.mv(basis_vector_buffer[nb], y);
-          for (std::size_t k = 0; k < num_t; ++k) {
+          for (int k = 0; k < num_t; ++k) {
             my_rows[k][offset_per_rank[nb] + idx - 1] = restr_vecs[k] * y;
           }
         }
         Logger::get().endEvent(local_remote_sp_event);
       }
 
+      vd.clear();
       // Wait for communication to finish
       Logger::get().startEvent(comm_end_event);
       bcomm.forwardEnd<CopyGatherScatterWithRank>(vd);
@@ -373,7 +374,7 @@ private:
       }
 
       A.mv(vd.others[nb], y);
-      for (std::size_t k = 0; k < num_t; ++k) {
+      for (int k = 0; k < num_t; ++k) {
         my_rows[k][offset_per_rank[nb] + max_num_t - 1] = restr_vecs[k] * y;
       }
     }
@@ -419,6 +420,9 @@ private:
 
         // Again, we skip the computation if we know it will be zero. In fact, these dot products are often
         // the longest taking step in this loop, so skipping unecessary computations here is crucial.
+        // TODO: Is this actually true? We have to wait for the other ranks anyways so I'm not sure if
+        //       saving some computations locally is really that important.
+
         // Note that my_rows is initialised with zeros, so just skipping here is fine.
         if (col == rank or neighbours[col]) {
           Logger::get().startEvent(dot_vecs_event);

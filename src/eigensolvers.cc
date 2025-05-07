@@ -160,7 +160,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
             while (cnt < nconv - 1 and evalues[cnt] < threshold) {
               ++cnt;
             }
-            nconv = cnt;
+            nconv = std::max(cnt, 1L); // Make sure that nconv is at least 1 (might be zero if the first eigenvalue is already larger than the threshold)
           }
 
           if (spdlog::get("all_ranks")->level() <= spdlog::level::debug) {

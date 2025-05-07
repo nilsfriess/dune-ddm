@@ -29,7 +29,6 @@
 #include <dune/pdelab/localoperator/convectiondiffusionfem.hh>
 #include <dune/pdelab/localoperator/convectiondiffusionparameter.hh>
 
-#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -40,6 +39,7 @@
 #include "assemblewrapper.hh"
 #include "datahandles.hh"
 #include "helpers.hh"
+#include "overlap_extension.hh"
 #include "spdlog/spdlog.h"
 
 template <class GridView, class RF>
@@ -188,8 +188,9 @@ public:
 
   using ES = Dune::PDELab::NonOverlappingEntitySet<GridView>; // Skip ghost elements during assembly
 
-  using ModelProblem = PoissonModelProblem<ES, RF>;
-  // using ModelProblem = IslandsModelProblem<ES, RF>;
+  // using ModelProblem = PoissonModelProblem<ES, RF>;
+  using ModelProblem = IslandsModelProblem<ES, RF>;
+  // using ModelProblem = Dune::PDELab::ConvectionDiffusionModelProblem<ES, RF>;
   using BC = Dune::PDELab::ConvectionDiffusionBoundaryConditionAdapter<ModelProblem>;
 
   using FEM = std::conditional_t<isYASPGrid<Grid>(),                                          // If YASP grid...
@@ -210,7 +211,9 @@ public:
   using NativeMat = Dune::PDELab::Backend::Native<Mat>;
   using NativeVec = Dune::PDELab::Backend::Native<Vec>;
 
-  PoissonProblem(const GridView &gv, const Dune::MPIHelper &helper) : es(gv), fem(gv), gfs(es, fem), bc(es, modelProblem), lop(modelProblem), x(std::make_unique<Vec>(gfs, 0.0))
+  PoissonProblem(const GridView &gv, const Dune::MPIHelper &helper)
+      : es(gv), fem(gv), gfs(es, fem), bc(es, modelProblem), lop(modelProblem), wrapper(std::make_unique<AssembleWrapper<LOP>>(&lop)), x(std::make_unique<Vec>(gfs, 0.0)),
+        x0(std::make_unique<Vec>(gfs, 0.)), d(std::make_unique<Vec>(gfs, 0.)), dirichlet_mask(std::make_unique<Vec>(gfs, 0))
   {
     using Dune::PDELab::Backend::native;
     // Name the GFS for visualisation
@@ -222,21 +225,16 @@ public:
     Dune::PDELab::interpolate(g, gfs, *x);
     Dune::PDELab::constraints(bc, gfs, cc);
 
-    // Create Dirichlet mask
-    dirichlet_mask = std::make_unique<Vec>(gfs, 0);
+    // Set Dirichlet mask
     Dune::PDELab::set_constrained_dofs(cc, 1., *dirichlet_mask);
 
     // Create the grid operator, assemble the residual and setup the nonzero pattern of the matrix
-    wrapper = std::make_unique<AssembleWrapper<LOP>>(&lop);
     go = std::make_unique<GO>(gfs, cc, gfs, cc, *wrapper, MBE(9));
 
     spdlog::info("Assembling sparsity pattern");
     As = std::make_unique<Mat>(*go);
 
     spdlog::info("Assembling residual");
-    d = std::make_unique<Vec>(gfs, 0.);
-
-    x0 = std::make_unique<Vec>(gfs, 0.);
     go->residual(*x, *d);
 
     *x0 = *x;
@@ -245,79 +243,72 @@ public:
       Dune::PDELab::AddDataHandle adddhx(gfs, *d);
       gfs.gridView().communicate(adddhx, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
     }
-    // Dune::PDELab::set_nonconstrained_dofs(cc, 0, *x0);
   }
 
-  // TODO: This function needs some cleaning up.
   template <class RemoteIndices>
   std::tuple<std::vector<TripleWithRank>, std::vector<TripleWithRank>, std::vector<bool>> assembleJacobian(const RemoteIndices &remoteids, int overlap)
   {
     using Dune::PDELab::Backend::native;
 
-    if (overlap <= 0) {
-      DUNE_THROW(Dune::Exception, "Overlap must be greater than zero");
-    }
-
     int ownrank{};
     MPI_Comm_rank(remoteids.communicator(), &ownrank);
 
-    const auto &paridxs = remoteids.sourceIndexSet();
+    ExtendedRemoteIndices<RemoteIndices, NativeMat> ext_indices(remoteids, native(*As), overlap + 1);
 
+    // Create a vector with ones on the overlapping subdomain boundary, and one vector with ones
+    // "one layer further"
+    NativeVec on_boundary_vec(ext_indices.size());
+    NativeVec outside_boundary_vec(ext_indices.size());
+    on_boundary_vec = 0;
+    outside_boundary_vec = 0;
+
+    assert(overlap >= 1 && "Overlap must be greater than zero");
+    const auto &idxset_sizes = ext_indices.get_index_set_sizes();
+    const auto first_idx = std::max(0, overlap - 1);
+    for (std::size_t i = idxset_sizes[first_idx]; i < idxset_sizes[first_idx + 1]; ++i) {
+      on_boundary_vec[i] = 1;
+    }
+    for (std::size_t i = idxset_sizes[first_idx + 1]; i < idxset_sizes[first_idx + 2]; ++i) {
+      outside_boundary_vec[i] = 1;
+    }
+
+    // Communicate masks with other ranks
     const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
     Dune::Interface interface;
-    interface.build(remoteids, allAttributes, allAttributes);
+    interface.build(ext_indices.get_remote_indices(), allAttributes, allAttributes);
     Dune::VariableSizeCommunicator communicator(interface);
-    IdentifyBoundaryDataHandle ibdh(native(*As), paridxs, ownrank);
-    communicator.forward(ibdh);
 
-    // First we create (for each rank) two boolean masks:
-    //   - One marks the dofs that have distance 'overlap' from the subdomain boundary
-    //     that we share with a given rank.
-    //   - The other one marks the dofs that have distance 'overlap + 1' from the
-    //     subdomain boundary that we share with a given rank.
-    // All elements that contain dofs from both sets corresponding to these masks are
-    // exactly those elements that we would need to skip during assembly in order to
-    // assemble a matrix that corresponds to a "Neumann" matrix for the given remote
-    // rank. Instead of skipping those elements, we compute the contributions from
-    // them and send those contributions around. Our neighbouring ranks can then
-    // subtract those contributions from their matrices if they need Neumann matrices.
-    auto subdomain_boundary_mask_for_rank = ibdh.getBoundaryMaskForRank();
-    std::map<int, std::vector<int>> boundary_dst_for_rank;
-    for (const auto &[rank, mask] : subdomain_boundary_mask_for_rank) {
-      boundary_dst_for_rank[rank].resize(paridxs.size(), std::numeric_limits<int>::max() - 1);
+    CopyVectorDataHandleWithRank cvdhwr_on(on_boundary_vec);
+    communicator.forward(cvdhwr_on);
 
-      for (const auto &idxpair : paridxs) {
-        auto li = idxpair.local();
-        if (mask[li]) {
-          boundary_dst_for_rank[rank][li] = 0;
-        }
-      }
+    CopyVectorDataHandleWithRank cvdhwr_outside(outside_boundary_vec);
+    communicator.forward(cvdhwr_outside);
 
-      for (int round = 0; round <= overlap + 4; ++round) {
-        for (int i = 0; i < boundary_dst_for_rank[rank].size(); ++i) {
-          for (auto cIt = native(*As)[i].begin(); cIt != native(*As)[i].end(); ++cIt) {
-            boundary_dst_for_rank[rank][i] = std::min(boundary_dst_for_rank[rank][i], boundary_dst_for_rank[rank][cIt.index()] + 1); // Increase distance from boundary by one
-          }
-        }
-      }
-    }
+    const auto &paridxs = remoteids.sourceIndexSet();
 
     std::map<int, std::vector<bool>> on_boundary_mask_for_rank;
     std::map<int, std::vector<bool>> outside_boundary_mask_for_rank;
-    for (const auto &[rank, dstmap] : boundary_dst_for_rank) {
+    for (const auto &[rank, vec] : cvdhwr_on.copied_vecs) {
       on_boundary_mask_for_rank[rank].resize(paridxs.size(), false);
       outside_boundary_mask_for_rank[rank].resize(paridxs.size(), false);
 
+      assert(cvdhwr_outside.copied_vecs.contains(rank));
       for (std::size_t i = 0; i < paridxs.size(); ++i) {
-        on_boundary_mask_for_rank[rank][i] = dstmap[i] == overlap;
-        outside_boundary_mask_for_rank[rank][i] = dstmap[i] == overlap + 1;
+        on_boundary_mask_for_rank[rank][i] = vec[i];
+        outside_boundary_mask_for_rank[rank][i] = cvdhwr_outside.copied_vecs[rank][i];
       }
     }
 
     // Now we have the two boolean masks as explained above. Since we might also have to apply these
     // "Neumann corrections" to some of our own indices (e.g., in the case of the GenEO ring coarse
     // space), we create two additional boolean masks corresponding to those interior corrections.
-    auto boundary_mask = ibdh.getBoundaryMask();
+    Dune::Interface small_interface;
+    small_interface.build(remoteids, allAttributes, allAttributes);
+    Dune::VariableSizeCommunicator small_communicator(small_interface);
+    IdentifyBoundaryDataHandle ibdh(native(*As), paridxs);
+    small_communicator.forward(ibdh);
+
+    const auto &boundary_mask = ibdh.get_boundary_mask();
     std::vector<int> boundary_dst(boundary_mask.size(), std::numeric_limits<int>::max() - 1);
     for (const auto &idxpair : paridxs) {
       auto li = idxpair.local();
@@ -326,8 +317,8 @@ public:
       }
     }
 
-    for (int round = 0; round <= overlap + 6; ++round) {
-      for (int i = 0; i < boundary_dst.size(); ++i) {
+    for (int round = 0; round <= overlap + 2; ++round) {
+      for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
         for (auto cIt = native(*As)[i].begin(); cIt != native(*As)[i].end(); ++cIt) {
           boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cIt.index()] + 1); // Increase distance from boundary by one
         }
@@ -344,6 +335,7 @@ public:
     spdlog::info("Assembling full stiffness matrix and corrections");
     wrapper->setMasks(native(*As), &on_boundary_mask_for_rank, &outside_boundary_mask_for_rank, &on_boundary_mask, &outside_boundary_mask);
     go->jacobian(*x, *As);
+    spdlog::info("Stiffness matrix assembly done");
 
     Dune::GlobalLookupIndexSet glis(remoteids.sourceIndexSet());
     auto triples_for_rank = wrapper->get_correction_triples(glis);
@@ -403,8 +395,8 @@ public:
 
     std::vector<TripleWithRank> all_own_triples(std::move(triples_for_rank.at(-1)));
 
-    std::vector<bool> interior(boundary_dst.size(), false);
-    for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
+    std::vector<bool> interior(As->N(), false);
+    for (std::size_t i = 0; i < interior.size(); ++i) {
       if (boundary_dst[i] > overlap) {
         interior[i] = true;
       }
@@ -445,5 +437,4 @@ private:
   std::unique_ptr<Vec> d;              // residual vector
   std::unique_ptr<Vec> dirichlet_mask; // vector with ones at the dirichlet dofs
   std::unique_ptr<Mat> As;
-  // std::map<int, Mat> neumannCorrForRank; //
 };

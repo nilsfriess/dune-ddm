@@ -4,8 +4,8 @@
 
 #include <dune/istl/bcrsmatrix.hh>
 
-#include <mpi.h>
 #include <memory>
+#include <mpi.h>
 #include <utility>
 #include <vector>
 
@@ -62,7 +62,7 @@ RemoteParallelIndices<RemoteIndices> makeRemoteParallelIndices(std::shared_ptr<R
     Pass a negative value to include all values.
 */
 template <class Vec>
-Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_Comm comm, int verbose = 0, double clip_tolerance = 0)
+Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_Comm comm, double clip_tolerance = 0)
 {
   int rank = 0;
   int size = 0;
@@ -77,6 +77,10 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   for (const auto &row : rows) {
     if (row.N() != columns) {
       DUNE_THROW(Dune::Exception, "Rows have different sizes");
+    }
+
+    if (row.two_norm() == 0) {
+      DUNE_THROW(Dune::Exception, "Must not provide rows that are zero");
     }
   }
 
@@ -159,7 +163,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
     }
 
     A0.setBuildMode(Dune::BCRSMatrix<double>::implicit);
-    A0.setImplicitBuildModeParameters(all_triples.size() / size, 0.2); // TODO: Make this robust
+    A0.setImplicitBuildModeParameters(all_triples.size() / size, 1); // TODO: Make this robust
     A0.setSize(row_offsets[size - 1] + rows_per_rank[size - 1], columns);
 
     for (const auto &triple : all_triples) {
@@ -174,7 +178,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
 
 /** @brief Overload for special case of one vector per rank */
 template <class Vec>
-Dune::BCRSMatrix<double> gatherMatrixFromRows(const Vec &row, MPI_Comm comm, int verbose = 0, double clip_tolerance = 0)
+Dune::BCRSMatrix<double> gatherMatrixFromRows(const Vec &row, MPI_Comm comm, double clip_tolerance = 0)
 {
-  return gatherMatrixFromRows(std::vector<Vec>{row}, comm, verbose, clip_tolerance);
+  return gatherMatrixFromRows(std::vector<Vec>{row}, comm, clip_tolerance);
 }
