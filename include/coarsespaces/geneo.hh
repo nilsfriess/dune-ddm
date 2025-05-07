@@ -289,11 +289,6 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
     }
   }
 
-  if (rank == 0) {
-    Dune::writeMatrixToMatlab(A, "A.mat");
-    Dune::writeMatrixToMatlab(B, "B.mat");
-  }
-
   Eigensolver eigensolver = Eigensolver::Spectra;
   auto eigensolver_string = ptree.get("eigensolver", "spectra");
   if (eigensolver_string == "spectra") {
