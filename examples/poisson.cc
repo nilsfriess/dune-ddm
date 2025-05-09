@@ -65,10 +65,10 @@
 #include <numeric>
 #include <set>
 #include <string>
-#include <unordered_map>
 #include <utility>
 
 #include "coarsespaces/geneo.hh"
+#include "coarsespaces/msgfem.hh"
 #include "coarsespaces/nicolaides.hh"
 #include "combined_preconditioner.hh"
 #include "datahandles.hh"
@@ -355,13 +355,19 @@ int main(int argc, char *argv[])
     prec.add(nicolaides);
   }
   else if (coarsespace == "geneo") {
-    auto basis_vecs =
-        buildGenEOCoarseSpace(ext_indices.get_remote_par_indices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, interior_dof_mask, native(problem.getDirichletMask()),
-                              *schwarz->getPartitionOfUnity(), ptree);
+    auto basis_vecs = buildGenEOCoarseSpace(ext_indices.get_remote_par_indices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, interior_dof_mask,
+                                            native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(), ptree);
 
     auto geneo = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
                                                                                                                                       ext_indices.get_remote_par_indices());
     prec.add(geneo);
+  }
+  else if (coarsespace == "msgfem") {
+    auto basis_vecs = buildMsGFEMCoarseSpace(ext_indices.get_remote_par_indices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, interior_dof_mask,
+                                             native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(), ptree);
+    auto msgfem = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
+                                                                                                                                       ext_indices.get_remote_par_indices());
+    prec.add(msgfem);
   }
   else if (coarsespace == "none") {
     // Nothing to do here
