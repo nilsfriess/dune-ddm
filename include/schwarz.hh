@@ -3,6 +3,7 @@
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/communicator.hh>
 #include <dune/common/parallel/variablesizecommunicator.hh>
+#include <dune/common/parametertree.hh>
 #include <dune/istl/io.hh>
 #include <dune/istl/preconditioner.hh>
 #include <dune/istl/solver.hh>
@@ -61,7 +62,6 @@ public:
   void apply(const X &x, Y &y) const override
   {
     Logger::ScopedLog sl(apply_event);
-    y = 0;
     A.mv(x, y);
     communicator->forward<AddGatherScatter>(y);
   }
@@ -118,7 +118,7 @@ public:
     spdlog::info("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
 
     init(A);
-    createPOU();
+    createPOU(0);
   }
 
   SchwarzPreconditioner(const Mat &A, const ExtendedRemoteIndices &ext_indices, const Dune::ParameterTree &ptree)
@@ -152,7 +152,7 @@ public:
     }
 
     init(A);
-    createPOU();
+    createPOU(ptree.get("pou_shrink", 0));
   }
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
@@ -198,15 +198,10 @@ public:
       all_all_comm.forward<AddGatherScatter>(*x_ovlp);
     }
     else if (type == SchwarzType::Restricted) {
-      if (pou_type == PartitionOfUnityType::Standard) {
-        for (std::size_t i = 0; i < pou->N(); ++i) {
-          (*x_ovlp)[i] *= (*pou)[i];
-        }
-        all_all_comm.forward<AddGatherScatter>(*x_ovlp);
+      for (std::size_t i = 0; i < pou->N(); ++i) {
+        (*x_ovlp)[i] *= (*pou)[i];
       }
-      else {
-        owner_copy_comm.forward<CopyGatherScatter>(*x_ovlp);
-      }
+      all_all_comm.forward<AddGatherScatter>(*x_ovlp);
     }
 
     // 4. Restrict the solution to the non-overlapping subdomain
@@ -252,7 +247,7 @@ private:
     x_ovlp = std::make_unique<Vec>(Aovlp->N());
   }
 
-  void createPOU()
+  void createPOU(int shrink)
   {
     int rank{};
     MPI_Comm_rank(ext_indices.get_remote_indices().communicator(), &rank);
@@ -308,7 +303,12 @@ private:
       *pou = 1;
       for (std::size_t i = 0; i < pou->N(); ++i) {
         if (boundary_dst[i] <= 4 * overlap) {
-          (*pou)[i] = boundary_dst[i];
+          if (boundary_dst[i] <= shrink) {
+            (*pou)[i] = 0;
+          }
+          else {
+            (*pou)[i] = boundary_dst[i] - shrink;
+          }
         }
       }
 
