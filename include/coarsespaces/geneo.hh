@@ -58,43 +58,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
     // For the full GenEO coarse space, we first need to assemble the Neumann matrix on the overlapping subdomain.
     // This can be done by copying the Dirichlet matrix and applying the Neumann correction that we created
     // earlier.
-    A = Aovlp;
-
-    std::set<std::size_t> correction_dofs;
-    for (const auto &triple : remote_ncorr_triples) {
-      // The triples use global indices, so we first have to convert them to local indices
-      // on the overlapping subdomain. Also, we might have received some indices that are
-      // outside of our overlapping subdomain, so we first have to check that.
-      // TODO: Should we simply assume that we only received valid indices?
-      if (ovlp_paridxs.exists(triple.row) && ovlp_paridxs.exists(triple.col)) {
-        auto lrow = ovlp_paridxs[triple.row].local();
-        auto lcol = ovlp_paridxs[triple.col].local();
-
-        A[lrow][lcol] -= triple.val;
-
-        correction_dofs.insert(lrow);
-        correction_dofs.insert(lcol);
-      }
-      else {
-        spdlog::debug("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
-      }
-    }
-
-    // Make sure global Dirichlet conditions are correctly set. We have to eliminate symmetrically, because the eigensolver expects a symmetric problem.
-    for (std::size_t i = 0; i < A.N(); ++i) {
-      if (dirichlet_mask_ovlp[i] > 0) {
-        for (auto ci = A[i].begin(); ci != A[i].end(); ++ci) {
-          *ci = (ci.index() == i) ? 1.0 : 0.0;
-        }
-      }
-      else {
-        for (auto ci = A[i].begin(); ci != A[i].end(); ++ci) {
-          if (dirichlet_mask_ovlp[ci.index()] > 0) {
-            *ci = 0.0;
-          }
-        }
-      }
-    }
+    A = apply_neumann_corrections(Aovlp, remote_ncorr_triples, dirichlet_mask_ovlp, ovlp_paridxs);
 
     // Now we have the Neumann matrix on the overlapping subdomain. This is the left-hand side of the eigenproblem.
     // The right-hand side is constructed from this matrix, its exact form depends on the requested GenEO type. In
@@ -179,7 +143,6 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
     A.compress();
 
     std::size_t apply_cnt = 0;
-    std::set<std::size_t> correction_dofs;
     // We again need to apply the Neumann corrections. First do the "outside" boundary ...
     for (const auto &triple : remote_ncorr_triples) {
       // The triples use global indices, so we first have to convert them to local indices
@@ -193,9 +156,6 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
         if (subdomain_to_ring.contains(lrow) && subdomain_to_ring.contains(lcol)) {
           A[subdomain_to_ring[lrow]][subdomain_to_ring[lcol]] -= triple.val;
           apply_cnt++;
-
-          correction_dofs.insert(lrow);
-          correction_dofs.insert(lcol);
         }
         else {
           spdlog::get("all_ranks")->error("Global index ({}, {}) does not exist in ring", triple.row, triple.col);
@@ -207,16 +167,12 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
     }
     spdlog::get("all_ranks")->debug("Applied {} outer corrections", apply_cnt);
     apply_cnt = 0;
-    correction_dofs.clear();
 
     // ... then the "inside" boundary
     for (const auto &triple : own_ncorr_triples) {
       if (subdomain_to_ring.contains(triple.row) && subdomain_to_ring.contains(triple.col)) {
         A[subdomain_to_ring[triple.row]][subdomain_to_ring[triple.col]] -= triple.val;
         apply_cnt++;
-
-        correction_dofs.insert(triple.row);
-        correction_dofs.insert(triple.col);
       }
       else {
         spdlog::get("all_ranks")->error("Local index ({}, {}) does not exist in ring", triple.row, triple.col);
