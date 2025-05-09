@@ -39,12 +39,7 @@ public:
   void set_shift(double sigma)
   {
     auto A_minus_sigma_B = A;
-    // TODO: This assumes that the sparsity pattern of B is a subset of that of A
-    for (auto ri = B.begin(); ri != B.end(); ++ri) {
-      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-        A_minus_sigma_B[ri.index()][ci.index()] -= sigma * B[ri.index()][ci.index()];
-      }
-    }
+    A_minus_sigma_B.axpy(-1 * sigma, B);
 
     solver = std::make_unique<Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>(A_minus_sigma_B, 0);
     solver->setOption(UMFPACK_IRSTEP, 0);
@@ -132,7 +127,8 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
     bool done = threshold < 0; // In user has not provided a treshold, then we're done after one iteration
 
     do {
-      Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, 2.5 * nev, 0.00001);
+      spdlog::get("all_ranks")->trace("Computing eigenvalues using Spectra");
+      Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, 2 * nev, ptree.get("eigensolver_shift", 0.0001));
       geigs.init();
 
       // Find largest eigenvalue of the shifted problem (which corresponds to the smallest of the original problem)
@@ -191,7 +187,8 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
         }
       }
       else {
-        std::cerr << "ERROR: Eigensolver did not converge";
+        spdlog::get("all_ranks")->error("ERROR: Computation of eigenvalues failed");
+        MPI_Abort(MPI_COMM_WORLD, 13);
       }
 
       nev *= 1.6;
