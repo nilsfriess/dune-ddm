@@ -231,7 +231,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
     }
   }
   else {
-    spdlog::error("Unknown GenEO type '{}', aborting");
+    spdlog::error("Unknown GenEO type '{}', aborting", geneo_type);
     MPI_Abort(MPI_COMM_WORLD, 3);
   }
 
