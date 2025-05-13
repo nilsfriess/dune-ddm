@@ -315,8 +315,13 @@ private:
       auto pou_sum = *pou;
       all_all_comm.forward<AddGatherScatter>(pou_sum);
 
-      for (std::size_t i = 0; i < pou->size(); ++i) {
-        (*pou)[i] /= pou_sum[i];
+      for (std::size_t i = 0; i < pou->N(); ++i) {
+        if (!boundary_mask[i]) {
+          (*pou)[i] /= pou_sum[i];
+        }
+        else {
+          (*pou)[i] = 0.0;
+        }
       }
     } break;
 
