@@ -22,6 +22,7 @@
 
 #include <spdlog/spdlog.h>
 
+#if DUNE_DDM_HAVE_BLOPEX
 #include <lobpcg.h>
 
 #include "coarsespaces/fakemultivec.hh"
@@ -53,6 +54,7 @@ void applyPreconditioner(void *T_, void *r_, void *Tr_)
     std::copy(v.begin(), v.end(), Trstart);
   }
 }
+#endif
 
 class SymShiftInvert {
 public:
@@ -119,7 +121,6 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
                                                                        Dune::Preconditioner<Dune::BlockVector<Dune::FieldVector<double, 1>>, Dune::BlockVector<Dune::FieldVector<double, 1>>> *prec)
 {
   using Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>;
-  using Mat = Dune::BCRSMatrix<double>;
   std::vector<Vec> eigenvectors;
 
   const double tolerance = ptree.get("eigensolver_tolerance", 1e-5);
@@ -252,6 +253,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
       nev *= 1.6;
     } while (not done);
   }
+#if DUNE_DDM_HAVE_BLOPEX
   else if (eigensolver == Eigensolver::BLOPEX) {
     lobpcg_BLASLAPACKFunctions blap_fn;
     blap_fn.dsygv = dsygv_;
@@ -278,6 +280,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
     MultiVectorSetRandomValues(&x, 1);
     auto *xx = mv_MultiVectorWrap(&ii, &x, 0);
 
+    using Mat = Dune::BCRSMatrix<double>;
     int err = 0;
     if (prec != nullptr) {
       err = lobpcg_solve_double(xx,                                    // The initial eigenvectors + pointers to interface routines
@@ -355,14 +358,11 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
     //   }
     // }
   }
+#endif
   else {
-    assert(false && "Unreachable");
+    DUNE_THROW(Dune::NotImplemented, "Eigensolver not implemented");
     MPI_Abort(MPI_COMM_WORLD, 2);
   }
-
-  // for (auto &eigenvector : eigenvectors) {
-  //   eigenvector *= 1. / eigenvector.two_norm();
-  // }
 
   return eigenvectors;
 }

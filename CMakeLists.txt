@@ -44,32 +44,28 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Spectra)
 
-message(STATUS "Trying to download BLOPEX (implementation of LOBPCG)")
-FetchContent_Declare(
-  blopex_all
-  GIT_REPOSITORY https://github.com/nilsfriess/blopex
-  GIT_COMMIT     master
-)
-FetchContent_MakeAvailable(blopex_all)
-add_subdirectory(${blopex_all_SOURCE_DIR}/blopex_abstract)
+option(DUNE_DDM_WITH_BLOPEX "Download and enable BLOPEX" OFF)
+if(${DUNE_DDM_WITH_BLOPEX})
+  message(STATUS "Trying to download BLOPEX (implementation of LOBPCG)")
+  FetchContent_Declare(
+    blopex_all
+    GIT_REPOSITORY https://github.com/nilsfriess/blopex
+    GIT_COMMIT     master
+  )
+  FetchContent_MakeAvailable(blopex_all)
+  add_subdirectory(${blopex_all_SOURCE_DIR}/blopex_abstract)
 
-# add_custom_command(
-#         OUTPUT ${blopex_all_SOURCE_DIR}/blopex_abstract/lib/libBLOPEX.a
-#         COMMAND cd ${blopex_all_SOURCE_DIR}/blopex_abstract && make clean && make CFLAGS='-O3')
-# add_custom_target(BLOPEX_BUILD DEPENDS ${blopex_all_SOURCE_DIR}/blopex_abstract/lib/libBLOPEX.a)
-# add_library(BLOPEX STATIC IMPORTED GLOBAL)
-# set_target_properties(BLOPEX
-#     PROPERTIES
-#     IMPORTED_LOCATION ${blopex_all_SOURCE_DIR}/blopex_abstract/lib/libBLOPEX.a
-#     INTERFACE_INCLUDE_DIRECTORIES ${blopex_all_SOURCE_DIR}/blopex_abstract/include
-# )
-# add_dependencies(BLOPEX BLOPEX_BUILD)
+  set(BLOPEX_LIB BLOPEX)
+endif()
 
 find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK)
 
 add_library(eigensolvers src/eigensolvers.cc)
 target_include_directories(eigensolvers PUBLIC ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(eigensolvers PRIVATE Dune::ISTL spdlog::spdlog Spectra BLOPEX MPI::MPI_C)
+target_link_libraries(eigensolvers PRIVATE Dune::ISTL spdlog::spdlog Spectra ${BLOPEX_LIB} MPI::MPI_C)
+if (${DUNE_DDM_WITH_BLOPEX})
+  target_compile_definitions(eigensolvers PUBLIC DUNE_DDM_HAVE_BLOPEX)
+endif()
 add_dune_eigen_flags(eigensolvers)
 add_dune_suitesparse_flags(eigensolvers)
 add_dune_mpi_flags(eigensolvers)
