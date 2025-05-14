@@ -1,3 +1,4 @@
+#include <dune/pdelab/backend/interface.hh>
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -8,10 +9,10 @@
 #include <dune-pdelab-config.hh>
 
 #include "metis.hh"
-#include "poisson.hh"
 #include "overlap_extension.hh"
+#include "poisson.hh"
 
-#define USE_UGGRID 1 // Set to zero to use YASPGrid
+#define USE_UGGRID 0 // Set to zero to use YASPGrid
 #define GRID_DIM 2
 #define GRID_OVERLAP 0
 
@@ -243,7 +244,11 @@ int main(int argc, char *argv[])
   // Now we have a set of remote indices on the non-overlapping grid, and a stiffness matrix with the correct sparsity pattern.
   // We can use those to find out which dofs we need to treat differently when assembling the matrix. This is all done in the
   // following method.
-  const auto [remote_ncorr_triples, own_ncorr_triples, interior_dof_mask] = problem.assembleJacobian(remoteindices, ptree.get("overlap", 1));
+  std::vector<bool> in_boundary_mask;
+  std::vector<bool> on_boundary_mask;
+  std::vector<bool> outside_boundary_mask;
+  const auto [remote_ncorr_triples, own_ncorr_triples, own_ncorr_triples2, interior_dof_mask, ring_boundary_elements1, ring_boundary_elements2] =
+      problem.assembleJacobian(remoteindices, ptree.get("overlap", 1), in_boundary_mask, on_boundary_mask, outside_boundary_mask);
 
   using Vec = decltype(problem)::Vec;
   using Mat = decltype(problem)::Mat;
@@ -319,6 +324,12 @@ int main(int argc, char *argv[])
     }
   }
 
+  std::set<std::size_t> ring_boundary;
+  std::vector<bool> bnnz;
+  std::vector<bool> annz;
+  std::vector<bool> a_int_nnz;
+
+  Native<Vec> visuvec(pou_vis.N());
   const auto coarsespace = ptree.get("coarsespace", "geneo");
   if (coarsespace == "nicolaides") {
     int nvecs = ptree.get("nvecs", 1);
@@ -355,16 +366,19 @@ int main(int argc, char *argv[])
     prec.add(nicolaides);
   }
   else if (coarsespace == "geneo") {
-    auto basis_vecs = buildGenEOCoarseSpace(ext_indices.get_remote_par_indices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, interior_dof_mask,
-                                            native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(), ptree);
+    auto basis_vecs = buildGenEOCoarseSpace(ext_indices.get_remote_par_indices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, own_ncorr_triples2, interior_dof_mask,
+                                            native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(), ptree, ring_boundary, bnnz, annz);
 
-    auto geneo = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
-                                                                                                                                      ext_indices.get_remote_par_indices());
-    prec.add(geneo);
+    // auto geneo = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
+    //                                                                                                                                   ext_indices.get_remote_par_indices());
+    // prec.add(geneo);
   }
   else if (coarsespace == "msgfem") {
-    auto basis_vecs = buildMsGFEMCoarseSpace(ext_indices.get_remote_par_indices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, interior_dof_mask,
-                                             native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(), ptree);
+    auto basis_vecs = buildMsGFEMCoarseSpace(ext_indices.get_remote_par_indices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, own_ncorr_triples2, interior_dof_mask,
+                                             native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(), ptree, bnnz, annz, a_int_nnz);
+
+    visuvec = basis_vecs[ptree.get("n_vis", 0)];
+
     auto msgfem = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
                                                                                                                                        ext_indices.get_remote_par_indices());
     prec.add(msgfem);
@@ -429,9 +443,6 @@ int main(int argc, char *argv[])
 
     // Write interior cells
     auto dof_mask = interior_dof_mask;
-    if (helper.rank() != ptree.get("debug_rank", 0)) {
-      std::fill(dof_mask.begin(), dof_mask.end(), false);
-    }
     Dune::P1VTKFunction interiorFunc(problem.getEntitySet(), dof_mask, "Interior");
     writer.addVertexData(Dune::stackobject_to_shared_ptr(interiorFunc));
 
@@ -447,12 +458,60 @@ int main(int argc, char *argv[])
     typedef Dune::PDELab::VTKGridFunctionAdapter<decltype(permdgf)> PermVTKDGF;
     writer.addCellData(std::make_shared<PermVTKDGF>(permdgf, "log(K)"));
 
-    // // Write ring for the debug rank
-    // AttributeSet allAttributes{Attribute::owner, Attribute::copy};
-    // Dune::Interface all_all_interface;
-    // all_all_interface.build(ext_indices.get_remote_indices(), allAttributes, allAttributes);
-    // Dune::VariableSizeCommunicator all_all_comm(all_all_interface);
-    // AddVectorDataHandle<Native<Vec>> advdh;
+    // Write ring for the debug rank
+    AttributeSet allAttributes{Attribute::owner, Attribute::copy};
+    Dune::Interface all_all_interface;
+    all_all_interface.build(ext_indices.get_remote_indices(), allAttributes, allAttributes);
+    Dune::VariableSizeCommunicator all_all_comm(all_all_interface);
+    AddVectorDataHandle<Native<Vec>> advdh;
+
+    // Inner ring corrections
+    Native<Vec> inner_ring_corrections(dof_mask.size());
+    inner_ring_corrections = 0;
+    for (const auto &triple : own_ncorr_triples) {
+      inner_ring_corrections[triple.row] = 1;
+      inner_ring_corrections[triple.col] = 1;
+    }
+    Dune::P1VTKFunction inner_ring_corrections_function(problem.getEntitySet(), inner_ring_corrections, "Inner corrections");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(inner_ring_corrections_function));
+
+    // Inner ring corrections 2
+    Native<Vec> inner_ring_corrections2(dof_mask.size());
+    inner_ring_corrections2 = 0;
+    for (const auto &triple : own_ncorr_triples2) {
+      inner_ring_corrections2[triple.row] = 1;
+      inner_ring_corrections2[triple.col] = 1;
+    }
+    Dune::P1VTKFunction inner_ring_corrections2_function(problem.getEntitySet(), inner_ring_corrections2, "Inner corrections 2");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(inner_ring_corrections2_function));
+
+    // Ring boundary
+    Native<Vec> ring(dof_mask.size());
+    ring = 0;
+    for (auto dof : ring_boundary) {
+      ring[dof] = 1;
+    }
+    Dune::P1VTKFunction ring_function(problem.getEntitySet(), ring, "Ring boundary");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(ring_function));
+
+    // Inner ring boundary
+    Dune::P1VTKFunction ring_inner_function(problem.getEntitySet(), in_boundary_mask, "In boundary");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(ring_inner_function));
+
+    // Other ring boundary
+    Dune::P1VTKFunction ring_other_function(problem.getEntitySet(), on_boundary_mask, "On Boundary");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(ring_other_function));
+
+    // Other ring boundary
+    Dune::P1VTKFunction ring_outside_function(problem.getEntitySet(), outside_boundary_mask, "Outside Boundary");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(ring_outside_function));
+
+    // Ring corr elements
+    Dune::P0VTKFunction ring_boundary_elements_func1(problem.getEntitySet(), ring_boundary_elements1, "Ring boundary 1");
+    writer.addCellData(Dune::stackobject_to_shared_ptr(ring_boundary_elements_func1));
+
+    Dune::P0VTKFunction ring_boundary_elements_func2(problem.getEntitySet(), ring_boundary_elements2, "Ring boundary 2");
+    writer.addCellData(Dune::stackobject_to_shared_ptr(ring_boundary_elements_func2));
 
     // Native<Vec> ring(ext_indices.get_parallel_index_set().size());
     // ring = 0;
@@ -503,11 +562,11 @@ int main(int argc, char *argv[])
     // writer.addVertexData(Dune::stackobject_to_shared_ptr(innerCorrFunc));
 
     // Visualise pou
-    // if (helper.rank() != ptree.get("debug_rank", 0)) {
-    //   pou_vis = 0;
-    // }
-    // advdh.setVec(pou_vis);
-    // all_all_comm.forward(advdh);
+    if (helper.rank() != ptree.get("debug_rank", 0)) {
+      pou_vis = 0;
+    }
+    advdh.setVec(pou_vis);
+    all_all_comm.forward(advdh);
 
     Native<Vec> pou_vec_small(problem.getX().N());
     for (std::size_t i = 0; i < pou_vec_small.N(); ++i) {
@@ -515,6 +574,69 @@ int main(int argc, char *argv[])
     }
     Dune::P1VTKFunction pouFunc(problem.getEntitySet(), pou_vec_small, "POU");
     writer.addVertexData(Dune::stackobject_to_shared_ptr(pouFunc));
+
+    // B nnz
+    if (bnnz.size() == 0) {
+      bnnz.resize(pou_vis.N());
+    }
+    Native<Vec> Bnnz(bnnz.size());
+    for (std::size_t i = 0; i < bnnz.size(); ++i) {
+      Bnnz[i] = int(bnnz[i]);
+    }
+    if (helper.rank() != ptree.get("debug_rank", 0)) {
+      Bnnz = 0;
+    }
+    advdh.setVec(Bnnz);
+    all_all_comm.forward(advdh);
+
+    Native<Vec> Bnnz_vec_small(problem.getX().N());
+    for (std::size_t i = 0; i < Bnnz_vec_small.N(); ++i) {
+      Bnnz_vec_small[i] = Bnnz[i];
+    }
+    Dune::P1VTKFunction bnnz_func(problem.getEntitySet(), Bnnz_vec_small, "B nnz");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(bnnz_func));
+
+    // A nnz
+    if (annz.size() == 0) {
+      annz.resize(pou_vis.N());
+    }
+    Native<Vec> Annz(annz.size());
+    for (std::size_t i = 0; i < annz.size(); ++i) {
+      Annz[i] = int(annz[i]);
+    }
+    if (helper.rank() != ptree.get("debug_rank", 0)) {
+      Annz = 0;
+    }
+    advdh.setVec(Annz);
+    all_all_comm.forward(advdh);
+
+    Native<Vec> Annz_vec_small(problem.getX().N());
+    for (std::size_t i = 0; i < Annz_vec_small.N(); ++i) {
+      Annz_vec_small[i] = Annz[i];
+    }
+    Dune::P1VTKFunction annz_func(problem.getEntitySet(), Annz_vec_small, "A nnz");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(annz_func));
+
+     // A nnz
+    if (a_int_nnz.size() == 0) {
+      a_int_nnz.resize(pou_vis.N());
+    }
+    Native<Vec> A_Int_Nnz(a_int_nnz.size());
+    for (std::size_t i = 0; i < a_int_nnz.size(); ++i) {
+      A_Int_Nnz[i] = int(a_int_nnz[i]);
+    }
+    if (helper.rank() != ptree.get("debug_rank", 0)) {
+      A_Int_Nnz = 0;
+    }
+    advdh.setVec(A_Int_Nnz);
+    all_all_comm.forward(advdh);
+
+    Native<Vec> A_Int_Nnz_vec_small(problem.getX().N());
+    for (std::size_t i = 0; i < A_Int_Nnz_vec_small.N(); ++i) {
+      A_Int_Nnz_vec_small[i] = A_Int_Nnz[i];
+    }
+    Dune::P1VTKFunction a_int_nnz_func(problem.getEntitySet(), A_Int_Nnz_vec_small, "A_int nnz");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(a_int_nnz_func));
 
     // Add a vector with the dof numbering for debugging
     Native<Vec> dof_numbers(problem.getX().N());
@@ -526,14 +648,14 @@ int main(int argc, char *argv[])
     writer.addVertexData(Dune::stackobject_to_shared_ptr(dofFunc));
 
     // Visualise one of the basis vectors extracted after setup of the coarse space
-    // if (helper.rank() != ptree.get("debug_rank", 0)) {
-    //   visuvec = 0;
-    // }
-    // advdh.setVec(visuvec);
-    // all_all_comm.forward(advdh);
-    // visuvec.resize(problem.getX().N());
-    // Dune::P1VTKFunction basisFunc(problem.getEntitySet(), visuvec, "Basis function");
-    // writer.addVertexData(Dune::stackobject_to_shared_ptr(basisFunc));
+    if (helper.rank() != ptree.get("debug_rank", 0)) {
+      visuvec = 0;
+    }
+    advdh.setVec(visuvec);
+    all_all_comm.forward(advdh);
+    visuvec.resize(problem.getX().N());
+    Dune::P1VTKFunction basisFunc(problem.getEntitySet(), visuvec, "Basis function");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(basisFunc));
 
     writer.write(ptree.get("filename", "Poisson"));
   }

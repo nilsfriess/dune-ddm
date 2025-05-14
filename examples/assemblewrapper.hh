@@ -211,25 +211,62 @@ public:
       }
     }
 
-    // Corrections for ourselves
-    bool hasDofAtBoundary = false;
-    bool hasDofOutsideBoundary = false;
-    for (std::size_t i = 0; i < cache.size(); ++i) {
-      auto dofidx = cache.containerIndex(i)[0];
+    // Corrections for ourselves (oversampling ring)
+    {
+      bool hasDofAtBoundary = false;
+      bool hasDofOutsideBoundary = false;
+      for (std::size_t i = 0; i < cache.size(); ++i) {
+        auto dofidx = cache.containerIndex(i)[0];
 
-      if ((*on_boundary_mask)[dofidx]) {
-        hasDofAtBoundary = true;
+        if ((*on_boundary_mask)[dofidx]) {
+          hasDofAtBoundary = true;
+        }
+
+        if ((*outside_boundary_mask)[dofidx]) {
+          hasDofOutsideBoundary = true;
+        }
       }
+      if (hasDofAtBoundary and hasDofOutsideBoundary) {
+        const auto &indexSet = lfsu.gridFunctionSpace().entitySet().indexSet();
+        (*marked_elements1)[indexSet.index(eg.entity())] = true;
 
-      if ((*outside_boundary_mask)[dofidx]) {
-        hasDofOutsideBoundary = true;
+        for (const auto &[row, cols] : curr_neumann_corrections) {
+          for (const auto &[col, val] : cols) {
+            if ((*on_boundary_mask)[row] and (*on_boundary_mask)[col]) {
+              neumann_correction_matrices[-1][row][col] += val; // -1 means our own corrections
+            }
+          }
+        }
       }
     }
-    if (hasDofAtBoundary and hasDofOutsideBoundary) {
-      for (const auto &[row, cols] : curr_neumann_corrections) {
-        for (const auto &[col, val] : cols) {
-          if ((*on_boundary_mask)[row] and (*on_boundary_mask)[col]) {
-            neumann_correction_matrices[-1][row][col] += val; // -1 means our own corrections
+
+    // Corrections for ourselves ("normal" ring)
+    {
+      bool hasDofAtBoundary = false;
+      bool hasDofOutsideBoundary = false;
+      int cnt = 0;
+      for (std::size_t i = 0; i < cache.size(); ++i) {
+        auto dofidx = cache.containerIndex(i)[0];
+
+        if ((*in_boundary_mask)[dofidx]) {
+          hasDofAtBoundary = true;
+          ++cnt;
+        }
+
+        if ((*on_boundary_mask)[dofidx]) {
+          hasDofOutsideBoundary = true;
+          ++cnt;
+        }
+      }
+      if (hasDofAtBoundary and hasDofOutsideBoundary and cnt > 2) {
+        const auto &indexSet = lfsu.gridFunctionSpace().entitySet().indexSet();
+        (*marked_elements2)[indexSet.index(eg.entity())] = true;
+
+        for (const auto &[row, cols] : curr_neumann_corrections) {
+          for (const auto &[col, val] : cols) {
+            if ((*in_boundary_mask)[row] and (*in_boundary_mask)[col]) {
+              neumann_correction_matrices[-2][row][col] += val; // -2 means our own corrections
+            }
           }
         }
       }
@@ -261,11 +298,12 @@ public:
 
   template <class Mat>
   void setMasks(const Mat &A, const std::map<int, std::vector<bool>> *on_boundary_mask_for_rank, const std::map<int, std::vector<bool>> *outside_boundary_mask_for_rank,
-                const std::vector<bool> *on_boundary_mask, const std::vector<bool> *outside_boundary_mask)
+                const std::vector<bool> *in_boundary_mask, const std::vector<bool> *on_boundary_mask, const std::vector<bool> *outside_boundary_mask)
   {
     this->on_boundary_mask_for_rank = on_boundary_mask_for_rank;
     this->outside_boundary_mask_for_rank = outside_boundary_mask_for_rank;
     this->on_boundary_mask = on_boundary_mask;
+    this->in_boundary_mask = in_boundary_mask;
     this->outside_boundary_mask = outside_boundary_mask;
 
     const auto avg = A.nonzeroes() / A.N();
@@ -303,6 +341,23 @@ public:
       }
     }
     An.compress();
+
+    // Set up an additional correction matrix for our own local correction
+    auto &An2 = neumann_correction_matrices[-2];
+    An2.setBuildMode(Dune::BCRSMatrix<double>::implicit);
+    An2.setImplicitBuildModeParameters(avg, 0.4);
+    An2.setSize(A.N(), A.M());
+
+    for (auto ri = A.begin(); ri != A.end(); ++ri) {
+      if ((*in_boundary_mask)[ri.index()]) {
+        for (auto ci = A[ri.index()].begin(); ci != A[ri.index()].end(); ++ci) {
+          if ((*in_boundary_mask)[ci.index()]) {
+            An2.entry(ri.index(), ci.index()) = 0.0;
+          }
+        }
+      }
+    }
+    An2.compress();
   }
 
   template <class GLIS>
@@ -312,7 +367,7 @@ public:
 
     for (const auto &[rank, An] : neumann_correction_matrices) {
       triples_for_rank[rank].reserve(An.nonzeroes());
-      if (rank != -1) {
+      if (rank >= 0) {
         for (auto ri = An.begin(); ri != An.end(); ++ri) {
           auto grow = glis.pair(ri.index())->global();
           for (auto ci = An[ri.index()].begin(); ci != An[ri.index()].end(); ++ci) {
@@ -347,10 +402,14 @@ public:
     return triples_for_rank;
   }
 
+  mutable std::vector<bool> *marked_elements1;
+  mutable std::vector<bool> *marked_elements2;
+
 private:
   const std::map<int, std::vector<bool>> *on_boundary_mask_for_rank{nullptr};
   const std::map<int, std::vector<bool>> *outside_boundary_mask_for_rank{nullptr};
   const std::vector<bool> *on_boundary_mask{nullptr}; // Masks for the "inner" corrections
+  const std::vector<bool> *in_boundary_mask{nullptr};
   const std::vector<bool> *outside_boundary_mask{nullptr};
   // std::map<int, std::vector<TripleWithRank>> neumann_corrections;
 

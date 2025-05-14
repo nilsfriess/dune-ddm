@@ -240,13 +240,14 @@ public:
     *x0 = *x;
 
     if (helper.size() > 1) {
-      Dune::PDELab::AddDataHandle adddhx(gfs, *d);
-      gfs.gridView().communicate(adddhx, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
+      Dune::PDELab::AddDataHandle adddhd(gfs, *d);
+      gfs.gridView().communicate(adddhd, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
     }
   }
 
   template <class RemoteIndices>
-  std::tuple<std::vector<TripleWithRank>, std::vector<TripleWithRank>, std::vector<bool>> assembleJacobian(const RemoteIndices &remoteids, int overlap)
+  std::tuple<std::vector<TripleWithRank>, std::vector<TripleWithRank>, std::vector<TripleWithRank>, std::vector<bool>, std::vector<bool>, std::vector<bool>>
+  assembleJacobian(const RemoteIndices &remoteids, int overlap, std::vector<bool> &in_boundary_mask, std::vector<bool> &on_boundary_mask, std::vector<bool> &outside_boundary_mask)
   {
     using Dune::PDELab::Backend::native;
 
@@ -302,6 +303,7 @@ public:
     // Now we have the two boolean masks as explained above. Since we might also have to apply these
     // "Neumann corrections" to some of our own indices (e.g., in the case of the GenEO ring coarse
     // space), we create two additional boolean masks corresponding to those interior corrections.
+
     Dune::Interface small_interface;
     small_interface.build(remoteids, allAttributes, allAttributes);
     Dune::VariableSizeCommunicator small_communicator(small_interface);
@@ -310,10 +312,9 @@ public:
 
     const auto &boundary_mask = ibdh.get_boundary_mask();
     std::vector<int> boundary_dst(boundary_mask.size(), std::numeric_limits<int>::max() - 1);
-    for (const auto &idxpair : paridxs) {
-      auto li = idxpair.local();
-      if (boundary_mask[li]) {
-        boundary_dst[li] = 0;
+    for (std::size_t i = 0; i < boundary_mask.size(); ++i) {
+      if (boundary_mask[i]) {
+        boundary_dst[i] = 0;
       }
     }
 
@@ -325,15 +326,48 @@ public:
       }
     }
 
-    std::vector<bool> on_boundary_mask(paridxs.size(), false);
-    std::vector<bool> outside_boundary_mask(paridxs.size(), false);
+    in_boundary_mask.resize(paridxs.size(), false);
+    on_boundary_mask.resize(paridxs.size(), false);
+    outside_boundary_mask.resize(paridxs.size(), false);
     for (std::size_t i = 0; i < paridxs.size(); ++i) {
+      in_boundary_mask[i] = boundary_dst[i] == (overlap - 1);
       on_boundary_mask[i] = boundary_dst[i] == overlap;
-      outside_boundary_mask[i] = boundary_dst[i] == overlap + 1;
+      outside_boundary_mask[i] = boundary_dst[i] == (overlap + 1);
     }
 
+    // for (std::size_t i = 0; i < in_boundary_mask.size(); ++i) {
+    //   if (!in_boundary_mask[i]) {
+    //     continue;
+    //   }
+    //   for (auto cIt = native(*As)[i].begin(); cIt != native(*As)[i].end(); ++cIt) {
+    //     if (cIt.index() != i) {
+    //       if (boundary_dst[cIt.index()] > overlap - 1) {
+    //         on_boundary_mask[cIt.index()] = true;
+    //       }
+    //     }
+    //   }
+    // }
+
+    // for (std::size_t i = 0; i < on_boundary_mask.size(); ++i) {
+    //   if (!on_boundary_mask[i]) {
+    //     continue;
+    //   }
+    //   for (auto cIt = native(*As)[i].begin(); cIt != native(*As)[i].end(); ++cIt) {
+    //     if (cIt.index() != i) {
+    //       if (boundary_dst[cIt.index()] > overlap) {
+    //         outside_boundary_mask[cIt.index()] = true;
+    //       }
+    //     }
+    //   }
+    // }
+
+    std::vector<bool> ring_boundary_elements1(es.size(0), false);
+    std::vector<bool> ring_boundary_elements2(es.size(0), false);
+    wrapper->marked_elements1 = &ring_boundary_elements1;
+    wrapper->marked_elements2 = &ring_boundary_elements2;
+
     spdlog::info("Assembling full stiffness matrix and corrections");
-    wrapper->setMasks(native(*As), &on_boundary_mask_for_rank, &outside_boundary_mask_for_rank, &on_boundary_mask, &outside_boundary_mask);
+    wrapper->setMasks(native(*As), &on_boundary_mask_for_rank, &outside_boundary_mask_for_rank, &in_boundary_mask, &on_boundary_mask, &outside_boundary_mask);
     go->jacobian(*x, *As);
     spdlog::info("Stiffness matrix assembly done");
 
@@ -358,7 +392,7 @@ public:
     std::vector<MPI_Request> requests;
     requests.reserve(triples_for_rank.size());
     for (const auto &[rank, triples] : triples_for_rank) {
-      if (rank == -1) {
+      if (rank < 0) {
         // rank == -1 corresponds to corrections that we have to apply locally, so we can skip them here
         continue;
       }
@@ -369,8 +403,8 @@ public:
     std::map<int, std::vector<TripleWithRank>> remote_triples;
     std::size_t num_triples = 0;
     for (const auto &[rank, triples] : triples_for_rank) {
-      if (rank == -1) {
-        // rank == -1 corresponds to corrections that we have to apply locally, so we can skip them here
+      if (rank < 0) {
+        // rank < 0 corresponds to corrections that we have to apply locally, so we can skip them here
         continue;
       }
 
@@ -394,6 +428,27 @@ public:
     }
 
     std::vector<TripleWithRank> all_own_triples(std::move(triples_for_rank.at(-1)));
+    std::vector<TripleWithRank> all_own_triples2(std::move(triples_for_rank.at(-2)));
+
+    for (const auto &triple : all_own_triples) {
+      if (on_boundary_mask[triple.row] != 1) {
+        spdlog::get("all_ranks")->warn("Unexpected triple row {}", triple.row);
+      }
+
+      if (on_boundary_mask[triple.col] != 1) {
+        spdlog::get("all_ranks")->warn("Unexpected triple col {}", triple.col);
+      }
+    }
+
+    for (const auto &triple : all_own_triples2) {
+      if (in_boundary_mask[triple.row] != 1) {
+        spdlog::get("all_ranks")->warn("Unexpected triple row {}", triple.row);
+      }
+
+      if (in_boundary_mask[triple.col] != 1) {
+        spdlog::get("all_ranks")->warn("Unexpected triple col {}", triple.col);
+      }
+    }
 
     std::vector<bool> interior(As->N(), false);
     for (std::size_t i = 0; i < interior.size(); ++i) {
@@ -403,7 +458,7 @@ public:
     }
 
     MPI_Type_free(&triple_type);
-    return {all_triples, all_own_triples, interior};
+    return {all_triples, all_own_triples, all_own_triples2, interior, ring_boundary_elements1, ring_boundary_elements2};
   }
 
   Vec &getXVec() { return *x0; }

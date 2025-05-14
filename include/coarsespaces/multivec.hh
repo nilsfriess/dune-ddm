@@ -23,11 +23,11 @@ struct Multivec {
   Multivec &operator=(const Multivec &&) = delete;
   ~Multivec() = default;
 
-  std::vector<double> entries;
-  std::vector<std::size_t> active_indices;
-
   std::size_t N; // The size of one vector
   std::size_t M; // The number of vectors
+
+  std::vector<double> entries;
+  std::vector<std::size_t> active_indices;
 };
 
 inline void *MultiVectorCreateCopy(void *src_, BlopexInt copyvalues)
@@ -126,12 +126,12 @@ inline void MultiVectorSetRandomValues(void *vec_, BlopexInt seed)
   }
 }
 
-inline void MultiVectorInnerProd(void *x_, void *y_, BlopexInt gh, BlopexInt h, BlopexInt w, void *v)
+inline void MultiVectorInnerProd(void *x_, void *y_, BlopexInt gh, BlopexInt h, [[maybe_unused]] BlopexInt w, void *v)
 {
   auto *x = static_cast<Multivec *>(x_);
   auto *y = static_cast<Multivec *>(y_);
 
-  assert(x->N == y->N && x->active_indices.size() == h && y->active_indices.size() == w);
+  assert(x->N == y->N && x->active_indices.size() == static_cast<std::size_t>(h) && y->active_indices.size() == static_cast<std::size_t>(w));
 
   auto *res = static_cast<double *>(v);
   auto curr = 0;
@@ -169,7 +169,7 @@ inline void MultiVectorInnerProdDiag(void *x_, void *y_, BlopexInt *mask, Blopex
     std::iota(active_indices.begin(), active_indices.end(), 0);
   }
   else {
-    for (std::size_t i = 0; i < n; ++i) {
+    for (BlopexInt i = 0; i < n; ++i) {
       if (mask[i] > 0) {
         active_indices.push_back(i);
       }
@@ -195,11 +195,11 @@ inline void MultiVectorByMatrix(void *x_, BlopexInt gh, BlopexInt h, BlopexInt w
   auto *y = static_cast<Multivec *>(y_);
   auto *v = static_cast<double *>(v_);
 
-  assert(h == x->active_indices.size() && w == y->active_indices.size());
+  assert(static_cast<std::size_t>(h) == x->active_indices.size() && static_cast<std::size_t>(w) == y->active_indices.size());
 
   double curr_coeff = 0.0;
   auto gap = gh - h;
-  for (std::size_t j = 0; j < w; ++j) {
+  for (BlopexInt j = 0; j < w; ++j) {
     auto ystart = y->active_indices[j] * y->N;
 
     auto xstart = x->active_indices[0] * x->N;
@@ -209,7 +209,7 @@ inline void MultiVectorByMatrix(void *x_, BlopexInt gh, BlopexInt h, BlopexInt w
       y->entries[ystart + k] = curr_coeff * x->entries[xstart + k];
     }
 
-    for (std::size_t i = 1; i < h; ++i) {
+    for (BlopexInt i = 1; i < h; ++i) {
       xstart = x->active_indices[i] * x->N;
       curr_coeff = *v++;
 
@@ -237,7 +237,7 @@ inline void MultiVectorByDiagonal(void *x_, BlopexInt *mask, BlopexInt n, void *
     std::iota(active_indices.begin(), active_indices.end(), 0);
   }
   else {
-    for (std::size_t i = 0; i < n; ++i) {
+    for (BlopexInt i = 0; i < n; ++i) {
       if (mask[i] > 0) {
         active_indices.push_back(i);
       }
@@ -285,7 +285,7 @@ inline void MultiVectorPrint(void *x_, char *tag, BlopexInt limit)
   auto rows = std::min(x->N, static_cast<std::size_t>(limit));
   auto cols = std::min(x->active_indices.size(), static_cast<std::size_t>(limit));
 
-  for (std::size_t i = 0; i < cols; ++i) {
+  for (std::size_t i = 0; i < rows; ++i) {
     for (std::size_t j = 0; j < cols; ++j) {
       std::cout << i << " " << j << " " << x->entries[x->active_indices[i] * x->N + j] << "\n";
     }

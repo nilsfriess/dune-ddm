@@ -94,7 +94,7 @@ void MatFakeMultiVec(void *A_, void *x_, void *Ax_)
   auto *x = static_cast<mv_TempMultiVector *>(x_);
   auto *Ax = static_cast<mv_TempMultiVector *>(Ax_);
 
-  for (std::size_t i = 0; i < x->numVectors; ++i) {
+  for (long i = 0; i < x->numVectors; ++i) {
     if (x->mask && x->mask[i] == 0) {
       continue;
     }

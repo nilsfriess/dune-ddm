@@ -88,6 +88,58 @@ enum class PartitionOfUnityType : std::uint8_t {
   Distance  // Weighted by the distance to the overlapping subdomain boundary, see Toselli & Widlund, p. 84
 };
 
+template <typename Mat, typename X, typename Y>
+class OverlappingOperator : public Dune::AssembledLinearOperator<Mat, X, Y> {
+public:
+  using matrix_type = Mat;
+  using domain_type = X;
+  using range_type = Y;
+  using field_type = typename X::field_type;
+
+private:
+  const Mat &A;
+
+  Logger::Event *apply_event;
+  Logger::Event *applyscaleadd_event;
+
+  struct AddGatherScatter {
+    using DataType = typename Dune::CommPolicy<X>::IndexedType;
+
+    static DataType gather(const X &x, std::size_t i) { return x[i]; }
+    static void scatter(X &x, DataType v, std::size_t i) { x[i] += v; }
+  };
+
+public:
+  explicit OverlappingOperator(const Mat &A) : A(A)
+  {
+    auto *family = Logger::get().registerFamily("OvlpOperator");
+    apply_event = Logger::get().registerEvent(family, "apply");
+    applyscaleadd_event = Logger::get().registerEvent(family, "applyscaleadd");
+  }
+
+  OverlappingOperator(const OverlappingOperator &) = delete;
+  OverlappingOperator(const OverlappingOperator &&) = delete;
+  OverlappingOperator &operator=(const OverlappingOperator &) = delete;
+  OverlappingOperator &operator=(const OverlappingOperator &&) = delete;
+  ~OverlappingOperator() = default;
+
+  Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
+
+  void apply(const X &x, Y &y) const override
+  {
+    Logger::ScopedLog sl(apply_event);
+    A.mv(x, y);
+  }
+
+  void applyscaleadd(field_type alpha, const X &x, Y &y) const override
+  {
+    Logger::ScopedLog sl(applyscaleadd_event);
+    A.usmv(alpha, x, y);
+  }
+
+  const Mat &getmat() const override { return A; }
+};
+
 template <class Vec, class Mat, class ExtendedRemoteIndices, class Solver = Dune::UMFPack<Mat>>
 class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   AttributeSet allAttributes{Attribute::owner, Attribute::copy};
