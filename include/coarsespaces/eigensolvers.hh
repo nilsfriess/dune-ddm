@@ -64,4 +64,5 @@ std::string to_string_with_precision(const T a_value)
 // }
 
 std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &A, const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &B,
-                                                                       Eigensolver eigensolver, const Dune::ParameterTree &ptree);
+                                                                       Eigensolver eigensolver, const Dune::ParameterTree &ptree,
+                                                                       Dune::Preconditioner<Dune::BlockVector<Dune::FieldVector<double, 1>>, Dune::BlockVector<Dune::FieldVector<double, 1>>> *prec = nullptr);

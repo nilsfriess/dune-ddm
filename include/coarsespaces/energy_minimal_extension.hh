@@ -43,10 +43,10 @@ public:
       usolver->setOption(UMFPACK_IRSTEP, 0);
     }
     else {
-      auto prec = std::make_shared<Dune::SeqILU<Mat, Vec, Vec>>(*Aint, 1.0);
+      auto prec = std::make_shared<Dune::SeqILDL<Mat, Vec, Vec>>(*Aint);
       auto op = std::make_shared<Dune::MatrixAdapter<Mat, Vec, Vec>>(Aint);
       auto sp = std::make_shared<Dune::SeqScalarProduct<Vec>>();
-      solver = std::make_unique<Dune::RestartedGMResSolver<Vec>>(op, sp, prec, 1e-8, 50, 100, 0);
+      solver = std::make_unique<Dune::RestartedGMResSolver<Vec>>(op, sp, prec, 1e-8, 50, 30, 1);
     }
   }
 

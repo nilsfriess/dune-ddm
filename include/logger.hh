@@ -1,7 +1,6 @@
 #pragma once
 
 #include <chrono>
-#include <dune/common/parallel/mpitraits.hh>
 #include <iomanip>
 #include <iostream>
 #include <mpi.h>
@@ -15,9 +14,6 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-// TODO: This is a bit sketchy because we preallocate memory for the families and events;
-//       as soon as either of the vectors has to be resized, all pointers to the events
-//       become invalid. For now it works well enough.
 /**
  * @brief A simple logger to log timings for different events in an MPI parallel program.
  *
@@ -293,6 +289,9 @@ private:
     return {Duration(mean), Duration(min), Duration(max)};
   }
 
+  // TODO: This is a bit sketchy because we preallocate memory for the families and events;
+  //       as soon as either of the vectors has to be resized, all pointers to the events
+  //       become invalid. For now it works well enough.
   std::vector<Family> families;
 };
 

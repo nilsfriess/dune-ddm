@@ -312,7 +312,7 @@ public:
 
     for (const auto &[rank, An] : neumann_correction_matrices) {
       triples_for_rank[rank].reserve(An.nonzeroes());
-      if (rank != -1) {
+      if (rank >= 0) {
         for (auto ri = An.begin(); ri != An.end(); ++ri) {
           auto grow = glis.pair(ri.index())->global();
           for (auto ci = An[ri.index()].begin(); ci != An[ri.index()].end(); ++ci) {
@@ -352,12 +352,10 @@ private:
   const std::map<int, std::vector<bool>> *outside_boundary_mask_for_rank{nullptr};
   const std::vector<bool> *on_boundary_mask{nullptr}; // Masks for the "inner" corrections
   const std::vector<bool> *outside_boundary_mask{nullptr};
-  // std::map<int, std::vector<TripleWithRank>> neumann_corrections;
 
   mutable std::unordered_map<std::size_t, std::unordered_map<std::size_t, double>> curr_neumann_corrections; // maps from row -> col -> value
 
   mutable std::unordered_map<int, Dune::BCRSMatrix<double>> neumann_correction_matrices;
 
   LocalOperator *lop;
-  // bool integrateOnlyNeumannCorrection = false;
 };

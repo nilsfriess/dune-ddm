@@ -240,8 +240,8 @@ public:
     *x0 = *x;
 
     if (helper.size() > 1) {
-      Dune::PDELab::AddDataHandle adddhx(gfs, *d);
-      gfs.gridView().communicate(adddhx, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
+      Dune::PDELab::AddDataHandle adddhd(gfs, *d);
+      gfs.gridView().communicate(adddhd, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
     }
   }
 
@@ -302,6 +302,7 @@ public:
     // Now we have the two boolean masks as explained above. Since we might also have to apply these
     // "Neumann corrections" to some of our own indices (e.g., in the case of the GenEO ring coarse
     // space), we create two additional boolean masks corresponding to those interior corrections.
+
     Dune::Interface small_interface;
     small_interface.build(remoteids, allAttributes, allAttributes);
     Dune::VariableSizeCommunicator small_communicator(small_interface);
@@ -310,10 +311,9 @@ public:
 
     const auto &boundary_mask = ibdh.get_boundary_mask();
     std::vector<int> boundary_dst(boundary_mask.size(), std::numeric_limits<int>::max() - 1);
-    for (const auto &idxpair : paridxs) {
-      auto li = idxpair.local();
-      if (boundary_mask[li]) {
-        boundary_dst[li] = 0;
+    for (std::size_t i = 0; i < boundary_mask.size(); ++i) {
+      if (boundary_mask[i]) {
+        boundary_dst[i] = 0;
       }
     }
 
@@ -329,7 +329,7 @@ public:
     std::vector<bool> outside_boundary_mask(paridxs.size(), false);
     for (std::size_t i = 0; i < paridxs.size(); ++i) {
       on_boundary_mask[i] = boundary_dst[i] == overlap;
-      outside_boundary_mask[i] = boundary_dst[i] == overlap + 1;
+      outside_boundary_mask[i] = boundary_dst[i] == (overlap + 1);
     }
 
     spdlog::info("Assembling full stiffness matrix and corrections");
@@ -358,7 +358,7 @@ public:
     std::vector<MPI_Request> requests;
     requests.reserve(triples_for_rank.size());
     for (const auto &[rank, triples] : triples_for_rank) {
-      if (rank == -1) {
+      if (rank < 0) {
         // rank == -1 corresponds to corrections that we have to apply locally, so we can skip them here
         continue;
       }
@@ -369,8 +369,8 @@ public:
     std::map<int, std::vector<TripleWithRank>> remote_triples;
     std::size_t num_triples = 0;
     for (const auto &[rank, triples] : triples_for_rank) {
-      if (rank == -1) {
-        // rank == -1 corresponds to corrections that we have to apply locally, so we can skip them here
+      if (rank < 0) {
+        // rank < 0 corresponds to corrections that we have to apply locally, so we can skip them here
         continue;
       }
 

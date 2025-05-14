@@ -109,7 +109,7 @@ private:
 template <class Mat, class ParallelIndexSet>
 class IdentifyBoundaryDataHandle {
 public:
-  IdentifyBoundaryDataHandle(const Mat &A, const ParallelIndexSet &paridxs) : boundary_mask(paridxs.size()), paridxs{paridxs}, A{A}, glis{paridxs} {}
+  IdentifyBoundaryDataHandle(const Mat &A, const ParallelIndexSet &paridxs) : boundary_mask(paridxs.size(), false), paridxs{paridxs}, A{A}, glis{paridxs} {}
   IdentifyBoundaryDataHandle(const IdentifyBoundaryDataHandle &) = delete;
   IdentifyBoundaryDataHandle(IdentifyBoundaryDataHandle &&) = delete;
   IdentifyBoundaryDataHandle &operator=(const IdentifyBoundaryDataHandle &) = delete;
