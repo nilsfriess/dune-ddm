@@ -125,9 +125,14 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
   auto grid = Dune::GmshReader<Grid>::read(meshfile, verbose > 2, false);
 #else
   using Grid = Dune::YaspGrid<GRID_DIM>;
-  const auto gridsize = ptree.get("gridsize", 32);
+  auto gridsize = ptree.get("gridsize", 32);
+  if (ptree.hasKey("gridsize_per_rank")) {
+    auto grid_sqrt = static_cast<int>(std::sqrt(helper.size()));
+    gridsize = ptree.get<int>("gridsize_per_rank") * grid_sqrt;
+  }
 #if GRID_DIM == 2
-  auto grid = std::make_unique<Grid>(Dune::EquidistantCoordinates<double, GRID_DIM>({1.0, 1.0}, {gridsize, gridsize}), std::bitset<2>(0ULL), GRID_OVERLAP);
+  Dune::Yasp::PowerDPartitioning<GRID_DIM> partitioner;
+  auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0}, {gridsize, gridsize}, std::bitset<2>(0ULL), GRID_OVERLAP, Grid::Communication(), &partitioner));
 #elif GRID_DIM == 3
   Dune::Yasp::PowerDPartitioning<GRID_DIM> partitioner;
   auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0, 1.0}, {gridsize, gridsize, gridsize}, std::bitset<3>(0ULL), GRID_OVERLAP, Grid::Communication(), &partitioner));
