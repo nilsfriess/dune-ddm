@@ -1,7 +1,6 @@
 #pragma once
 
 #include <chrono>
-#include <format>
 #include <iomanip>
 #include <iostream>
 #include <mpi.h>
@@ -240,8 +239,8 @@ public:
 
     if (rank == 0) {
       out << "\n==========================================================================================\n";
-      out << "#                                 Logger report ";
-      out << std::format("({} Ranks) {:{}}#\n", size, ' ', (32 - num_digits(size)));
+      out << "#                                 Logger report (";
+      out << size << " Ranks) " << std::setw(34 - num_digits(size)) << "#\n";
       out << "==========================================================================================\n\n";
     }
 
