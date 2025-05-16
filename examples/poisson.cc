@@ -223,9 +223,9 @@ int main(int argc, char *argv[])
   const auto &helper = Dune::MPIHelper::instance(argc, argv);
   setup_loggers(helper.rank(), argc, argv);
 
-  auto *matrix_setup = Logger::get().registerEvent("Total", "setup problem");
-  auto *prec_setup = Logger::get().registerEvent("Total", "setup preconditioner");
-  auto *solve = Logger::get().registerEvent("Total", "solve");
+  auto *matrix_setup = Logger::get().registerEvent("Total", "Setup problem");
+  auto *prec_setup = Logger::get().registerEvent("Total", "Setup preconditioner");
+  auto *solve = Logger::get().registerEvent("Total", "Linear solve");
 
   Logger::get().startEvent(matrix_setup);
   Dune::ParameterTree ptree;
