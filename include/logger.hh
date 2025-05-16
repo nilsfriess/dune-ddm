@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <format>
 #include <iomanip>
 #include <iostream>
 #include <mpi.h>
@@ -8,6 +9,8 @@
 #include <ratio>
 #include <string>
 #include <vector>
+
+#include <dune/common/parallel/mpitraits.hh>
 
 #include <spdlog/cfg/argv.h>
 #include <spdlog/details/registry.h>
@@ -237,7 +240,8 @@ public:
 
     if (rank == 0) {
       out << "\n==========================================================================================\n";
-      out << "#                                      Logger report                                     #\n";
+      out << "#                                 Logger report ";
+      out << std::format("({} Ranks) {:{}}#\n", size, ' ', (32 - num_digits(size)));
       out << "==========================================================================================\n\n";
     }
 
@@ -287,6 +291,21 @@ private:
     mean /= size;
 
     return {Duration(mean), Duration(min), Duration(max)};
+  }
+
+  // @brief Returns the number of digits of an integer-type number.
+  template <class T>
+  int num_digits(T number) const
+  {
+    int digits = 0;
+    if (number < 0) {
+      digits = 1;
+    }
+    while (number) {
+      number /= 10;
+      digits++;
+    }
+    return digits;
   }
 
   // TODO: This is a bit sketchy because we preallocate memory for the families and events;
