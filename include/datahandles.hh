@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <map>
 #include <set>
+#include <unordered_set>
 #include <vector>
 
 template <class Vec>
@@ -143,17 +144,17 @@ public:
   }
 
   template <class Buffer>
-  void scatter(Buffer &buffer, int i, int size)
+  void scatter(Buffer &buffer, int i, int size, int remoterank)
   {
     DataType gi;
     buffer.read(gi); // Read the dummy value
 
-    // boundaryMaskForRank[remoterank].resize(paridxs.size(), false);
+    boundaryMaskForRank[remoterank].resize(paridxs.size(), false);
 
     for (int k = 1; k < size; k++) {
       buffer.read(gi);
       if (not paridxs.exists(gi)) { // If we don't know the received global index, i is a boundary index
-        // boundaryMaskForRank[remoterank][i] = true;
+        boundaryMaskForRank[remoterank][i] = true;
         boundary_mask[i] = true;
       }
     }
@@ -171,82 +172,136 @@ public:
     // return boundaryMask;
   }
 
-  // const std::map<int, std::vector<bool>> &getBoundaryMaskForRank() const { return boundaryMaskForRank; }
+  const std::map<int, std::vector<bool>> &getBoundaryMaskForRank() const { return boundaryMaskForRank; }
 
 private:
-  // std::map<int, std::vector<bool>> boundaryMaskForRank;
+  std::map<int, std::vector<bool>> boundaryMaskForRank;
   std::vector<bool> boundary_mask;
   const ParallelIndexSet &paridxs;
   const Mat &A;
   Dune::GlobalLookupIndexSet<ParallelIndexSet> glis;
 };
 
+struct RankTuple {
+  using value_type = int;
+
+  std::vector<std::set<int>> rankmap; // TODO: Check if a map or a vector is more efficient here
+  int rank;
+};
+
 class RankDataHandle {
 public:
   using DataType = int;
 
-  RankDataHandle(int rank, std::map<int, std::set<int>> &neighbours_for_index) : rank(rank), neighbours_for_index(neighbours_for_index) {}
+  static int gather(const RankTuple &rt, int) { return rt.rank; }
+  static void scatter(RankTuple &rt, int otherrank, std::size_t i) { rt.rankmap[i].insert(otherrank); }
+};
 
-  RankDataHandle(const RankDataHandle &) = delete;
-  RankDataHandle(RankDataHandle &&) = delete;
-  RankDataHandle &operator=(const RankDataHandle &) = delete;
-  RankDataHandle &operator=(RankDataHandle &&) = delete;
-  ~RankDataHandle() = default;
+template <class Mat, class GlobalIndex>
+class IndexsetExtensionMatrixGraphDataHandle {
+public:
+  using DataType = GlobalIndex;
 
-  bool fixedSize() { return true; }
-  std::size_t size(int) { return 1; }
+  IndexsetExtensionMatrixGraphDataHandle(int rank, const Mat &A, std::vector<GlobalIndex> &ltg, std::unordered_set<GlobalIndex> &gis) : rank(rank), A(A), ltg(ltg), gis(gis) {}
 
-  template <class Buffer>
-  void gather(Buffer &buffer, int)
+  IndexsetExtensionMatrixGraphDataHandle(const IndexsetExtensionMatrixGraphDataHandle &) = delete;
+  IndexsetExtensionMatrixGraphDataHandle(IndexsetExtensionMatrixGraphDataHandle &&) = delete;
+  IndexsetExtensionMatrixGraphDataHandle &operator=(const IndexsetExtensionMatrixGraphDataHandle &) = delete;
+  IndexsetExtensionMatrixGraphDataHandle &operator=(IndexsetExtensionMatrixGraphDataHandle &&) = delete;
+  ~IndexsetExtensionMatrixGraphDataHandle() = default;
+
+  bool fixedSize() { return false; }
+
+  std::size_t size(std::size_t i)
   {
-    buffer.write(rank);
+    std::size_t count = 1;
+    if (i < A.N()) {
+      for (auto cit = A[i].begin(); cit != A[i].end(); ++cit) {
+        if (cit.index() != i) {
+          count++;
+        }
+      }
+    }
+    return count;
   }
 
   template <class Buffer>
-  void scatter(Buffer &buffer, int i, int)
+  void gather(Buffer &b, std::size_t i)
   {
-    int otherrank = 0;
-    buffer.read(otherrank);
-    neighbours_for_index[i].insert(otherrank);
+    b.write(0);
+    if (i < A.N()) {
+      for (auto cit = A[i].begin(); cit != A[i].end(); ++cit) {
+        if (cit.index() != i) {
+          b.write(ltg[cit.index()]);
+          for (const auto &p : rankmap[i]) {
+            updated_rankmap[cit.index()].insert(p);
+          }
+        }
+      }
+    }
   }
+
+  template <class Buffer>
+  void scatter(Buffer &b, std::size_t, std::size_t size)
+  {
+    GlobalIndex gi;
+    b.read(gi);
+    for (std::size_t k = 1; k < size; ++k) {
+      b.read(gi);
+      if (not gis.contains(gi)) {
+        ltg.push_back(gi);
+        gis.insert(gi);
+      }
+    }
+  }
+
+  std::vector<std::set<int>> rankmap;
+  std::vector<std::set<int>> updated_rankmap;
 
 private:
   int rank;
-  std::map<int, std::set<int>> &neighbours_for_index;
+  const Mat &A;
+  std::vector<GlobalIndex> &ltg;
+  std::unordered_set<GlobalIndex> &gis;
 };
 
-// TODO: Merge this with the implementation in datahandles.hh
-class SumDataHandle {
+class UpdateRankInfoDataHandle {
 public:
+  explicit UpdateRankInfoDataHandle(std::vector<std::set<int>> &rankmap) : rankmap(rankmap) {}
+
+  UpdateRankInfoDataHandle(const UpdateRankInfoDataHandle &) = delete;
+  UpdateRankInfoDataHandle(UpdateRankInfoDataHandle &&) = delete;
+  UpdateRankInfoDataHandle &operator=(const UpdateRankInfoDataHandle &) = delete;
+  UpdateRankInfoDataHandle &operator=(UpdateRankInfoDataHandle &&) = delete;
+  ~UpdateRankInfoDataHandle() = default;
+
   using DataType = int;
 
-  explicit SumDataHandle(std::vector<int> &target) : source(target), target(target) {}
-  SumDataHandle(const SumDataHandle &) = delete;
-  SumDataHandle(SumDataHandle &&) = delete;
-  SumDataHandle &operator=(const SumDataHandle &) = delete;
-  SumDataHandle &operator=(SumDataHandle &&) = delete;
-  ~SumDataHandle() = default;
-
-  bool fixedSize() { return true; }
-  std::size_t size(int) { return 1; }
+  bool fixedSize() { return false; }
+  std::size_t size(std::size_t i) { return 1 + rankmap[i].size(); }
 
   template <class Buffer>
-  void gather(Buffer &buffer, int i)
+  void gather(Buffer &buffer, std::size_t i)
   {
-    buffer.write(source[i]);
+    buffer.write(0);
+    for (auto &&r : rankmap[i]) {
+      buffer.write(r);
+    }
   }
 
   template <class Buffer>
-  void scatter(Buffer &buffer, int i, int)
+  void scatter(Buffer &buffer, std::size_t i, std::size_t size)
   {
-    int value{};
-    buffer.read(value);
-    target[i] += value;
+    int curr_r = -1;
+    buffer.read(curr_r);
+    for (std::size_t r = 1; r < size; ++r) {
+      buffer.read(curr_r);
+      rankmap[i].insert(curr_r);
+    }
   }
 
 private:
-  std::vector<int> source;
-  std::vector<int> &target;
+  std::vector<std::set<int>> &rankmap;
 };
 
 /* A data handle to exchange global indices */
