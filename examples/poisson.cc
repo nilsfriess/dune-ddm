@@ -243,11 +243,6 @@ int main(int argc, char *argv[])
   const auto &remoteindices = *remoteparidxs.first;
   const auto &paridxs = *remoteparidxs.second;
 
-  ExtendedRemoteIndices ext_indices(remoteindices, problem.getA(), ptree.get("overlap", 1));
-
-  // Now we have a set of remote indices on the non-overlapping grid, and a stiffness matrix with the correct sparsity pattern.
-  // We can use those to find out which dofs we need to treat differently when assembling the matrix. This is all done in the
-  // following method.
   const auto [remote_ncorr_triples, own_ncorr_triples, interior_dof_mask] = problem.assembleJacobian(remoteindices, ptree.get("overlap", 1));
 
   using Vec = decltype(problem)::Vec;
@@ -295,6 +290,7 @@ int main(int argc, char *argv[])
   Logger::get().endEvent(matrix_setup);
 
   Logger::get().startEvent(prec_setup);
+  ExtendedRemoteIndices ext_indices(remoteindices, problem.getA(), ptree.get("overlap", 1));
   auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(problem.getA(), ext_indices, ptree);
 
   CombinedPreconditioner<Native<Vec>> prec(applymode, {schwarz}, op);
