@@ -252,82 +252,85 @@ public:
 
     int ownrank{};
     MPI_Comm_rank(remoteids.communicator(), &ownrank);
-
-    ExtendedRemoteIndices<RemoteIndices, NativeMat> ext_indices(remoteids, native(*As), overlap + 1);
+    const auto &paridxs = remoteids.sourceIndexSet();
 
     // Create a vector with ones on the overlapping subdomain boundary, and one vector with ones
     // "one layer further"
-    NativeVec on_boundary_vec(ext_indices.size());
-    NativeVec outside_boundary_vec(ext_indices.size());
-    on_boundary_vec = 0;
-    outside_boundary_vec = 0;
-
-    assert(overlap >= 1 && "Overlap must be greater than zero");
-    const auto &idxset_sizes = ext_indices.get_index_set_sizes();
-    const auto first_idx = std::max(0, overlap - 1);
-    for (std::size_t i = idxset_sizes[first_idx]; i < idxset_sizes[first_idx + 1]; ++i) {
-      on_boundary_vec[i] = 1;
-    }
-    for (std::size_t i = idxset_sizes[first_idx + 1]; i < idxset_sizes[first_idx + 2]; ++i) {
-      outside_boundary_vec[i] = 1;
-    }
-
-    // Communicate masks with other ranks
     const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
     Dune::Interface interface;
-    interface.build(ext_indices.get_remote_indices(), allAttributes, allAttributes);
-    Dune::VariableSizeCommunicator communicator(interface);
+    interface.build(remoteids, allAttributes, allAttributes);
+    Dune::VariableSizeCommunicator varcomm(interface);
 
-    CopyVectorDataHandleWithRank cvdhwr_on(on_boundary_vec);
-    communicator.forward(cvdhwr_on);
+    IdentifyBoundaryDataHandle ibdh(native(*As), remoteids.sourceIndexSet());
+    varcomm.forward(ibdh);
 
-    CopyVectorDataHandleWithRank cvdhwr_outside(outside_boundary_vec);
-    communicator.forward(cvdhwr_outside);
+    // First we create (for each rank) two boolean masks:
+    //   - One marks the dofs that have distance 'overlap' from the subdomain boundary
+    //     that we share with a given rank.
+    //   - The other one marks the dofs that have distance 'overlap + 1' from the
+    //     subdomain boundary that we share with a given rank.
+    // All elements that contain dofs from both sets corresponding to these masks are
+    // exactly those elements that we would need to skip during assembly in order to
+    // assemble a matrix that corresponds to a "Neumann" matrix for the given remote
+    // rank. Instead of skipping those elements, we compute the contributions from
+    // them and send those contributions around. Our neighbouring ranks can then
+    // subtract those contributions from their matrices if they need Neumann matrices.
+    auto subdomain_boundary_mask_for_rank = ibdh.getBoundaryMaskForRank();
+    std::map<int, std::vector<int>> boundary_dst_for_rank;
+    for (const auto &[rank, mask] : subdomain_boundary_mask_for_rank) {
+      boundary_dst_for_rank[rank].resize(paridxs.size(), std::numeric_limits<int>::max() - 1);
 
-    const auto &paridxs = remoteids.sourceIndexSet();
+      for (const auto &idxpair : paridxs) {
+        auto li = idxpair.local();
+        if (mask[li]) {
+          boundary_dst_for_rank[rank][li] = 0;
+        }
+      }
+
+      for (int round = 0; round <= overlap + 2; ++round) {
+        for (std::size_t i = 0; i < boundary_dst_for_rank[rank].size(); ++i) {
+          for (auto cIt = native(*As)[i].begin(); cIt != native(*As)[i].end(); ++cIt) {
+            boundary_dst_for_rank[rank][i] = std::min(boundary_dst_for_rank[rank][i], boundary_dst_for_rank[rank][cIt.index()] + 1); // Increase distance from boundary by one
+          }
+        }
+      }
+    }
 
     std::map<int, std::vector<bool>> on_boundary_mask_for_rank;
     std::map<int, std::vector<bool>> outside_boundary_mask_for_rank;
-    for (const auto &[rank, vec] : cvdhwr_on.copied_vecs) {
+    for (const auto &[rank, dstmap] : boundary_dst_for_rank) {
       on_boundary_mask_for_rank[rank].resize(paridxs.size(), false);
       outside_boundary_mask_for_rank[rank].resize(paridxs.size(), false);
 
-      assert(cvdhwr_outside.copied_vecs.contains(rank));
       for (std::size_t i = 0; i < paridxs.size(); ++i) {
-        on_boundary_mask_for_rank[rank][i] = vec[i];
-        outside_boundary_mask_for_rank[rank][i] = cvdhwr_outside.copied_vecs[rank][i];
+        on_boundary_mask_for_rank[rank][i] = dstmap[i] == overlap;
+        outside_boundary_mask_for_rank[rank][i] = dstmap[i] == overlap + 1;
+      }
+    }
+
+    const auto &boundary_mask = ibdh.get_boundary_mask();
+
+    std::vector<int> boundary_dst(remoteids.sourceIndexSet().size(), std::numeric_limits<int>::max() - 1);
+    for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
+      if (boundary_mask[i]) {
+        boundary_dst[i] = 0;
+      }
+    }
+
+    for (int round = 0; round < overlap + 2; ++round) {
+      for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
+        for (auto cit = native(*As)[i].begin(); cit != native(*As)[i].end(); ++cit) {
+          boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cit.index()] + 1); // Increase distance from boundary by one
+        }
       }
     }
 
     // Now we have the two boolean masks as explained above. Since we might also have to apply these
     // "Neumann corrections" to some of our own indices (e.g., in the case of the GenEO ring coarse
     // space), we create two additional boolean masks corresponding to those interior corrections.
-
-    Dune::Interface small_interface;
-    small_interface.build(remoteids, allAttributes, allAttributes);
-    Dune::VariableSizeCommunicator small_communicator(small_interface);
-    IdentifyBoundaryDataHandle ibdh(native(*As), paridxs);
-    small_communicator.forward(ibdh);
-
-    const auto &boundary_mask = ibdh.get_boundary_mask();
-    std::vector<int> boundary_dst(boundary_mask.size(), std::numeric_limits<int>::max() - 1);
-    for (std::size_t i = 0; i < boundary_mask.size(); ++i) {
-      if (boundary_mask[i]) {
-        boundary_dst[i] = 0;
-      }
-    }
-
-    for (int round = 0; round <= overlap + 2; ++round) {
-      for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
-        for (auto cIt = native(*As)[i].begin(); cIt != native(*As)[i].end(); ++cIt) {
-          boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cIt.index()] + 1); // Increase distance from boundary by one
-        }
-      }
-    }
-
-    std::vector<bool> on_boundary_mask(paridxs.size(), false);
-    std::vector<bool> outside_boundary_mask(paridxs.size(), false);
-    for (std::size_t i = 0; i < paridxs.size(); ++i) {
+    std::vector<bool> on_boundary_mask(As->N(), false);
+    std::vector<bool> outside_boundary_mask(As->N(), false);
+    for (std::size_t i = 0; i < on_boundary_mask.size(); ++i) {
       on_boundary_mask[i] = boundary_dst[i] == overlap;
       outside_boundary_mask[i] = boundary_dst[i] == (overlap + 1);
     }
@@ -412,7 +415,7 @@ public:
   Vec &getDVec() const { return *d; }
   const Vec &getDirichletMask() const { return *dirichlet_mask; }
 
-  const NativeMat &getA() { return Dune::PDELab::Backend::native(*As); }
+  NativeMat &getA() { return Dune::PDELab::Backend::native(*As); }
 
   const GFS &getGFS() const { return gfs; }
   const ES &getEntitySet() const { return es; }
