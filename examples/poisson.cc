@@ -226,6 +226,8 @@ int main(int argc, char *argv[])
   auto *matrix_setup = Logger::get().registerEvent("Total", "Setup problem");
   auto *prec_setup = Logger::get().registerEvent("Total", "Setup preconditioner");
   auto *solve = Logger::get().registerEvent("Total", "Linear solve");
+  auto *total = Logger::get().registerEvent("Total", "Total time");
+  Logger::get().startEvent(total);
 
   Logger::get().startEvent(matrix_setup);
   Dune::ParameterTree ptree;
@@ -288,6 +290,8 @@ int main(int argc, char *argv[])
     spdlog::warn("Unknown apply mode for combined preconditioner, using 'additive' instead");
   }
   Logger::get().endEvent(matrix_setup);
+
+  MPI_Barrier(MPI_COMM_WORLD);
 
   Logger::get().startEvent(prec_setup);
   ExtendedRemoteIndices ext_indices(remoteindices, problem.getA(), ptree.get("overlap", 1));
@@ -390,6 +394,8 @@ int main(int argc, char *argv[])
   using SolverVec = Native<Vec>;
 #endif
   Logger::get().endEvent(prec_setup);
+
+  MPI_Barrier(MPI_COMM_WORLD);
 
   Logger::get().startEvent(solve);
   std::unique_ptr<Dune::IterativeSolver<SolverVec, SolverVec>> solver;
@@ -502,6 +508,7 @@ int main(int argc, char *argv[])
     writer.write(ptree.get("filename", "Poisson"));
   }
 
+  Logger::get().endEvent(total);
   if (ptree.get("view_report", true)) {
     Logger::get().report(helper.getCommunicator());
   }
