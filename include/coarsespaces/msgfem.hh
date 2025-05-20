@@ -3,6 +3,7 @@
 #include "../datahandles.hh"
 #include "../helpers.hh"
 #include "coarsespaces/energy_minimal_extension.hh"
+#include "../logger.hh"
 #include "eigensolvers.hh"
 #include "helpers.hh"
 
@@ -18,6 +19,10 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildMsGFEMCoarseSp
                                                                                     const std::vector<TripleWithRank> &own_ncorr_triples, const std::vector<bool> &interior_dof_mask,
                                                                                     const Vec &dirichlet_mask_novlp, const Vec &pou, const Dune::ParameterTree &ptree)
 {
+  auto *eigensolver_event = Logger::get().registerEvent("MsGFEM", "solve eigenproblem");
+  auto *setup_event = Logger::get().registerEvent("MsGFEM", "setup matrices");
+  Logger::get().startEvent(setup_event);
+
   // We begin by extending the Dirichlet mask to the overlapping subdomain
   Vec dirichlet_mask_ovlp(Aovlp.N());
   dirichlet_mask_ovlp = 0;
@@ -168,8 +173,12 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildMsGFEMCoarseSp
 
     B.compress();
 
+    Logger::get().endEvent(setup_event);
+    Logger::get().startEvent(eigensolver_event);
     auto eigenvectors = solveGEVP(A, B, Eigensolver::Spectra, ptree);
+    Logger::get().endEvent(eigensolver_event);
 
+    Logger::ScopedLog sl{Logger::get().registerEvent("MsGFEM", "Reorder eigenvectors")};
     Vec v(Aovlp.N());
     v = 0;
     std::vector<Vec> eigenvectors_actual(eigenvectors.size(), v);
@@ -560,8 +569,16 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildMsGFEMCoarseSp
 
     spdlog::get("all_ranks")->info("ring_to_subdomain.size() = {}", ring_to_subdomain.size());
 
+    Logger::get().endEvent(setup_event);
+    Logger::get().startEvent(eigensolver_event);
     auto eigenvectors_with_constraint = solveGEVP(A, B, Eigensolver::Spectra, ptree);
+    Logger::get().endEvent(eigensolver_event);
 
+    auto *reorder_event = Logger::get().registerEvent("MsGFEM", "reorder eigenvectors");
+    auto *factorise_event = Logger::get().registerEvent("MsGFEM", "factorise interior");
+    auto *solve_event = Logger::get().registerEvent("MsGFEM", "solve interior");
+
+    Logger::get().startEvent(reorder_event);
     Vec v(ring_to_subdomain.size());
     v = 0;
     std::vector<Vec> eigenvectors(eigenvectors_with_constraint.size(), v);
@@ -599,9 +616,13 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildMsGFEMCoarseSp
     for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) {
       subdomain_to_inside_ring_boundary[inside_ring_boundary_to_subdomain[i]] = i;
     }
+    Logger::get().endEvent(reorder_event);
 
-    EnergyMinimalExtension<Mat, Vec> extension(Aovlp, interior_to_subdomain, inside_ring_boundary_to_subdomain, ptree.get("geneo_ring_inexact_interior_solver", false));
+    Logger::get().startEvent(factorise_event);
+    EnergyMinimalExtension<Mat, Vec> extension(Aovlp, interior_to_subdomain, inside_ring_boundary_to_subdomain);
+    Logger::get().endEvent(factorise_event);
 
+    Logger::ScopedLog sl{solve_event};
     double eigenvectors_use_portion = ptree.get("msgfem_ring_eigenvectors_use_portion", 1.0);
     auto eigenvectors_actual = static_cast<std::size_t>(std::ceil(eigenvectors.size() * eigenvectors_use_portion));
 
