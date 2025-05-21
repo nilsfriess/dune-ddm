@@ -149,7 +149,7 @@ private:
     // Rebuild the communication data structures
     comm_if.free();
     comm_if.build(*ext_rids, all_att, all_att);
-    varcomm = std::make_unique<Dune::VariableSizeCommunicator<>>(comm_if);
+    varcomm = std::make_unique<Dune::VariableSizeCommunicator<>>(comm_if, 1024 * 1024);
 
     IndexsetExtensionMatrixGraphDataHandle extdh(rank, A, ltg, gis);
     UpdateRankInfoDataHandle uprdh(rt.rankmap);
