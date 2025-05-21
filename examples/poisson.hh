@@ -133,7 +133,7 @@ public:
       int divz = 9;
       for (int i = 0; i < divx - 1; ++i) {
         for (int j = 0; j < divz - 1; ++j) {
-          typename Traits::DomainType centre{(i + 1.) / divx, (j + 1.) / divz};
+          typename Traits::DomainType centre{(i + 1.) / divx, (j + 1.) / divz, 0};
 
           if (square(xg[0] - centre[0]) + square(xg[2] - centre[1]) < square(radius)) {
             kappa = 1e6;
