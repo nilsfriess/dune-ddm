@@ -127,7 +127,7 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
   using Grid = Dune::YaspGrid<GRID_DIM>;
   auto gridsize = ptree.get("gridsize", 32);
   if (ptree.hasKey("gridsize_per_rank")) {
-    auto grid_sqrt = static_cast<int>(std::sqrt(helper.size()));
+    auto grid_sqrt = static_cast<int>(std::pow(helper.size(), 1. / GRID_DIM)); // This is okay because Yaspgrid will complain if the gridsize is not a power of GRID_DIM
     gridsize = ptree.get<int>("gridsize_per_rank") * grid_sqrt;
   }
 #if GRID_DIM == 2
