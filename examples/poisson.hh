@@ -245,83 +245,69 @@ public:
     }
   }
 
-  template <class RemoteIndices>
-  std::tuple<std::vector<TripleWithRank>, std::vector<TripleWithRank>, std::vector<bool>> assembleJacobian(const RemoteIndices &remoteids, int overlap)
+  template <class RemoteIndices, class ExtendedRemoteIndices>
+  std::tuple<std::vector<TripleWithRank>, std::vector<TripleWithRank>, std::vector<bool>> assembleJacobian(const RemoteIndices &remoteids, const ExtendedRemoteIndices &extids, int overlap)
   {
     using Dune::PDELab::Backend::native;
 
     int ownrank{};
     MPI_Comm_rank(remoteids.communicator(), &ownrank);
-    const auto &paridxs = remoteids.sourceIndexSet();
 
-    // Create a vector with ones on the overlapping subdomain boundary, and one vector with ones
-    // "one layer further"
     const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
-    Dune::Interface interface;
-    interface.build(remoteids, allAttributes, allAttributes);
-    Dune::VariableSizeCommunicator varcomm(interface);
+    Dune::Interface interface_ext;
+    interface_ext.build(extids.get_remote_indices(), allAttributes, allAttributes);
+    Dune::VariableSizeCommunicator varcomm_ext(interface_ext);
 
-    IdentifyBoundaryDataHandle ibdh(native(*As), remoteids.sourceIndexSet());
-    varcomm.forward(ibdh);
+    auto Aovlp = extids.create_overlapping_matrix(native(*As));
+    IdentifyBoundaryDataHandle ibdh(Aovlp, extids.get_parallel_index_set());
+    varcomm_ext.forward(ibdh);
 
-    // First we create (for each rank) two boolean masks:
-    //   - One marks the dofs that have distance 'overlap' from the subdomain boundary
-    //     that we share with a given rank.
-    //   - The other one marks the dofs that have distance 'overlap + 1' from the
-    //     subdomain boundary that we share with a given rank.
-    // All elements that contain dofs from both sets corresponding to these masks are
-    // exactly those elements that we would need to skip during assembly in order to
-    // assemble a matrix that corresponds to a "Neumann" matrix for the given remote
-    // rank. Instead of skipping those elements, we compute the contributions from
-    // them and send those contributions around. Our neighbouring ranks can then
-    // subtract those contributions from their matrices if they need Neumann matrices.
-    auto subdomain_boundary_mask_for_rank = ibdh.getBoundaryMaskForRank();
-    std::map<int, std::vector<int>> boundary_dst_for_rank;
-    for (const auto &[rank, mask] : subdomain_boundary_mask_for_rank) {
-      boundary_dst_for_rank[rank].resize(paridxs.size(), std::numeric_limits<int>::max() - 1);
-
-      for (const auto &idxpair : paridxs) {
-        auto li = idxpair.local();
-        if (mask[li]) {
-          boundary_dst_for_rank[rank][li] = 0;
-        }
-      }
-
-      for (int round = 0; round <= overlap + 2; ++round) {
-        for (std::size_t i = 0; i < boundary_dst_for_rank[rank].size(); ++i) {
-          for (auto cIt = native(*As)[i].begin(); cIt != native(*As)[i].end(); ++cIt) {
-            boundary_dst_for_rank[rank][i] = std::min(boundary_dst_for_rank[rank][i], boundary_dst_for_rank[rank][cIt.index()] + 1); // Increase distance from boundary by one
-          }
-        }
-      }
-    }
-
-    std::map<int, std::vector<bool>> on_boundary_mask_for_rank;
-    std::map<int, std::vector<bool>> outside_boundary_mask_for_rank;
-    for (const auto &[rank, dstmap] : boundary_dst_for_rank) {
-      on_boundary_mask_for_rank[rank].resize(paridxs.size(), false);
-      outside_boundary_mask_for_rank[rank].resize(paridxs.size(), false);
-
-      for (std::size_t i = 0; i < paridxs.size(); ++i) {
-        on_boundary_mask_for_rank[rank][i] = dstmap[i] == overlap;
-        outside_boundary_mask_for_rank[rank][i] = dstmap[i] == overlap + 1;
-      }
-    }
+    // Now we know *our* subdomain boundary. We'll now create a vector on the overlapping
+    // subdomain that contains the value 1 on the subdomain boundary and the value 2 one
+    // layer into the subdomain. We'll communicate this vector with our neighbours so
+    // that they can find out which elements they have to integrate separately in order
+    // to send us the "Neumann correction terms".
+    NativeVec boundary_indicator(extids.size());
+    boundary_indicator = 0;
 
     const auto &boundary_mask = ibdh.get_boundary_mask();
 
-    std::vector<int> boundary_dst(remoteids.sourceIndexSet().size(), std::numeric_limits<int>::max() - 1);
+    std::vector<int> boundary_dst(boundary_mask.size(), std::numeric_limits<int>::max() - 1);
     for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
       if (boundary_mask[i]) {
         boundary_dst[i] = 0;
       }
     }
 
-    for (int round = 0; round < overlap + 2; ++round) {
+    for (int round = 0; round <= 2 * overlap + 2; ++round) {
       for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
-        for (auto cit = native(*As)[i].begin(); cit != native(*As)[i].end(); ++cit) {
+        for (auto cit = Aovlp[i].begin(); cit != Aovlp[i].end(); ++cit) {
           boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cit.index()] + 1); // Increase distance from boundary by one
         }
+      }
+    }
+
+    for (std::size_t i = 0; i < extids.size(); ++i) {
+      if (boundary_dst[i] == 0) {
+        boundary_indicator[i] = 1;
+      }
+      else if (boundary_dst[i] == 1) {
+        boundary_indicator[i] = 2;
+      }
+    }
+
+    CopyVectorDataHandleWithRank<NativeVec> cvdh(boundary_indicator);
+    varcomm_ext.forward(cvdh);
+
+    std::map<int, std::vector<bool>> on_boundary_mask_for_rank;
+    std::map<int, std::vector<bool>> inside_boundary_mask_for_rank;
+    for (const auto &[rank, copied_vec] : cvdh.copied_vecs) {
+      on_boundary_mask_for_rank[rank].resize(As->N(), false);
+      inside_boundary_mask_for_rank[rank].resize(As->N(), false);
+
+      for (std::size_t i = 0; i < As->N(); ++i) {
+        on_boundary_mask_for_rank[rank][i] = copied_vec[i] == 1;
+        inside_boundary_mask_for_rank[rank][i] = copied_vec[i] == 2;
       }
     }
 
@@ -330,13 +316,13 @@ public:
     // space), we create two additional boolean masks corresponding to those interior corrections.
     std::vector<bool> on_boundary_mask(As->N(), false);
     std::vector<bool> outside_boundary_mask(As->N(), false);
-    for (std::size_t i = 0; i < on_boundary_mask.size(); ++i) {
-      on_boundary_mask[i] = boundary_dst[i] == overlap;
-      outside_boundary_mask[i] = boundary_dst[i] == (overlap + 1);
+    for (std::size_t i = 0; i < As->N(); ++i) {
+      on_boundary_mask[i] = boundary_dst[i] == (2 * overlap);
+      outside_boundary_mask[i] = boundary_dst[i] == (2 * overlap + 1);
     }
 
     spdlog::info("Assembling full stiffness matrix and corrections");
-    wrapper->setMasks(native(*As), &on_boundary_mask_for_rank, &outside_boundary_mask_for_rank, &on_boundary_mask, &outside_boundary_mask);
+    wrapper->setMasks(native(*As), &on_boundary_mask_for_rank, &inside_boundary_mask_for_rank, &on_boundary_mask, &outside_boundary_mask);
     go->jacobian(*x, *As);
     spdlog::info("Stiffness matrix assembly done");
 
@@ -400,7 +386,7 @@ public:
 
     std::vector<bool> interior(As->N(), false);
     for (std::size_t i = 0; i < interior.size(); ++i) {
-      if (boundary_dst[i] > overlap) {
+      if (boundary_dst[i] > 2 * overlap) {
         interior[i] = true;
       }
     }

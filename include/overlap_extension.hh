@@ -84,17 +84,12 @@ public:
     auto *matrix_event = Logger::get().registerOrGetEvent("OverlapExtension", "create Matrix");
     Logger::ScopedLog sl(matrix_event);
 
-    const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
-    Dune::Interface interface;
-    interface.build(*ext_indices.first, allAttributes, allAttributes);
-    Dune::VariableSizeCommunicator communicator(interface);
-
-    CreateMatrixDataHandle cmdh(A, get_parallel_index_set());
-    communicator.forward(cmdh);
+    CreateMatrixDataHandle cmdh(A, get_parallel_index_set(), ltg, gis);
+    varcomm->forward(cmdh);
     auto Aovlp = cmdh.getOverlappingMatrix();
 
     AddMatrixDataHandle amdh(A, Aovlp, get_parallel_index_set());
-    communicator.forward(amdh);
+    varcomm->forward(amdh);
 
     return Aovlp;
   }
@@ -151,8 +146,8 @@ private:
     comm_if.build(*ext_rids, all_att, all_att);
     varcomm = std::make_unique<Dune::VariableSizeCommunicator<>>(comm_if, 1024 * 1024);
 
-    IndexsetExtensionMatrixGraphDataHandle extdh(rank, A, ltg, gis);
-    UpdateRankInfoDataHandle uprdh(rt.rankmap);
+    IndexsetExtensionMatrixGraphDataHandle extdh(rank, A, gis);
+    UpdateRankInfoDataHandle uprdh(rank);
 
     std::vector<MPI_Request> reqs;
     std::vector<std::size_t> sendcount;
@@ -162,12 +157,14 @@ private:
     std::vector<std::vector<int>> new_nbs_data_recv;
 
     for (int round = 0; round < overlap; ++round) {
+      extdh.set_index_set(ltg);
       extdh.rankmap = rt.rankmap;
       extdh.updated_rankmap = rt.rankmap;
       varcomm->forward(extdh);
 
       index_set_sizes.push_back(ltg.size());
 
+      uprdh.set_rankmap(extdh.updated_rankmap);
       varcomm->forward(uprdh);
 
       std::map<int, std::set<int>> new_nbs;

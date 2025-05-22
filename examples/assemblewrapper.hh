@@ -187,7 +187,7 @@ public:
     // Corrections for other ranks
     for (const auto &[rank, mask] : *on_boundary_mask_for_rank) {
       bool hasDofAtBoundary = false;
-      bool hasDofOutsideBoundary = false;
+      bool hasDofInsideBoundary = false;
       for (std::size_t i = 0; i < cache.size(); ++i) {
         auto dofidx = cache.containerIndex(i)[0];
 
@@ -195,12 +195,12 @@ public:
           hasDofAtBoundary = true;
         }
 
-        if ((*outside_boundary_mask_for_rank).at(rank)[dofidx]) {
-          hasDofOutsideBoundary = true;
+        if ((*inside_boundary_mask_for_rank).at(rank)[dofidx]) {
+          hasDofInsideBoundary = true;
         }
       }
 
-      if (hasDofAtBoundary and hasDofOutsideBoundary) {
+      if (hasDofAtBoundary and not hasDofInsideBoundary) {
         for (const auto &[row, cols] : curr_neumann_corrections) {
           for (const auto &[col, val] : cols) {
             if ((*on_boundary_mask_for_rank).at(rank)[row] and (*on_boundary_mask_for_rank).at(rank)[col]) {
@@ -260,11 +260,11 @@ public:
   }
 
   template <class Mat>
-  void setMasks(const Mat &A, const std::map<int, std::vector<bool>> *on_boundary_mask_for_rank, const std::map<int, std::vector<bool>> *outside_boundary_mask_for_rank,
+  void setMasks(const Mat &A, const std::map<int, std::vector<bool>> *on_boundary_mask_for_rank, const std::map<int, std::vector<bool>> *inside_boundary_mask_for_rank,
                 const std::vector<bool> *on_boundary_mask, const std::vector<bool> *outside_boundary_mask)
   {
     this->on_boundary_mask_for_rank = on_boundary_mask_for_rank;
-    this->outside_boundary_mask_for_rank = outside_boundary_mask_for_rank;
+    this->inside_boundary_mask_for_rank = inside_boundary_mask_for_rank;
     this->on_boundary_mask = on_boundary_mask;
     this->outside_boundary_mask = outside_boundary_mask;
 
@@ -349,7 +349,7 @@ public:
 
 private:
   const std::map<int, std::vector<bool>> *on_boundary_mask_for_rank{nullptr};
-  const std::map<int, std::vector<bool>> *outside_boundary_mask_for_rank{nullptr};
+  const std::map<int, std::vector<bool>> *inside_boundary_mask_for_rank{nullptr};
   const std::vector<bool> *on_boundary_mask{nullptr}; // Masks for the "inner" corrections
   const std::vector<bool> *outside_boundary_mask{nullptr};
 

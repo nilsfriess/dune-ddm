@@ -245,7 +245,8 @@ int main(int argc, char *argv[])
   const auto &remoteindices = *remoteparidxs.first;
   const auto &paridxs = *remoteparidxs.second;
 
-  const auto [remote_ncorr_triples, own_ncorr_triples, interior_dof_mask] = problem.assembleJacobian(remoteindices, ptree.get("overlap", 1));
+  ExtendedRemoteIndices ext_indices(remoteindices, problem.getA(), ptree.get("overlap", 1));
+  const auto [remote_ncorr_triples, own_ncorr_triples, interior_dof_mask] = problem.assembleJacobian(remoteindices, ext_indices, ptree.get("overlap", 1));
 
   using Vec = decltype(problem)::Vec;
   using Mat = decltype(problem)::Mat;
@@ -294,7 +295,6 @@ int main(int argc, char *argv[])
   MPI_Barrier(MPI_COMM_WORLD);
 
   Logger::get().startEvent(prec_setup);
-  ExtendedRemoteIndices ext_indices(remoteindices, problem.getA(), ptree.get("overlap", 1));
   auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(problem.getA(), ext_indices, ptree);
 
   CombinedPreconditioner<Native<Vec>> prec(applymode, {schwarz}, op);
@@ -462,6 +462,18 @@ int main(int argc, char *argv[])
     Dune::VariableSizeCommunicator all_all_comm(all_all_interface);
     AddVectorDataHandle<Native<Vec>> advdh;
 
+    // Overlapping subdomain
+    Native<Vec> ovlp_subdomain(ext_indices.size());
+    ovlp_subdomain = helper.rank() == ptree.get("debug_rank", 0) ? 1 : 0;
+    advdh.setVec(ovlp_subdomain);
+    all_all_comm.forward(advdh);
+    Native<Vec> ovlp_subdomain_small(paridxs.size());
+    for (std::size_t i = 0; i < ovlp_subdomain_small.size(); ++i) {
+      ovlp_subdomain_small[i] = ovlp_subdomain[i];
+    }
+    Dune::P1VTKFunction ovlp_subdomain_function(problem.getEntitySet(), ovlp_subdomain_small, "Overlapping Subdomain");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(ovlp_subdomain_function));
+
     // Inner ring corrections
     Native<Vec> inner_ring_corrections(dof_mask.size());
     inner_ring_corrections = 0;
@@ -469,7 +481,7 @@ int main(int argc, char *argv[])
       inner_ring_corrections[triple.row] = 1;
       inner_ring_corrections[triple.col] = 1;
     }
-    Dune::P1VTKFunction inner_ring_corrections_function(problem.getEntitySet(), inner_ring_corrections, "Inner corrections");
+    Dune::P1VTKFunction inner_ring_corrections_function(problem.getEntitySet(), inner_ring_corrections, "Own corrections");
     writer.addVertexData(Dune::stackobject_to_shared_ptr(inner_ring_corrections_function));
 
     // Visualise pou
