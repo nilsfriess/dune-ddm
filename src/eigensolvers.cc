@@ -145,7 +145,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
   if (eigensolver == Eigensolver::Spectra) {
     spdlog::get("all_ranks")->debug("Solving eigenproblem Ax=lBx of size {} with nnz(A) = {}, nnz(B) = {}", A.N(), A.nonzeroes(), B.nonzeroes());
 
-#if 0
+#if 1
     using OpType = SymShiftInvert;
     using BOpType = MatOp;
 
@@ -201,14 +201,14 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
 
     do {
       spdlog::get("all_ranks")->trace("Computing eigenvalues using Spectra");
-      Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, 2 * nev, ptree.get("eigensolver_shift", 0.0001));
+      Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, 2.5 * nev, ptree.get("eigensolver_shift", 0.0001));
       geigs.init();
 
       // Find largest eigenvalue of the shifted problem (which corresponds to the smallest of the original problem)
       // with max. 1000 iterations and sort the resulting eigenvalues from small to large.
       Eigen::Index nconv{};
       try {
-        nconv = geigs.compute(Spectra::SortRule::LargestMagn, 1000, tolerance, Spectra::SortRule::SmallestAlge);
+        nconv = geigs.compute(Spectra::SortRule::LargestMagn, 10, tolerance, Spectra::SortRule::SmallestAlge);
       }
       catch (const std::runtime_error &e) {
         spdlog::get("all_ranks")->error("ERROR: Computation of eigenvalues failed (reason: {})", e.what());
