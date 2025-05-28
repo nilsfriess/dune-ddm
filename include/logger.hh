@@ -201,7 +201,7 @@ public:
   void startEvent(Event *event)
   {
     if (event->is_running) {
-      spdlog::error("Event was already started");
+      spdlog::error("Event '{}' was already started", event->name);
       MPI_Abort(MPI_COMM_WORLD, 4);
     }
     event->last_start = std::chrono::steady_clock::now();
@@ -211,7 +211,7 @@ public:
   void endEvent(Event *event)
   {
     if (not event->is_running) {
-      spdlog::error("Event was not started yet");
+      spdlog::error("Event '{}' was not started yet", event->name);
       MPI_Abort(MPI_COMM_WORLD, 4);
     }
     event->total_time += std::chrono::steady_clock::now() - event->last_start;
