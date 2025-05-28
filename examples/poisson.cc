@@ -246,7 +246,7 @@ int main(int argc, char *argv[])
   const auto &paridxs = *remoteparidxs.second;
 
   ExtendedRemoteIndices ext_indices(remoteindices, problem.getA(), ptree.get("overlap", 1));
-  const auto [remote_ncorr_triples, own_ncorr_triples, interior_dof_mask] = problem.assembleJacobian(remoteindices, ext_indices, ptree.get("overlap", 1));
+  const auto [Aovlp, remote_ncorr_triples, own_ncorr_triples, interior_dof_mask] = problem.assembleJacobian(remoteindices, ext_indices, ptree.get("overlap", 1));
 
   using Vec = decltype(problem)::Vec;
   using Mat = decltype(problem)::Mat;
@@ -295,7 +295,7 @@ int main(int argc, char *argv[])
   MPI_Barrier(MPI_COMM_WORLD);
 
   Logger::get().startEvent(prec_setup);
-  auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(problem.getA(), ext_indices, ptree);
+  auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(Aovlp, ext_indices, ptree);
 
   CombinedPreconditioner<Native<Vec>> prec(applymode, {schwarz}, op);
 

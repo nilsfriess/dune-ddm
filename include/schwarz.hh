@@ -121,6 +121,40 @@ public:
     createPOU(0);
   }
 
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, const Dune::ParameterTree &ptree)
+      : Aovlp(std::move(Aovlp)), ext_indices(ext_indices), factorise_at_first_iteration(ptree.get("schwarz_factorise_at_first_iteration", false))
+  {
+    auto type_string = ptree.get("type", "restricted");
+    if (type_string == "restricted") {
+      type = SchwarzType::Restricted;
+    }
+    else if (type_string == "standard") {
+      type = SchwarzType::Standard;
+    }
+    else {
+      DUNE_THROW(Dune::Exception, "Unknown Schwarz type, can either be 'restricted' or 'standard'");
+    }
+
+    spdlog::info("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
+
+    auto pou_string = ptree.get("pou", "standard");
+    if (pou_string == "standard") {
+      pou_type = PartitionOfUnityType::Standard;
+    }
+    else if (pou_string == "distance") {
+      pou_type = PartitionOfUnityType::Distance;
+    }
+    else if (pou_string == "none") {
+      pou_type = PartitionOfUnityType::None;
+    }
+    else {
+      DUNE_THROW(Dune::Exception, "Unknown partition of unity type, can either be 'standard' or 'none'");
+    }
+
+    init();
+    createPOU(ptree.get("pou_shrink", 0));
+  }
+
   SchwarzPreconditioner(const Mat &A, const ExtendedRemoteIndices &ext_indices, const Dune::ParameterTree &ptree)
       : ext_indices(ext_indices), factorise_at_first_iteration(ptree.get("schwarz_factorise_at_first_iteration", false))
   {
@@ -151,7 +185,7 @@ public:
       DUNE_THROW(Dune::Exception, "Unknown partition of unity type, can either be 'standard' or 'none'");
     }
 
-    init(A);
+    init(&A);
     createPOU(ptree.get("pou_shrink", 0));
   }
 
@@ -218,7 +252,7 @@ public:
   // RemoteParallelIndices<RemoteIndices> getOverlappingIndices() const { return ovlpindices; }
 
 private:
-  void init(const Mat &A)
+  void init(const Mat *A = nullptr)
   {
     apply_event = Logger::get().registerEvent("Schwarz", "apply");
     subdomain_solve_event = Logger::get().registerEvent("Schwarz", "local solve");
@@ -234,7 +268,10 @@ private:
     owner_copy_interface.build(ext_indices.get_remote_indices(), ownerAttribute, copyAttribute);
     owner_copy_comm.build<Vec>(owner_copy_interface);
 
-    Aovlp = std::make_shared<Mat>(ext_indices.create_overlapping_matrix(A));
+    if (A) {
+      Aovlp = std::make_shared<Mat>(ext_indices.create_overlapping_matrix(*A));
+    }
+    assert(Aovlp);
     if (not factorise_at_first_iteration) {
       solver = std::make_unique<Solver>(*Aovlp, 0);
       solver->setOption(UMFPACK_IRSTEP, 0);
@@ -255,10 +292,14 @@ private:
     const auto overlap = ext_indices.get_overlap();
     const auto &A = *Aovlp;
 
-    IdentifyBoundaryDataHandle ibdh(A, ext_indices.get_parallel_index_set());
-    Dune::VariableSizeCommunicator<> var_comm(all_all_interface);
-    var_comm.forward(ibdh);
-    const auto &boundary_mask = ibdh.get_boundary_mask();
+    std::vector<bool> boundary_mask;
+
+    if (pou_type != PartitionOfUnityType::None) {
+      IdentifyBoundaryDataHandle ibdh(A, ext_indices.get_parallel_index_set());
+      Dune::VariableSizeCommunicator<> var_comm(all_all_interface);
+      var_comm.forward(ibdh);
+      boundary_mask = ibdh.get_boundary_mask();
+    }
 
     switch (pou_type) {
     case PartitionOfUnityType::Standard: {

@@ -246,7 +246,8 @@ public:
   }
 
   template <class RemoteIndices, class ExtendedRemoteIndices>
-  std::tuple<std::vector<TripleWithRank>, std::vector<TripleWithRank>, std::vector<bool>> assembleJacobian(const RemoteIndices &remoteids, const ExtendedRemoteIndices &extids, int overlap)
+  std::tuple<std::shared_ptr<NativeMat>, std::vector<TripleWithRank>, std::vector<TripleWithRank>, std::vector<bool>> assembleJacobian(const RemoteIndices &remoteids,
+                                                                                                                                       const ExtendedRemoteIndices &extids, int overlap)
   {
     using Dune::PDELab::Backend::native;
 
@@ -258,7 +259,8 @@ public:
     interface_ext.build(extids.get_remote_indices(), allAttributes, allAttributes);
     Dune::VariableSizeCommunicator varcomm_ext(interface_ext);
 
-    auto Aovlp = extids.create_overlapping_matrix(native(*As));
+    auto pAovlp = std::make_shared<NativeMat>(extids.create_overlapping_matrix(native(*As)));
+    const auto &Aovlp = *pAovlp;
     IdentifyBoundaryDataHandle ibdh(Aovlp, extids.get_parallel_index_set());
     varcomm_ext.forward(ibdh);
 
@@ -392,7 +394,7 @@ public:
     }
 
     MPI_Type_free(&triple_type);
-    return {all_triples, all_own_triples, interior};
+    return {pAovlp, all_triples, all_own_triples, interior};
   }
 
   Vec &getXVec() { return *x0; }
