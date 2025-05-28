@@ -393,6 +393,10 @@ public:
       }
     }
 
+    // After everything is assembled, we have to communicate our entries around
+    AddMatrixDataHandle amdh(native(*As), *pAovlp, extids.get_parallel_index_set());
+    extids.get_overlapping_communicator().forward(amdh);
+
     MPI_Type_free(&triple_type);
     return {pAovlp, all_triples, all_own_triples, interior};
   }
