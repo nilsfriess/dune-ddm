@@ -19,6 +19,7 @@
 #include <Spectra/SymGEigsShiftSolver.h>
 
 #include "coarsespaces/eigensolvers.hh"
+#include "logger.hh"
 
 #include <spdlog/spdlog.h>
 
@@ -60,23 +61,35 @@ class SymShiftInvert {
 public:
   using Scalar = double;
 
-  SymShiftInvert(const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &A, const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &B) : A(A), B(B), b(A.N()) {}
+  SymShiftInvert(const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &A, const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &B) : A(A), B(B), b(A.N())
+  {
+    solve_event = Logger::get().registerOrGetEvent("Eigensolver", "solve A-sB");
+  }
 
   void set_shift(double sigma)
   {
-    auto A_minus_sigma_B = A;
-    A_minus_sigma_B.axpy(-1 * sigma, B);
+    if (!solver or sigma != last_sigma) {
+      Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Eigensolver", "factorise A-sB")};
 
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    solver = std::make_unique<Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>();
-    solver->setOption(UMFPACK_IRSTEP, 0);
-    solver->setOption(UMFPACK_STRATEGY, UMFPACK_STRATEGY_SYMMETRIC);
-    solver->setMatrix(A_minus_sigma_B);
+      auto A_minus_sigma_B = A;
+      for (auto rit = B.begin(); rit != B.end(); ++rit) {
+        for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
+          A_minus_sigma_B[rit.index()][cit.index()] -= sigma * *cit;
+        }
+      }
+
+      solver = std::make_unique<Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>();
+      solver->setOption(UMFPACK_IRSTEP, 0);
+      // solver->setOption(UMFPACK_STRATEGY, UMFPACK_STRATEGY_SYMMETRIC);
+      solver->setMatrix(A_minus_sigma_B);
+
+      last_sigma = sigma;
+    }
   }
 
   void perform_op(const Scalar *x_in, Scalar *y_out) const
   {
+    Logger::ScopedLog sl{solve_event};
     auto *x_in_mut = const_cast<Scalar *>(x_in); // TODO: Here we just hope that either (i) the solver doesn't modify the rhs or (ii) it's not a problem if it does.
 
     // std::copy_n(x_in, b.size(), b.begin());
@@ -94,6 +107,10 @@ private:
   mutable std::vector<double> b;
 
   std::unique_ptr<Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>> solver{nullptr};
+
+  Logger::Event *solve_event;
+
+  double last_sigma;
 };
 
 class MatOp {
