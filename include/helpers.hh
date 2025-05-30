@@ -266,7 +266,15 @@ inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<doubl
   }
 
   // Wait for the Gather to finish
-  MPI_CHECK(MPI_Wait(&req, MPI_STATUSES_IGNORE));
+  MPI_Status status;
+  MPI_CHECK(MPI_Wait(&req, &status));
+  if (status.MPI_ERROR != MPI_SUCCESS) {
+    char err_string[MPI_MAX_ERROR_STRING];
+    int resultlen;
+    MPI_Error_string(status.MPI_ERROR, err_string, &resultlen);
+    std::cerr << "MPI status error at " << __FILE__ << ":" << __LINE__ << " - " << err_string << std::endl;
+    MPI_Abort(MPI_COMM_WORLD, status.MPI_ERROR);
+  }
 
   // Now send the CSR data to rank 0
   std::size_t total_nnz = 0;
