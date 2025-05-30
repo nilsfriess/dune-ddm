@@ -1,7 +1,10 @@
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
 #include <spdlog/spdlog.h>
 
+#include <dune/common/parallel/mpitraits.hh>
 #include <dune/istl/bcrsmatrix.hh>
 
 #include <memory>
@@ -182,4 +185,145 @@ template <class Vec>
 Dune::BCRSMatrix<double> gatherMatrixFromRows(const Vec &row, MPI_Comm comm, double clip_tolerance = 0)
 {
   return gatherMatrixFromRows(std::vector<Vec>{row}, comm, clip_tolerance);
+}
+
+/** @brief Variant of gatherMatrixFromRows where the rows are passed in a column major 1d array.
+
+    The parameter \p n_cols is the length of the individual rows, the number of rows is inferred from the \p rows array.
+*/
+inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<double> &rows, std::size_t n_cols, MPI_Comm comm, double clip_tolerance = 0)
+{
+  int rank = 0;
+  int size = 0;
+  MPI_Comm_size(comm, &size);
+  MPI_Comm_rank(comm, &rank);
+
+  if (rows.size() == 0) {
+    DUNE_THROW(Dune::Exception, "No rows to build matrix from");
+  }
+
+  if (rows.size() % n_cols != 0) {
+    DUNE_THROW(Dune::Exception, "Rows size is not a multiple of the number of columns");
+  }
+  const auto n_rows = rows.size() / n_cols;
+
+  // Check that all rows on all ranks have the same size
+  std::size_t min_columns = 0;
+  std::size_t max_columns = 0;
+  MPI_Datatype size_t_type = Dune::MPITraits<std::size_t>::getType();
+  MPI_Allreduce(&n_cols, &min_columns, 1, size_t_type, MPI_MIN, comm);
+  MPI_Allreduce(&n_cols, &max_columns, 1, size_t_type, MPI_MAX, comm);
+  if (min_columns != max_columns) {
+    DUNE_THROW(Dune::Exception, "Rows have different sizes");
+  }
+
+  // Now we convert the values in rows into CSR format that rank 0 can then directly assemble.
+  // We create the data structures as if the matrix was sequential, rank 0 is responsible for
+  // figuring out the correct row offsets.
+  std::vector<std::size_t> row_offsets;
+  std::vector<std::size_t> col_indices;
+  std::vector<double> values;
+
+  // We start by counting the nonzeros and sending this (along with the number of rows we own) to rank 0
+  std::array<std::size_t, 2> nnz_and_n_rows{};
+  nnz_and_n_rows[0] = std::count_if(rows.begin(), rows.end(), [clip_tolerance](auto x) { return std::abs(x) > clip_tolerance; });
+  nnz_and_n_rows[1] = n_rows;
+
+  std::vector<std::size_t> nnz_and_n_rows_data(rank == 0 ? 2 * size : 0);
+  MPI_Request req = MPI_REQUEST_NULL;
+  MPI_Igather(nnz_and_n_rows.data(), 2, size_t_type, nnz_and_n_rows_data.data(), 2, size_t_type, 0, comm, &req);
+
+  // During the send, we create the CSR data structures. Note that the rows array is in column-major order,
+  row_offsets.reserve(n_rows + 1);
+  col_indices.reserve(nnz_and_n_rows[0]);
+  values.reserve(nnz_and_n_rows[0]);
+  row_offsets.push_back(0);
+  std::size_t nnz_count = 0;
+  for (std::size_t row = 0; row < n_rows; ++row) {
+    for (std::size_t col = 0; col < n_cols; ++col) {
+      auto value = rows[row + col * n_rows];
+      if (std::abs(value) > clip_tolerance) {
+        col_indices.push_back(col);
+        values.push_back(value);
+        ++nnz_count;
+      }
+    }
+    row_offsets.push_back(nnz_count);
+  }
+
+  // Wait for the Gather to finish
+  MPI_Wait(&req, MPI_STATUSES_IGNORE);
+
+  // Now send the CSR data to rank 0
+  std::size_t total_nnz = 0;
+  std::size_t total_n_rows = 0;
+  if (rank == 0) {
+    for (int i = 0; i < size; ++i) {
+      total_nnz += nnz_and_n_rows_data[2 * i];
+      total_n_rows += nnz_and_n_rows_data[2 * i + 1];
+    }
+  }
+  std::vector<std::size_t> global_row_offsets;
+  std::vector<std::size_t> global_col_indices;
+  std::vector<double> global_values;
+  if (rank == 0) {
+    global_row_offsets.resize(total_n_rows + 1); // +1 because we need the last offset for the end of the last row
+    global_col_indices.resize(total_nnz);
+    global_values.resize(total_nnz);
+  }
+
+  std::vector<int> col_values_displacements(size);
+  std::vector<int> row_offsets_displacements(size);
+  std::vector<int> col_values_counts(size);
+  std::vector<int> row_offsets_counts(size);
+  if (rank == 0) {
+    for (int i = 0; i < size; ++i) {
+      col_values_counts[i] = static_cast<int>(nnz_and_n_rows_data[2 * i]);
+      row_offsets_counts[i] = static_cast<int>(nnz_and_n_rows_data[2 * i + 1]);
+    }
+
+    std::exclusive_scan(col_values_counts.begin(), col_values_counts.end(), col_values_displacements.begin(), 0);
+    std::exclusive_scan(row_offsets_counts.begin(), row_offsets_counts.end(), row_offsets_displacements.begin(), 0);
+  }
+  MPI_Gatherv(col_indices.data(), static_cast<int>(col_indices.size()), size_t_type, global_col_indices.data(), col_values_counts.data(), col_values_displacements.data(), size_t_type, 0, comm);
+  MPI_Gatherv(row_offsets.data(), static_cast<int>(row_offsets.size() - 1), size_t_type, global_row_offsets.data(), row_offsets_counts.data(), row_offsets_displacements.data(), size_t_type, 0, comm);
+  MPI_Gatherv(values.data(), static_cast<int>(values.size()), MPI_DOUBLE, global_values.data(), col_values_counts.data(), col_values_displacements.data(), MPI_DOUBLE, 0, comm);
+
+  if (rank == 0) {
+    // Set the last row offset to the total number of nonzeros
+    global_row_offsets[total_n_rows] = total_nnz;
+
+    // Accumulate all nonzero numbers over all ranks. This is necessary because the row offsets are relative to the local rows,
+    // so we have to adjust them to be relative to the global rows.
+    std::vector<std::size_t> row_offsets_accumulated(size);
+    row_offsets_accumulated[0] = 0;
+    for (int i = 1; i < size; ++i) {
+      row_offsets_accumulated[i] = row_offsets_accumulated[i - 1] + col_values_counts[i - 1];
+    }
+
+    // Now we have to adjust the row offsets to be relative to the global rows by adding the accumulated offsets.
+    for (int s = 0; s < size; ++s) {
+      for (std::size_t i = 0; i < row_offsets_counts[s]; ++i) {
+        global_row_offsets[row_offsets_displacements[s] + i] += row_offsets_accumulated[s];
+      }
+    }
+
+    // Now we can build the matrix
+    Dune::BCRSMatrix<double> A0;
+    A0.setBuildMode(Dune::BCRSMatrix<double>::implicit);
+    A0.setImplicitBuildModeParameters(total_nnz / size, 1); // TODO: Make this robust
+    A0.setSize(total_n_rows, n_cols);
+
+    for (std::size_t i = 0; i < total_n_rows; ++i) {
+      for (std::size_t j = global_row_offsets[i]; j < global_row_offsets[i + 1]; ++j) {
+        A0.entry(i, global_col_indices[j]) = global_values[j];
+      }
+    }
+
+    A0.compress();
+
+    return A0;
+  }
+
+  return Dune::BCRSMatrix<double>{};
 }

@@ -287,9 +287,7 @@ private:
     MPI_Allgather(&num_t, 1, MPI_INT, num_t_per_rank.data(), 1, MPI_INT, ris.first->communicator());
     total_num_t = std::accumulate(num_t_per_rank.begin(), num_t_per_rank.end(), 0UL);
 
-    Vec zero(total_num_t);
-    zero = 0;
-    std::vector<Vec> my_rows(num_t, zero);
+    std::vector<double> my_rows_flat(static_cast<std::size_t>(num_t) * total_num_t);
     Vec s(restr_vecs[0].N());
     Vec y(restr_vecs[0].N());
 
@@ -297,9 +295,6 @@ private:
     std::exclusive_scan(num_t_per_rank.begin(), num_t_per_rank.end(), offset_per_rank.begin(), 0);
 
     Logger::get().endEvent(prepare_event);
-
-    Vec empty;
-
 #if 1
     auto max_num_t = *std::max_element(num_t_per_rank.begin(), num_t_per_rank.end());
 
@@ -336,7 +331,7 @@ private:
       if (idx < num_t) {
         A.mv(restr_vecs[idx], y);
         for (int k = 0; k < num_t; ++k) {
-          my_rows[k][offset_per_rank[rank] + idx] = restr_vecs[k] * y;
+          my_rows_flat[(offset_per_rank[rank] + idx) * max_num_t + k] = restr_vecs[k] * y;
         }
       }
       Logger::get().endEvent(local_local_sp_event);
@@ -352,7 +347,7 @@ private:
 
           A.mv(basis_vector_buffer[nb], y);
           for (int k = 0; k < num_t; ++k) {
-            my_rows[k][offset_per_rank[nb] + idx - 1] = restr_vecs[k] * y;
+            my_rows_flat[(offset_per_rank[nb] + idx - 1) * max_num_t + k] = restr_vecs[k] * y;
           }
         }
         Logger::get().endEvent(local_remote_sp_event);
@@ -375,7 +370,7 @@ private:
 
       A.mv(vd.others[nb], y);
       for (int k = 0; k < num_t; ++k) {
-        my_rows[k][offset_per_rank[nb] + max_num_t - 1] = restr_vecs[k] * y;
+        my_rows_flat[(offset_per_rank[nb] + max_num_t - 1) * max_num_t + k] = restr_vecs[k] * y;
       }
     }
     Logger::get().endEvent(local_remote_sp_event);
@@ -436,7 +431,7 @@ private:
 #endif
 
     Logger::get().startEvent(gather_A0);
-    A0 = gatherMatrixFromRows(my_rows, ris.first->communicator());
+    A0 = gatherMatrixFromRowsFlat(my_rows_flat, total_num_t, ris.first->communicator());
     Logger::get().endEvent(gather_A0);
 
     Logger::get().startEvent(factor_A0);
