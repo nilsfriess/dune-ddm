@@ -77,6 +77,8 @@ public:
   int get_overlap() const { return overlap; }
   std::size_t size() const { return get_parallel_index_set().size(); }
 
+  Dune::VariableSizeCommunicator<> &get_overlapping_communicator() const { return *varcomm; }
+
   const std::vector<std::size_t> &get_index_set_sizes() const { return index_set_sizes; }
 
   Mat create_overlapping_matrix(const Mat &A) const
