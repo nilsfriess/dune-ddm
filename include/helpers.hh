@@ -12,6 +12,20 @@
 #include <utility>
 #include <vector>
 
+#include <iostream>
+
+#define MPI_CHECK(call)                                                                                                                                                                                \
+  do {                                                                                                                                                                                                 \
+    int err = (call);                                                                                                                                                                                  \
+    if (err != MPI_SUCCESS) {                                                                                                                                                                          \
+      char err_string[MPI_MAX_ERROR_STRING];                                                                                                                                                           \
+      int resultlen;                                                                                                                                                                                   \
+      MPI_Error_string(err, err_string, &resultlen);                                                                                                                                                   \
+      std::cerr << "MPI error at " << __FILE__ << ":" << __LINE__ << " - " << err_string << std::endl;                                                                                                 \
+      MPI_Abort(MPI_COMM_WORLD, err);                                                                                                                                                                  \
+    }                                                                                                                                                                                                  \
+  } while (0)
+
 struct TripleWithRank {
   int rank;
   std::size_t row;
@@ -69,8 +83,8 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
 {
   int rank = 0;
   int size = 0;
-  MPI_Comm_size(comm, &size);
-  MPI_Comm_rank(comm, &rank);
+  MPI_CHECK(MPI_Comm_size(comm, &size));
+  MPI_CHECK(MPI_Comm_rank(comm, &rank));
 
   if (rows.size() == 0) {
     DUNE_THROW(Dune::Exception, "No rows to build matrix from");
@@ -90,8 +104,8 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   // Check that all rows on all ranks have the same size
   int min_columns = 0;
   int max_columns = 0;
-  MPI_Allreduce(&columns, &min_columns, 1, MPI_INT, MPI_MIN, comm);
-  MPI_Allreduce(&columns, &max_columns, 1, MPI_INT, MPI_MAX, comm);
+  MPI_CHECK(MPI_Allreduce(&columns, &min_columns, 1, MPI_INT, MPI_MIN, comm));
+  MPI_CHECK(MPI_Allreduce(&columns, &max_columns, 1, MPI_INT, MPI_MAX, comm));
   if (min_columns != max_columns) {
     DUNE_THROW(Dune::Exception, "Rows have different sizes");
   }
@@ -105,8 +119,8 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   offsets[1] = offsetof(TripleWithRank, row);
   offsets[2] = offsetof(TripleWithRank, col);
   offsets[3] = offsetof(TripleWithRank, val);
-  MPI_Type_create_struct(nitems, blocklengths.data(), offsets.data(), types.data(), &triple_type);
-  MPI_Type_commit(&triple_type);
+  MPI_CHECK(MPI_Type_create_struct(nitems, blocklengths.data(), offsets.data(), types.data(), &triple_type));
+  MPI_CHECK(MPI_Type_commit(&triple_type));
 
   std::vector<TripleWithRank> my_triples;
   my_triples.reserve(columns * rows.size());
@@ -125,7 +139,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
     num_triples.resize(size);
   }
   auto num_my_triples = my_triples.size();
-  MPI_Gather(&num_my_triples, 1, MPI_UNSIGNED_LONG, rank == 0 ? num_triples.data() : nullptr, 1, MPI_UNSIGNED_LONG, 0, comm);
+  MPI_CHECK(MPI_Gather(&num_my_triples, 1, MPI_UNSIGNED_LONG, rank == 0 ? num_triples.data() : nullptr, 1, MPI_UNSIGNED_LONG, 0, comm));
 
   std::vector<int> displacements;
   if (rank == 0) {
@@ -148,7 +162,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   }
   std::vector<int> num_triples_int(num_triples.size());
   std::transform(num_triples.begin(), num_triples.end(), num_triples_int.begin(), [](auto &&v) { return static_cast<int>(v); });
-  MPI_Gatherv(my_triples.data(), static_cast<int>(my_triples.size()), triple_type, all_triples.data(), num_triples_int.data(), displacements.data(), triple_type, 0, comm);
+  MPI_CHECK(MPI_Gatherv(my_triples.data(), static_cast<int>(my_triples.size()), triple_type, all_triples.data(), num_triples_int.data(), displacements.data(), triple_type, 0, comm));
 
   Dune::BCRSMatrix<double> A0;
 
@@ -174,9 +188,9 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
     }
     A0.compress();
   }
-  MPI_Barrier(MPI_COMM_WORLD);
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-  MPI_Type_free(&triple_type);
+  MPI_CHECK(MPI_Type_free(&triple_type));
   return A0;
 }
 
@@ -195,8 +209,8 @@ inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<doubl
 {
   int rank = 0;
   int size = 0;
-  MPI_Comm_size(comm, &size);
-  MPI_Comm_rank(comm, &rank);
+  MPI_CHECK(MPI_Comm_size(comm, &size));
+  MPI_CHECK(MPI_Comm_rank(comm, &rank));
 
   if (rows.size() == 0) {
     DUNE_THROW(Dune::Exception, "No rows to build matrix from");
@@ -211,8 +225,8 @@ inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<doubl
   std::size_t min_columns = 0;
   std::size_t max_columns = 0;
   MPI_Datatype size_t_type = Dune::MPITraits<std::size_t>::getType();
-  MPI_Allreduce(&n_cols, &min_columns, 1, size_t_type, MPI_MIN, comm);
-  MPI_Allreduce(&n_cols, &max_columns, 1, size_t_type, MPI_MAX, comm);
+  MPI_CHECK(MPI_Allreduce(&n_cols, &min_columns, 1, size_t_type, MPI_MIN, comm));
+  MPI_CHECK(MPI_Allreduce(&n_cols, &max_columns, 1, size_t_type, MPI_MAX, comm));
   if (min_columns != max_columns) {
     DUNE_THROW(Dune::Exception, "Rows have different sizes");
   }
@@ -231,7 +245,7 @@ inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<doubl
 
   std::vector<std::size_t> nnz_and_n_rows_data(rank == 0 ? 2 * size : 0);
   MPI_Request req = MPI_REQUEST_NULL;
-  MPI_Igather(nnz_and_n_rows.data(), 2, size_t_type, nnz_and_n_rows_data.data(), 2, size_t_type, 0, comm, &req);
+  MPI_CHECK(MPI_Igather(nnz_and_n_rows.data(), 2, size_t_type, nnz_and_n_rows_data.data(), 2, size_t_type, 0, comm, &req));
 
   // During the send, we create the CSR data structures. Note that the rows array is in column-major order,
   row_offsets.reserve(n_rows + 1);
@@ -252,7 +266,7 @@ inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<doubl
   }
 
   // Wait for the Gather to finish
-  MPI_Wait(&req, MPI_STATUSES_IGNORE);
+  MPI_CHECK(MPI_Wait(&req, MPI_STATUSES_IGNORE));
 
   // Now send the CSR data to rank 0
   std::size_t total_nnz = 0;
@@ -285,9 +299,11 @@ inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<doubl
     std::exclusive_scan(col_values_counts.begin(), col_values_counts.end(), col_values_displacements.begin(), 0);
     std::exclusive_scan(row_offsets_counts.begin(), row_offsets_counts.end(), row_offsets_displacements.begin(), 0);
   }
-  MPI_Gatherv(col_indices.data(), static_cast<int>(col_indices.size()), size_t_type, global_col_indices.data(), col_values_counts.data(), col_values_displacements.data(), size_t_type, 0, comm);
-  MPI_Gatherv(row_offsets.data(), static_cast<int>(row_offsets.size() - 1), size_t_type, global_row_offsets.data(), row_offsets_counts.data(), row_offsets_displacements.data(), size_t_type, 0, comm);
-  MPI_Gatherv(values.data(), static_cast<int>(values.size()), MPI_DOUBLE, global_values.data(), col_values_counts.data(), col_values_displacements.data(), MPI_DOUBLE, 0, comm);
+  MPI_CHECK(
+      MPI_Gatherv(col_indices.data(), static_cast<int>(col_indices.size()), size_t_type, global_col_indices.data(), col_values_counts.data(), col_values_displacements.data(), size_t_type, 0, comm));
+  MPI_CHECK(MPI_Gatherv(row_offsets.data(), static_cast<int>(row_offsets.size() - 1), size_t_type, global_row_offsets.data(), row_offsets_counts.data(), row_offsets_displacements.data(), size_t_type,
+                        0, comm));
+  MPI_CHECK(MPI_Gatherv(values.data(), static_cast<int>(values.size()), MPI_DOUBLE, global_values.data(), col_values_counts.data(), col_values_displacements.data(), MPI_DOUBLE, 0, comm));
 
   if (rank == 0) {
     // Set the last row offset to the total number of nonzeros
