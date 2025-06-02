@@ -331,7 +331,7 @@ private:
       if (idx < num_t) {
         A.mv(restr_vecs[idx], y);
         for (int k = 0; k < num_t; ++k) {
-          my_rows_flat[(offset_per_rank[rank] + idx) * max_num_t + k] = restr_vecs[k] * y;
+          my_rows_flat[(offset_per_rank[rank] + idx) * num_t + k] = restr_vecs[k] * y;
         }
       }
       Logger::get().endEvent(local_local_sp_event);
@@ -347,7 +347,7 @@ private:
 
           A.mv(basis_vector_buffer[nb], y);
           for (int k = 0; k < num_t; ++k) {
-            my_rows_flat[(offset_per_rank[nb] + idx - 1) * max_num_t + k] = restr_vecs[k] * y;
+            my_rows_flat[(offset_per_rank[nb] + idx - 1) * num_t + k] = restr_vecs[k] * y;
           }
         }
         Logger::get().endEvent(local_remote_sp_event);
@@ -370,7 +370,7 @@ private:
 
       A.mv(vd.others[nb], y);
       for (int k = 0; k < num_t; ++k) {
-        my_rows_flat[(offset_per_rank[nb] + max_num_t - 1) * max_num_t + k] = restr_vecs[k] * y;
+        my_rows_flat[(offset_per_rank[nb] + max_num_t - 1) * num_t + k] = restr_vecs[k] * y;
       }
     }
     Logger::get().endEvent(local_remote_sp_event);
