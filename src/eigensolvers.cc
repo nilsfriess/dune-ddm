@@ -17,6 +17,7 @@
 #include <Spectra/MatOp/SparseSymMatProd.h>
 #include <Spectra/MatOp/SymShiftInvert.h>
 #include <Spectra/SymGEigsShiftSolver.h>
+#include <Spectra/Util/CompInfo.h>
 
 #include "coarsespaces/eigensolvers.hh"
 #include "logger.hh"
@@ -191,27 +192,41 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
 
     bool done = threshold < 0; // In user has not provided a treshold, then we're done after one iteration
 
+    auto ncv = 2 * nev;
+    int tries = 3;
+    int it = 0;
     do {
-      spdlog::get("all_ranks")->trace("Computing eigenvalues using Spectra");
-      Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, 2.5 * nev, ptree.get("eigensolver_shift", 0.0001));
+      if (ncv <= nev) {
+        ncv = 2 * nev;
+      }
+
+      spdlog::get("all_ranks")->trace("Computing eigenvalues using Spectra, iteration {}", it++);
+      Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, ncv, ptree.get("eigensolver_shift", 0.0001));
       geigs.init();
 
       // Find largest eigenvalue of the shifted problem (which corresponds to the smallest of the original problem)
       // with max. 1000 iterations and sort the resulting eigenvalues from small to large.
       Eigen::Index nconv{};
       try {
-        nconv = geigs.compute(Spectra::SortRule::LargestMagn, 10, tolerance, Spectra::SortRule::SmallestAlge);
+        const auto maxit = 100;
+        nconv = geigs.compute(Spectra::SortRule::LargestMagn, maxit, tolerance, Spectra::SortRule::SmallestAlge);
       }
       catch (const std::runtime_error &e) {
-        spdlog::get("all_ranks")->error("ERROR: Computation of eigenvalues failed (reason: {})", e.what());
-        // MPI_Abort(MPI_COMM_WORLD, 5);
+        spdlog::get("all_ranks")->error("ERROR: Computation of eigenvalues failed, reason: {}, tries left {}", e.what(), tries);
+        if (tries != 0) {
+          tries--;
+          ncv *= 2;
+          done = false;
+          continue;
+        }
+        else {
+          MPI_Abort(MPI_COMM_WORLD, 5);
+        }
       }
 
       if (geigs.info() == Spectra::CompInfo::Successful) {
         const auto evalues = geigs.eigenvalues();
         const auto evecs = geigs.eigenvectors();
-
-        spdlog::get("all_ranks")->trace("Eigensolver computed {} eigenvalues, smallest {}, largest {}", nconv, evalues[0], evalues[nconv - 1]);
 
         if (evalues[nconv - 1] >= threshold or nev >= nev_max) {
           if (threshold > 0 and ptree.get("eigensolver_keep_strict", false)) {
@@ -247,19 +262,36 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
             }
           }
 
-          done = true;
+          break;
         }
         if (!done) {
-          spdlog::get("all_ranks")->trace("Eigensolver did not compute enough eigenvalues, largest is {}, now trying with nev = {}", evalues[nconv - 1], 1.6 * nev);
+          nev *= 2;
+          spdlog::get("all_ranks")->debug("Eigensolver did not compute enough eigenvalues, largest is {}, now trying with nev = {}", evalues[nconv - 1], nev);
         }
       }
       else {
-        spdlog::get("all_ranks")->error("ERROR: Computation of eigenvalues failed");
-        done = true;
-        // MPI_Abort(MPI_COMM_WORLD, 13);
+        if (geigs.info() == Spectra::CompInfo::NotConverging) {
+          if (tries != 0) {
+            spdlog::get("all_ranks")->warn("Computation of eigenvalues failed, not yet converged, trying again with more Lanzcos vectors. Tries left {}", tries);
+            tries--;
+            ncv *= 2;
+            done = false;
+            continue;
+          }
+          else {
+            spdlog::get("all_ranks")->warn("Computation of eigenvalues failed, not yet converged, no more tries left");
+            MPI_Abort(MPI_COMM_WORLD, 12);
+          }
+        }
+        else if (geigs.info() == Spectra::CompInfo::NumericalIssue) {
+          spdlog::get("all_ranks")->error("Computation of eigenvalues failed, reason 'NumericalIssue'");
+          MPI_Abort(MPI_COMM_WORLD, 13);
+        }
+        else {
+          spdlog::get("all_ranks")->error("Computation of eigenvalues failed, unknown reason");
+          MPI_Abort(MPI_COMM_WORLD, 14);
+        }
       }
-
-      nev *= 1.6;
     } while (not done);
   }
 #if DUNE_DDM_HAVE_BLOPEX
