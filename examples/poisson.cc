@@ -328,7 +328,7 @@ int main(int argc, char *argv[])
   const auto coarsespace = ptree.get("coarsespace", "geneo");
   if (coarsespace == "nicolaides") {
     int nvecs = ptree.get("nvecs", 1);
-    if (nvecs < 1 or nvecs > 3) {
+    if (nvecs < 1 or nvecs > GRID_DIM + 1) {
       nvecs = 1;
       spdlog::warn("Wrong number of template vectors, using 1 instead");
     }
@@ -340,6 +340,9 @@ int main(int argc, char *argv[])
     }
     if (nvecs > 2) {
       Dune::PDELab::interpolate([](const auto &x) { return x[1]; }, gfs, template_vecs[2]);
+    }
+    if (nvecs > 3) {
+      Dune::PDELab::interpolate([](const auto &x) { return x[2]; }, gfs, template_vecs[3]);
     }
     for (auto &template_vec : template_vecs) {
       for (std::size_t i = 0; i < template_vec.N(); ++i) {
