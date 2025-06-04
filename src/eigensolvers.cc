@@ -90,11 +90,8 @@ public:
   void perform_op(const Scalar *x_in, Scalar *y_out) const
   {
     Logger::ScopedLog sl{solve_event};
-    auto *x_in_mut = const_cast<Scalar *>(x_in); // TODO: Here we just hope that either (i) the solver doesn't modify the rhs or (ii) it's not a problem if it does.
-
-    // std::copy_n(x_in, b.size(), b.begin());
-    // std::fill_n(y_out, b.size(), 0);
-    solver->apply(y_out, x_in_mut);
+    std::copy_n(x_in, b.size(), b.begin());
+    solver->apply(y_out, b.data());
   }
 
   Eigen::Index rows() const { return static_cast<Eigen::Index>(A.N()); }
