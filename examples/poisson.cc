@@ -7,7 +7,6 @@
 
 #include <dune-pdelab-config.hh>
 
-#include "metis.hh"
 #include "overlap_extension.hh"
 #include "poisson.hh"
 
@@ -40,6 +39,7 @@
 #include <dune/grid/common/gridview.hh>
 #include <dune/grid/io/file/vtk/function.hh>
 #include <dune/grid/io/file/vtk/subsamplingvtkwriter.hh>
+#include <dune/grid/utility/parmetisgridpartitioner.hh>
 #if USE_UGGRID
 #include <dune/grid/io/file/gmshreader.hh>
 #include <dune/grid/uggrid.hh>
@@ -143,7 +143,7 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
 
 #if USE_UGGRID
   auto gv = grid->leafGridView();
-  auto part = partitionMETIS(gv, helper);
+  auto part = Dune::ParMetisGridPartitioner<decltype(gv)>::partition(gv, helper);
 
   grid->loadBalance(part, 0);
 #else
