@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <dune/common/exceptions.hh>
 #include <vector>
 
 #include <dune/common/parallel/interface.hh>
@@ -52,6 +53,9 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
   std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
   std::vector<std::size_t> ring_to_subdomain(ovlp_paridxs.size());
   std::set<std::size_t> ring_boundary; // dofs on the interior ring boundary (using overlapping subdomain numbering)
+  std::vector<int> boundary_dst;
+  int overlap = ptree.get("overlap", 1);
+  int shrink = ptree.get("pou_shrink", 0);
 
   Mat A; // The left-hand side of the eigenproblem. Will be set below depending on the requested type
   Mat B; // The right-hand side of the eigenproblem. Will be set below depending on the requested type
@@ -220,121 +224,18 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
 
     B = A; // B starts as A, but has to be multiplied by the partition of unity
 
-    // apply_cnt = 0;
-    // for (const auto &triple : own_ncorr_triples2) {
-    //   if (subdomain_to_ring.contains(triple.row) && subdomain_to_ring.contains(triple.col)) {
-    //     B[subdomain_to_ring[triple.row]][subdomain_to_ring[triple.col]] -= triple.val;
-    //     apply_cnt++;
-    //   }
-    //   else {
-    //     spdlog::get("all_ranks")->error("Local index ({}, {}) does not exist in ring", triple.row, triple.col);
-    //   }
-    // }
-    // spdlog::get("all_ranks")->debug("Applied {} additional inner corrections for B", apply_cnt);
-
-    // if (not ptree.get("geneo_ring_inner_neumann", true)) {
-    //   // If the rhs matrix should not have Neumann boundary conditions on the inner boundary, we re-extract the corresponding values from the original matrix again
-    //   for (const auto &triple : own_ncorr_triples) {
-    //     if (subdomain_to_ring.contains(triple.row) && subdomain_to_ring.contains(triple.col)) {
-    //       B[subdomain_to_ring[triple.row]][subdomain_to_ring[triple.col]] = Aovlp[triple.row][triple.col];
-    //     }
-    //   }
-
-    //   // Reapply Dirichlet conditions
-    //   for (std::size_t i = 0; i < B.N(); ++i) {
-    //     if (dirichlet_mask_ovlp[ring_to_subdomain[i]] > 0) {
-    //       for (auto ci = B[i].begin(); ci != B[i].end(); ++ci) {
-    //         *ci = (ci.index() == i) ? 1.0 : 0.0;
-    //       }
-    //     }
-    //     else {
-    //       for (auto ci = B[i].begin(); ci != B[i].end(); ++ci) {
-    //         if (dirichlet_mask_ovlp[ring_to_subdomain[ci.index()]] > 0) {
-    //           *ci = 0.0;
-    //         }
-    //       }
-    //     }
-    //   }
-    // }
-
-    // for (auto ri = B.begin(); ri != B.end(); ++ri) {
-    //   for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-    //     if (ring_boundary.contains(ri.index()) or ring_boundary.contains(ci.index())) {
-    //       *ci = 0;
-    //     }
-    //     else {
-    //       *ci *= pou[ring_to_subdomain[ri.index()]] * pou[ring_to_subdomain[ci.index()]];
-    //     }
-    //   }
-    // }
-
-    // Now create the B matrix
-    // B.setBuildMode(Mat::implicit);
-    // B.setImplicitBuildModeParameters(avg, 0.2);
-    // B.setSize(N, N);
-
-    // for (auto ri = Aovlp.begin(); ri != Aovlp.end(); ++ri) {
-    //   for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-    //     if (subdomain_to_ring.contains(ri.index()) && subdomain_to_ring.contains(ci.index()) && !ring_boundary.contains(ri.index()) && !ring_boundary.contains(ci.index())) {
-    //       B.entry(subdomain_to_ring[ri.index()], subdomain_to_ring[ci.index()]) = *ci;
-    //     }
-    //   }
-    // }
-    // B.compress();
-
-    // apply_cnt = 0;
-    // // We again need to apply the Neumann corrections. First do the "outside" boundary ...
-    // for (const auto &triple : remote_ncorr_triples) {
-    //   // The triples use global indices, so we first have to convert them to local indices
-    //   // on the overlapping subdomain. Also, we might have received some indices that are
-    //   // outside of our overlapping subdomain, so we first have to check that.
-    //   if (ovlp_paridxs.exists(triple.row) && ovlp_paridxs.exists(triple.col)) {
-    //     auto lrow = ovlp_paridxs[triple.row].local();
-    //     auto lcol = ovlp_paridxs[triple.col].local();
-
-    //     // Check if the given entry corresponds to a dof inside the ring
-    //     if (subdomain_to_ring.contains(lrow) && subdomain_to_ring.contains(lcol)) {
-    //       B[subdomain_to_ring[lrow]][subdomain_to_ring[lcol]] -= triple.val;
-    //       apply_cnt++;
-    //     }
-    //     else {
-    //       spdlog::get("all_ranks")->error("Global index ({}, {}) does not exist in ring", triple.row, triple.col);
-    //     }
-    //   }
-    //   else {
-    //     spdlog::debug("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
-    //   }
-    // }
-    // spdlog::get("all_ranks")->debug("Applied {} outer corrections for B", apply_cnt);
-    // apply_cnt = 0;
-
-    // ... then the "inside" boundary
-    // for (const auto &triple : own_ncorr_triples2) {
-    //   if (subdomain_to_ring.contains(triple.row) && subdomain_to_ring.contains(triple.col)) {
-    //     if (ring_boundary.contains(triple.row) or ring_boundary.contains(triple.col)) {
-    //       spdlog::get("all_ranks")->warn("Local index ({}, {}) on interior/ring boundary but should not be", triple.row, triple.col);
-    //     }
-    //     B[subdomain_to_ring[triple.row]][subdomain_to_ring[triple.col]] -= triple.val;
-    //     apply_cnt++;
-    //   }
-    //   else {
-    //     spdlog::get("all_ranks")->error("Local index ({}, {}) does not exist in ring", triple.row, triple.col);
-    //   }
-    // }
-
+    // Create a modified partition of unity that simulates the cutoff towards the interior
     IdentifyBoundaryDataHandle ibdh(Aovlp, *ovlp_ids.second);
     communicator.forward(ibdh);
     auto &boundary_mask = ibdh.get_boundary_mask();
 
-    std::vector<int> boundary_dst(boundary_mask.size(), std::numeric_limits<int>::max() - 1);
+    boundary_dst.resize(boundary_mask.size(), std::numeric_limits<int>::max() - 1);
     for (std::size_t i = 0; i < boundary_mask.size(); ++i) {
       if (boundary_mask[i]) {
         boundary_dst[i] = 0;
       }
     }
 
-    int overlap = ptree.get("overlap", 1);
-    int shrink = ptree.get("pou_shrink", 0);
     for (int round = 0; round <= 4 * overlap; ++round) {
       for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
         for (auto cIt = Aovlp[i].begin(); cIt != Aovlp[i].end(); ++cIt) {
@@ -349,17 +250,6 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
         pou_copy[i] = 0;
       }
     }
-
-    // spdlog::get("all_ranks")->debug("Applied {} inner corrections for B", apply_cnt);
-
-    // for (const auto &triple : own_ncorr_triples) {
-    //   if (subdomain_to_ring.contains(triple.row) && subdomain_to_ring.contains(triple.col)) {
-    //     B[subdomain_to_ring[triple.row]][subdomain_to_ring[triple.col]] = 0;
-    //   }
-    //   else {
-    //     spdlog::get("all_ranks")->error("Local index ({}, {}) does not exist in ring", triple.row, triple.col);
-    //   }
-    // }
 
     // Dirichlet conditions
     for (std::size_t i = 0; i < B.N(); ++i) {
@@ -379,12 +269,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
 
     for (auto ri = B.begin(); ri != B.end(); ++ri) {
       for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-        if (ring_boundary.contains(ring_to_subdomain[ri.index()]) or ring_boundary.contains(ring_to_subdomain[ci.index()])) {
-          *ci = 0;
-        }
-        else {
-          *ci *= pou_copy[ring_to_subdomain[ri.index()]] * pou_copy[ring_to_subdomain[ci.index()]];
-        }
+        *ci *= pou_copy[ring_to_subdomain[ri.index()]] * pou_copy[ring_to_subdomain[ci.index()]];
       }
     }
   }
@@ -427,12 +312,6 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
   Logger::get().startEvent(eigensolver_event);
   spdlog::info("Solving generalized eigenvalue problem for GenEO");
 
-  if (rank == 0) {
-    Dune::writeMatrixToMatlab(A, "A.mat");
-    Dune::writeMatrixToMatlab(B, "B.mat");
-  }
-  MPI_Barrier(MPI_COMM_WORLD);
-
   auto eigenvectors = solveGEVP(A, B, eigensolver, ptree);
 
   Logger::get().endEvent(eigensolver_event);
@@ -440,39 +319,29 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
   // If we have only solved the eigenvalue problem on the ring, then we now need to extend the eigenvectors to the interior.
   if (geneo_type == "ring") {
     if (ptree.get("geneo_ring_extend_exact", true)) {
-      // Create the matrix that lives on the interior dofs. To this end, first create a interior-to-subdomain map.
-      auto N = std::count_if(interior_dof_mask.begin(), interior_dof_mask.end(), [](auto val) { return val; });
-      spdlog::get("all_ranks")
-          ->debug("For GenEO ring problem: total dofs {}, interior dofs {}, ring dofs {}, ring+interior dofs {}", Aovlp.N(), N, ring_to_subdomain.size(), (N + ring_to_subdomain.size()));
-      std::vector<std::size_t> interior_to_subdomain(N);
-      std::size_t cnt = 0;
+
+      // Compute energy-minimising extension
+      const auto inner_boundary_dist = overlap + (overlap - shrink) - 1;
+      const auto N = std::count_if(boundary_dst.begin(), boundary_dst.end(), [&](auto val) { return val >= inner_boundary_dist; });
+      std::vector<std::size_t> interior_to_subdomain;
+      interior_to_subdomain.reserve(N);
       for (std::size_t i = 0; i < interior_dof_mask.size(); ++i) {
-        if (interior_dof_mask[i] > 0) {
-          interior_to_subdomain[cnt++] = i;
+        if (boundary_dst[i] > inner_boundary_dist) {
+          interior_to_subdomain.push_back(i);
         }
-      }
-
-      auto *factorise_interior = Logger::get().registerEvent("GenEO", "factorise interior");
-      auto *solve_interior = Logger::get().registerEvent("GenEO", "solve interior");
-
-      // The energy-minimal extension is computed using the values of the eigenvectors "one layer into the ring"
-
-      // The interior now becomes the old interior+the ring boundary
-      for (const auto &idx : ring_boundary) {
-        interior_to_subdomain.push_back(idx);
       }
 
       std::vector<std::size_t> inside_ring_boundary_to_subdomain;
-      inside_ring_boundary_to_subdomain.reserve(ring_boundary.size());
+      inside_ring_boundary_to_subdomain.reserve(N);
       for (const auto &idx : ring_to_subdomain) {
-        for (auto cit = Aovlp[idx].begin(); cit != Aovlp[idx].end(); ++cit) {
-          if (not ring_boundary.contains(idx) and ring_boundary.contains(cit.index())) {
-            inside_ring_boundary_to_subdomain.push_back(idx);
-            break;
-          }
+        if (boundary_dst[idx] == inner_boundary_dist) {
+          inside_ring_boundary_to_subdomain.push_back(idx);
         }
       }
       spdlog::get("all_ranks")->debug("Identified {} dofs on the inside ring boundary", inside_ring_boundary_to_subdomain.size());
+
+      auto *factorise_interior = Logger::get().registerEvent("GenEO", "factorise interior");
+      auto *solve_interior = Logger::get().registerEvent("GenEO", "solve interior");
 
       // Invert the mapping
       std::unordered_map<std::size_t, std::size_t> subdomain_to_inside_ring_boundary;
@@ -482,36 +351,75 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
       }
 
       Logger::get().startEvent(factorise_interior);
-      EnergyMinimalExtension<Mat, Vec> extension(Aovlp, interior_to_subdomain, inside_ring_boundary_to_subdomain, ptree.get("geneo_ring_inexact_interior_solver", false));
+      EnergyMinimalExtension<Mat, Vec> extension(Aovlp, interior_to_subdomain, inside_ring_boundary_to_subdomain, ptree.get("geneo_inexact_extension", false));
       Logger::get().endEvent(factorise_interior);
 
       double eigenvectors_use_portion = ptree.get("geneo_ring_eigenvectors_use_portion", 1.0);
       auto eigenvectors_actual = static_cast<std::size_t>(std::ceil(eigenvectors.size() * eigenvectors_use_portion));
 
+      Logger::get().startEvent(solve_interior);
       Vec zero(Aovlp.N());
       zero = 0;
       std::vector<Vec> combined_vectors(eigenvectors_actual, zero);
-      Logger::get().startEvent(solve_interior);
-      for (std::size_t k = 0; k < eigenvectors_actual; ++k) {
-        const auto &evec = eigenvectors[k];
 
-        Vec evec_dirichlet(inside_ring_boundary_to_subdomain.size());
-        for (std::size_t i = 0; i < evec.N(); ++i) {
-          auto subdomain_idx = ring_to_subdomain[i];
-          if (subdomain_to_inside_ring_boundary.contains(subdomain_idx)) {
-            evec_dirichlet[subdomain_to_inside_ring_boundary[subdomain_idx]] = evec[i];
+      if (not ptree.get("geneo_extend_simd", false)) {
+        for (std::size_t k = 0; k < eigenvectors_actual; ++k) {
+          const auto &evec = eigenvectors[k];
+
+          Vec evec_dirichlet(inside_ring_boundary_to_subdomain.size());
+          for (std::size_t i = 0; i < evec.N(); ++i) {
+            auto subdomain_idx = ring_to_subdomain[i];
+            if (subdomain_to_inside_ring_boundary.contains(subdomain_idx)) {
+              evec_dirichlet[subdomain_to_inside_ring_boundary[subdomain_idx]] = evec[i];
+            }
+          }
+
+          auto interior_vec = extension.extend(evec_dirichlet);
+          // First set the values in the ring
+          for (std::size_t i = 0; i < evec.N(); ++i) {
+            combined_vectors[k][ring_to_subdomain[i]] = evec[i];
+          }
+          // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
+          for (std::size_t i = 0; i < interior_vec.N(); ++i) {
+            combined_vectors[k][interior_to_subdomain[i]] = interior_vec[i];
+          }
+        }
+      }
+      else {
+#if DUNE_DDM_HAVE_UMFPACK_SIMD
+        Vec zero_ring(inside_ring_boundary_to_subdomain.size());
+        zero_ring = 0;
+        std::vector<Vec> ring_vectors(eigenvectors_actual, zero_ring);
+
+        for (std::size_t k = 0; k < eigenvectors_actual; ++k) {
+          const auto &evec = eigenvectors[k];
+
+          for (std::size_t i = 0; i < evec.N(); ++i) {
+            auto subdomain_idx = ring_to_subdomain[i];
+            if (subdomain_to_inside_ring_boundary.contains(subdomain_idx)) {
+              ring_vectors[k][subdomain_to_inside_ring_boundary[subdomain_idx]] = evec[i];
+            }
           }
         }
 
-        auto interior_vec = extension.extend(evec_dirichlet);
-        // First set the values in the ring
-        for (std::size_t i = 0; i < evec.N(); ++i) {
-          combined_vectors[k][ring_to_subdomain[i]] = evec[i];
+        auto interior_vecs = extension.extend(ring_vectors);
+
+        for (std::size_t k = 0; k < eigenvectors_actual; ++k) {
+          const auto &interior_vec = interior_vecs[k];
+          const auto &evec = eigenvectors[k];
+
+          // First set the values in the ring
+          for (std::size_t i = 0; i < evec.N(); ++i) {
+            combined_vectors[k][ring_to_subdomain[i]] = evec[i];
+          }
+          // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
+          for (std::size_t i = 0; i < interior_vec.N(); ++i) {
+            combined_vectors[k][interior_to_subdomain[i]] = interior_vec[i];
+          }
         }
-        // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
-        for (std::size_t i = 0; i < interior_vec.N(); ++i) {
-          combined_vectors[k][interior_to_subdomain[i]] = interior_vec[i];
-        }
+#else
+        DUNE_THROW(Dune::NotImplemented, "SIMD support not available");
+#endif
       }
       Logger::get().endEvent(solve_interior);
 

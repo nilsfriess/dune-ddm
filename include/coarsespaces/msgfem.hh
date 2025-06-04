@@ -2,15 +2,16 @@
 
 #include "../datahandles.hh"
 #include "../helpers.hh"
-#include "coarsespaces/energy_minimal_extension.hh"
 #include "../logger.hh"
 #include "eigensolvers.hh"
+#include "energy_minimal_extension.hh"
 #include "helpers.hh"
 
 #include <dune/common/parallel/interface.hh>
 #include <dune/common/parallel/variablesizecommunicator.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/istl/bvector.hh>
+#include <fstream>
 
 enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
 
@@ -175,7 +176,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildMsGFEMCoarseSp
 
     Logger::get().endEvent(setup_event);
     Logger::get().startEvent(eigensolver_event);
-    auto eigenvectors = solveGEVP(A, B, Eigensolver::Spectra, ptree);
+    auto eigenvectors = solveGEVP(A, B, ptree.get("eigensolver", "spectra") == "spectra" ? Eigensolver::Spectra : Eigensolver::BLOPEX, ptree);
     Logger::get().endEvent(eigensolver_event);
 
     Logger::ScopedLog sl{Logger::get().registerEvent("MsGFEM", "Reorder eigenvectors")};
@@ -567,11 +568,9 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildMsGFEMCoarseSp
       reverse_ordering[reordering[i]] = i;
     }
 
-    spdlog::get("all_ranks")->info("ring_to_subdomain.size() = {}", ring_to_subdomain.size());
-
     Logger::get().endEvent(setup_event);
     Logger::get().startEvent(eigensolver_event);
-    auto eigenvectors_with_constraint = solveGEVP(A, B, Eigensolver::Spectra, ptree);
+    auto eigenvectors_with_constraint = solveGEVP(A, B, ptree.get("eigensolver", "spectra") == "spectra" ? Eigensolver::Spectra : Eigensolver::BLOPEX, ptree);
     Logger::get().endEvent(eigensolver_event);
 
     auto *reorder_event = Logger::get().registerEvent("MsGFEM", "reorder eigenvectors");
@@ -619,7 +618,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildMsGFEMCoarseSp
     Logger::get().endEvent(reorder_event);
 
     Logger::get().startEvent(factorise_event);
-    EnergyMinimalExtension<Mat, Vec> extension(Aovlp, interior_to_subdomain, inside_ring_boundary_to_subdomain);
+    EnergyMinimalExtension<Mat, Vec> extension(Aovlp, interior_to_subdomain, inside_ring_boundary_to_subdomain, ptree.get("msgfem_inexact_extension", false));
     Logger::get().endEvent(factorise_event);
 
     Logger::ScopedLog sl{solve_event};
@@ -629,26 +628,65 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildMsGFEMCoarseSp
     Vec zero(Aovlp.N());
     zero = 0;
     std::vector<Vec> combined_vectors(eigenvectors_actual, zero);
-    for (std::size_t k = 0; k < eigenvectors_actual; ++k) {
-      const auto &evec = eigenvectors[k];
 
-      Vec evec_dirichlet(inside_ring_boundary_to_subdomain.size());
-      for (std::size_t i = 0; i < evec.N(); ++i) {
-        auto subdomain_idx = ring_to_subdomain[i];
-        if (subdomain_to_inside_ring_boundary.contains(subdomain_idx)) {
-          evec_dirichlet[subdomain_to_inside_ring_boundary[subdomain_idx]] = evec[i];
+    if (not ptree.get("msgfem_extend_simd", false)) {
+      for (std::size_t k = 0; k < eigenvectors_actual; ++k) {
+        const auto &evec = eigenvectors[k];
+
+        Vec evec_dirichlet(inside_ring_boundary_to_subdomain.size());
+        for (std::size_t i = 0; i < evec.N(); ++i) {
+          auto subdomain_idx = ring_to_subdomain[i];
+          if (subdomain_to_inside_ring_boundary.contains(subdomain_idx)) {
+            evec_dirichlet[subdomain_to_inside_ring_boundary[subdomain_idx]] = evec[i];
+          }
+        }
+
+        auto interior_vec = extension.extend(evec_dirichlet);
+        // First set the values in the ring
+        for (std::size_t i = 0; i < evec.N(); ++i) {
+          combined_vectors[k][ring_to_subdomain[i]] = evec[i];
+        }
+        // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
+        for (std::size_t i = 0; i < interior_vec.N(); ++i) {
+          combined_vectors[k][interior_to_subdomain[i]] = interior_vec[i];
+        }
+      }
+    }
+    else {
+#if DUNE_DDM_HAVE_UMFPACK_SIMD
+      Vec zero_ring(inside_ring_boundary_to_subdomain.size());
+      zero_ring = 0;
+      std::vector<Vec> ring_vectors(eigenvectors_actual, zero_ring);
+
+      for (std::size_t k = 0; k < eigenvectors_actual; ++k) {
+        const auto &evec = eigenvectors[k];
+
+        for (std::size_t i = 0; i < evec.N(); ++i) {
+          auto subdomain_idx = ring_to_subdomain[i];
+          if (subdomain_to_inside_ring_boundary.contains(subdomain_idx)) {
+            ring_vectors[k][subdomain_to_inside_ring_boundary[subdomain_idx]] = evec[i];
+          }
         }
       }
 
-      auto interior_vec = extension.extend(evec_dirichlet);
-      // First set the values in the ring
-      for (std::size_t i = 0; i < evec.N(); ++i) {
-        combined_vectors[k][ring_to_subdomain[i]] = evec[i];
+      auto interior_vecs = extension.extend(ring_vectors);
+
+      for (std::size_t k = 0; k < eigenvectors_actual; ++k) {
+        const auto &interior_vec = interior_vecs[k];
+        const auto &evec = eigenvectors[k];
+
+        // First set the values in the ring
+        for (std::size_t i = 0; i < evec.N(); ++i) {
+          combined_vectors[k][ring_to_subdomain[i]] = evec[i];
+        }
+        // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
+        for (std::size_t i = 0; i < interior_vec.N(); ++i) {
+          combined_vectors[k][interior_to_subdomain[i]] = interior_vec[i];
+        }
       }
-      // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
-      for (std::size_t i = 0; i < interior_vec.N(); ++i) {
-        combined_vectors[k][interior_to_subdomain[i]] = interior_vec[i];
-      }
+#else
+      DUNE_THROW(Dune::NotImplemented, "SIMD support not available");
+#endif
     }
 
     eigenvectors = std::move(combined_vectors);
