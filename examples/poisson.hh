@@ -52,33 +52,43 @@ public:
   typename Traits::PermTensorType A(const typename Traits::ElementType &e, const typename Traits::DomainType &x) const
   {
     auto xg = e.geometry().global(x);
-    const auto radius = 0.02;
+    const auto width = 0.02;
 
-    const auto square = [](auto &&v) { return v * v; };
+    const RF small_coeff = 1;
+    const RF large_coeff = 1e6;
+    RF coeff = small_coeff;
 
-    RF val = 1;
-    int divx = 10;
-    int divy = 10;
-    for (int i = 0; i < divx - 1; ++i) {
-      for (int j = 0; j < divy - 1; ++j) {
-        typename Traits::DomainType centre{(i + 1.) / divx, (j + 1.) / divy};
+    int num_beams = 8;
+    double space_between = 0.1;
 
-        if (square(xg[0] - centre[0]) + square(xg[1] - centre[1]) < square(radius)) {
-          val = 1e6;
+    if (xg[1] <= 0.95) { // Beams should not touch the boundary
+      for (int i = 1; i <= num_beams; ++i) {
+        if (xg[0] >= i * space_between && xg[0] <= i * space_between + width) {
+          coeff = large_coeff;
         }
       }
-    }
 
-    if constexpr (GridView::dimension == 3) {
-      if (xg[2] < 0.05 or xg[2] > 1 - 0.05) {
-        val = 1;
+      if (xg[1] >= 0.95 - width) {
+        for (int i = 1; i <= num_beams; ++i) {
+          if (xg[0] >= i * space_between && xg[0] <= i * space_between + 3 * width) {
+            coeff = large_coeff;
+          }
+        }
+      }
+
+      if (xg[1] >= 0.95 - 2 * width) {
+        for (int i = 1; i <= num_beams; ++i) {
+          if (xg[0] >= i * space_between + 2 * width && xg[0] <= i * space_between + 3 * width) {
+            coeff = large_coeff;
+          }
+        }
       }
     }
 
     typename Traits::PermTensorType I;
     for (std::size_t i = 0; i < Traits::dimDomain; i++) {
       for (std::size_t j = 0; j < Traits::dimDomain; j++) {
-        I[i][j] = (i == j) ? val : 0;
+        I[i][j] = (i == j) ? coeff : 0;
       }
     }
     return I;
@@ -86,9 +96,23 @@ public:
 
   typename Traits::RangeFieldType f(const typename Traits::ElementType &, const typename Traits::DomainType &) const { return 1.0; }
 
-  typename Traits::RangeFieldType g(const typename Traits::ElementType &, const typename Traits::DomainType &) const { return 0; }
+  typename Traits::RangeFieldType g(const typename Traits::ElementType &e, const typename Traits::DomainType &x) const
+  {
+    auto xglobal = e.geometry().global(x);
+    return xglobal[0];
+  }
 
-  BC bctype(const typename Traits::IntersectionType &, const typename Traits::IntersectionDomainType &) const { return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet; }
+  BC bctype(const typename Traits::IntersectionType &is, const typename Traits::IntersectionDomainType &x) const
+  {
+    auto xglobal = is.geometry().global(x);
+    if (xglobal[0] < 1e-6) {
+      return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet;
+    }
+    if (xglobal[1] > 1.0 - 1e-6) {
+      return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet;
+    }
+    return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Neumann;
+  }
 };
 
 template <class GridView, class RF>
