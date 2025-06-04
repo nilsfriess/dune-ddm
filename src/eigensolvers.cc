@@ -72,15 +72,10 @@ public:
       Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Eigensolver", "factorise A-sB")};
 
       auto A_minus_sigma_B = A;
-      for (auto rit = B.begin(); rit != B.end(); ++rit) {
-        for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
-          A_minus_sigma_B[rit.index()][cit.index()] -= sigma * *cit;
-        }
-      }
+      A_minus_sigma_B.axpy(-sigma, B);
 
       solver = std::make_unique<Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>();
       solver->setOption(UMFPACK_IRSTEP, 0);
-      // solver->setOption(UMFPACK_STRATEGY, UMFPACK_STRATEGY_SYMMETRIC);
       solver->setMatrix(A_minus_sigma_B);
 
       last_sigma = sigma;
