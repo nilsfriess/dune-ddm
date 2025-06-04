@@ -484,8 +484,30 @@ int main(int argc, char *argv[])
       inner_ring_corrections[triple.row] = 1;
       inner_ring_corrections[triple.col] = 1;
     }
-    Dune::P1VTKFunction inner_ring_corrections_function(problem.getEntitySet(), inner_ring_corrections, "Own corrections");
+    Dune::P1VTKFunction inner_ring_corrections_function(problem.getEntitySet(), inner_ring_corrections, "Our corrections");
     writer.addVertexData(Dune::stackobject_to_shared_ptr(inner_ring_corrections_function));
+
+    // Remote ring correction for rank `debug_rank`
+    Native<Vec> remote_ring_corrections(ext_indices.size());
+    remote_ring_corrections = 0;
+
+    for (const auto &triple : remote_ncorr_triples) {
+      if (triple.rank == ptree.get("debug_rank", 0)) {
+        auto lrow = ext_indices.get_parallel_index_set()[triple.row].local();
+        auto lcol = ext_indices.get_parallel_index_set()[triple.col].local();
+
+        remote_ring_corrections[lrow] = 1;
+        remote_ring_corrections[lcol] = 1;
+      }
+    }
+    advdh.setVec(remote_ring_corrections);
+    all_all_comm.forward(advdh);
+    Native<Vec> remote_ring_corrections_small(paridxs.size());
+    for (std::size_t i = 0; i < remote_ring_corrections_small.size(); ++i) {
+      remote_ring_corrections_small[i] = remote_ring_corrections[i];
+    }
+    Dune::P1VTKFunction remote_ring_corrections_function(problem.getEntitySet(), remote_ring_corrections_small, "Other corrections");
+    writer.addVertexData(Dune::stackobject_to_shared_ptr(remote_ring_corrections_function));
 
     // Visualise pou
     if (helper.rank() != ptree.get("debug_rank", 0)) {
