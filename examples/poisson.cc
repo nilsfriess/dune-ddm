@@ -12,7 +12,6 @@
 
 #define USE_UGGRID 0 // Set to zero to use YASPGrid
 #define GRID_DIM 2
-#define GRID_OVERLAP 0
 
 #include <cmath>
 #include <mpi.h>
@@ -132,10 +131,10 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
   }
 #if GRID_DIM == 2
   Dune::Yasp::PowerDPartitioning<GRID_DIM> partitioner;
-  auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0}, {gridsize, gridsize}, std::bitset<2>(0ULL), GRID_OVERLAP, Grid::Communication(), &partitioner));
+  auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0}, {gridsize, gridsize}, std::bitset<2>(0ULL), 0, Grid::Communication(), &partitioner));
 #elif GRID_DIM == 3
   Dune::Yasp::PowerDPartitioning<GRID_DIM> partitioner;
-  auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0, 1.0}, {gridsize, gridsize, gridsize}, std::bitset<3>(0ULL), GRID_OVERLAP, Grid::Communication(), &partitioner));
+  auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0, 1.0}, {gridsize, gridsize, gridsize}, std::bitset<3>(0ULL), 0, Grid::Communication(), &partitioner));
 #endif
 #endif
 
@@ -391,16 +390,12 @@ int main(int argc, char *argv[])
   end = MPI_Wtime();
   spdlog::info("Done setting up preconditioner, took {:.5f}s", (end - start));
 
-#if !USE_UGGRID && GRID_OVERLAP > 0
-  using SolverVec = Vec;
-#else
-  using SolverVec = Native<Vec>;
-#endif
   Logger::get().endEvent(prec_setup);
 
   MPI_Barrier(MPI_COMM_WORLD);
 
   Logger::get().startEvent(solve);
+  using SolverVec = Native<Vec>;
   std::unique_ptr<Dune::IterativeSolver<SolverVec, SolverVec>> solver;
   auto maxit = ptree.get("maxit", 1000);
   auto tol = ptree.get("tolerance", 1e-8);
