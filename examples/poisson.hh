@@ -149,23 +149,6 @@ public:
       kappa = pow(10, 5.0) * (1.0 + ix + iy);
     }
 
-    if (GridView::Grid::dimension == 3) {
-      const auto radius = 0.02;
-      const auto square = [](auto &&v) { return v * v; };
-
-      int divx = 9;
-      int divz = 9;
-      for (int i = 0; i < divx - 1; ++i) {
-        for (int j = 0; j < divz - 1; ++j) {
-          typename Traits::DomainType centre{(i + 1.) / divx, (j + 1.) / divz, 0};
-
-          if (square(xg[0] - centre[0]) + square(xg[2] - centre[1]) < square(radius)) {
-            kappa = 1e6;
-          }
-        }
-      }
-    }
-
     typename Traits::PermTensorType I;
     for (std::size_t i = 0; i < Traits::dimDomain; i++) {
       for (std::size_t j = 0; j < Traits::dimDomain; j++) {
@@ -212,8 +195,8 @@ public:
 
   using ES = Dune::PDELab::NonOverlappingEntitySet<GridView>; // Skip ghost elements during assembly
 
-  // using ModelProblem = PoissonModelProblem<ES, RF>;
-  using ModelProblem = IslandsModelProblem<ES, RF>;
+  using ModelProblem = PoissonModelProblem<ES, RF>;
+  // using ModelProblem = IslandsModelProblem<ES, RF>;
   // using ModelProblem = Dune::PDELab::ConvectionDiffusionModelProblem<ES, RF>;
   using BC = Dune::PDELab::ConvectionDiffusionBoundaryConditionAdapter<ModelProblem>;
 
