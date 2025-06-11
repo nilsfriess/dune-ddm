@@ -199,7 +199,9 @@ public:
     Logger::ScopedLog sl(apply_event);
 
     if (!solver) {
+      Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Schwarz", "init")};
       solver = std::make_unique<Solver>(*Aovlp, 0);
+      solver->setOption(UMFPACK_IRSTEP, 0);
     }
 
     // 1. Copy local values from non-overlapping to overlapping defect
