@@ -75,9 +75,7 @@ public:
       auto A_minus_sigma_B = A;
       A_minus_sigma_B.axpy(-sigma, B);
 
-      solver = std::make_unique<Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>();
-      solver->setOption(UMFPACK_IRSTEP, 0);
-      solver->setMatrix(A_minus_sigma_B);
+      solver = std::make_unique<Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>(A_minus_sigma_B);
 
       last_sigma = sigma;
     }
