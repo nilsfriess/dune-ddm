@@ -20,6 +20,7 @@
 #include "logger.hh"
 #include "overlap_extension.hh"
 #include "spdlog/spdlog.h"
+#include "strumpack.hh"
 
 template <typename Mat, typename X, typename Y>
 class NonoverlappingOperator : public Dune::AssembledLinearOperator<Mat, X, Y> {
@@ -88,7 +89,11 @@ enum class PartitionOfUnityType : std::uint8_t {
   Distance  // Weighted by the distance to the overlapping subdomain boundary, see Toselli & Widlund, p. 84
 };
 
+#if DUNE_DDM_HAVE_STRUMPACK
+template <class Vec, class Mat, class ExtendedRemoteIndices, class Solver = Dune::STRUMPACK<Mat, Vec>>
+#else
 template <class Vec, class Mat, class ExtendedRemoteIndices, class Solver = Dune::UMFPack<Mat>>
+#endif
 class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   AttributeSet allAttributes{Attribute::owner, Attribute::copy};
   AttributeSet ownerAttribute{Attribute::owner};
@@ -200,8 +205,10 @@ public:
 
     if (!solver) {
       Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Schwarz", "init")};
-      solver = std::make_unique<Solver>(*Aovlp, 0);
+      solver = std::make_unique<Solver>(*Aovlp);
+#ifndef DUNE_DDM_HAVE_STRUMPACK
       solver->setOption(UMFPACK_IRSTEP, 0);
+#endif
     }
 
     // 1. Copy local values from non-overlapping to overlapping defect
@@ -275,8 +282,10 @@ private:
     }
     assert(Aovlp);
     if (not factorise_at_first_iteration) {
-      solver = std::make_unique<Solver>(*Aovlp, 0);
+      solver = std::make_unique<Solver>(*Aovlp);
+#ifndef DUNE_DDM_HAVE_STRUMPACK
       solver->setOption(UMFPACK_IRSTEP, 0);
+#endif
     }
     else {
       solver = nullptr;

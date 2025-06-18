@@ -60,11 +60,21 @@ endif()
 
 find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK)
 
+# optionally find STRUMPACK
+find_package(STRUMPACK CONFIG)
+
 add_library(eigensolvers src/eigensolvers.cc)
 target_include_directories(eigensolvers PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(eigensolvers PRIVATE Dune::ISTL spdlog::spdlog Spectra ${BLOPEX_LIB} MPI::MPI_C)
 if (${DUNE_DDM_WITH_BLOPEX})
   target_compile_definitions(eigensolvers PUBLIC DUNE_DDM_HAVE_BLOPEX)
+endif()
+if (${STRUMPACK_FOUND})
+  target_link_libraries(eigensolvers PUBLIC STRUMPACK::strumpack)
+  target_compile_definitions(eigensolvers PUBLIC DUNE_DDM_HAVE_STRUMPACK)
+  message(STATUS "Found STRUMPACK: ${STRUMPACK_DIR}")
+else()
+  message(STATUS "Could not find STRUMPACK")
 endif()
 add_dune_eigen_flags(eigensolvers)
 add_dune_suitesparse_flags(eigensolvers)
