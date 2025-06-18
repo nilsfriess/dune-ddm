@@ -16,6 +16,8 @@
 #include <experimental/simd>
 #endif
 
+#include "strumpack.hh"
+
 template <class Mat, class Vec>
 class EnergyMinimalExtension {
 public:
@@ -44,8 +46,12 @@ public:
       }
       Aint->compress();
 
+#ifndef DUNE_DDM_HAVE_STRUMPACK
       solver = std::make_unique<Dune::UMFPack<Mat>>(*Aint);
       solver->setOption(UMFPACK_IRSTEP, 0);
+#else
+      solver = std::make_unique<Dune::STRUMPACK<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>(A_minus_sigma_B);
+#endif
     }
     else {
       // Here we just copy A, but only those entries corresponding to interior dofs
@@ -212,7 +218,11 @@ private:
   const std::vector<std::size_t> &interior_to_subdomain;
   const std::vector<std::size_t> &ring_to_subdomain;
 
+#ifndef DUNE_DDM_HAVE_STRUMPACK
   std::unique_ptr<Dune::UMFPack<Mat>> solver;
+#else
+  std::unique_ptr<Dune::STRUMPACK<Mat>> solver;
+#endif
 
   bool inexact;
   std::unique_ptr<Dune::UMFPack<Mat>> Ainv;
