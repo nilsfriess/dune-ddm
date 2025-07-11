@@ -138,7 +138,7 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
 #endif
 #endif
 
-  grid->globalRefine(ptree.get("serial_refine", 2));
+  grid->globalRefine(ptree.get("serial_refine", 0));
 
 #if USE_UGGRID
   auto gv = grid->leafGridView();
@@ -149,7 +149,7 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
   grid->loadBalance();
 #endif
 
-  grid->globalRefine(ptree.get("refine", 2));
+  grid->globalRefine(ptree.get("refine", 0));
 
   return grid;
 }
