@@ -207,16 +207,19 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
     spdlog::get("all_ranks")->debug("Applied {} inner corrections for A", apply_cnt);
 
     // Dirichlet conditions
-    for (std::size_t i = 0; i < A.N(); ++i) {
-      if (subdomain_to_ring.contains(i) and dirichlet_mask_ovlp[ring_to_subdomain[i]] > 0) {
-        for (auto ci = A[i].begin(); ci != A[i].end(); ++ci) {
-          *ci = (ci.index() == i) ? 1.0 : 0.0;
+    for (std::size_t i = 0; i < Aovlp.N(); ++i) {
+      if (subdomain_to_ring.contains(i)) {
+        auto ring_idx = subdomain_to_ring[i];
+        if (dirichlet_mask_ovlp[i] > 0) {
+          for (auto ci = A[ring_idx].begin(); ci != A[ring_idx].end(); ++ci) {
+            *ci = (ci.index() == ring_idx) ? 1.0 : 0.0;
+          }
         }
-      }
-      else {
-        for (auto ci = A[i].begin(); ci != A[i].end(); ++ci) {
-          if (subdomain_to_ring.contains(ci.index()) and dirichlet_mask_ovlp[ring_to_subdomain[ci.index()]] > 0) {
-            *ci = 0.0;
+        else {
+          for (auto ci = A[ring_idx].begin(); ci != A[ring_idx].end(); ++ci) {
+            if (dirichlet_mask_ovlp[ring_to_subdomain[ci.index()]] > 0) {
+              *ci = 0.0;
+            }
           }
         }
       }
@@ -248,22 +251,6 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> buildGenEOCoarseSpa
     for (std::size_t i = 0; i < pou.N(); ++i) {
       if (boundary_dst[i] >= 2 * overlap - shrink) {
         pou_copy[i] = 0;
-      }
-    }
-
-    // Dirichlet conditions
-    for (std::size_t i = 0; i < B.N(); ++i) {
-      if (subdomain_to_ring.contains(i) and dirichlet_mask_ovlp[ring_to_subdomain[i]] > 0) {
-        for (auto ci = B[i].begin(); ci != B[i].end(); ++ci) {
-          *ci = (ci.index() == i) ? 1.0 : 0.0;
-        }
-      }
-      else {
-        for (auto ci = B[i].begin(); ci != B[i].end(); ++ci) {
-          if (subdomain_to_ring.contains(ci.index()) and dirichlet_mask_ovlp[ring_to_subdomain[ci.index()]] > 0) {
-            *ci = 0.0;
-          }
-        }
       }
     }
 
