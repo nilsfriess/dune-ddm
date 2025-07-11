@@ -273,10 +273,6 @@ int main(int argc, char *argv[])
   auto op = std::make_shared<NonoverlappingOperator<Native<Mat>, Native<Vec>, Native<Vec>>>(problem.getA(), communicator);
 
   // Construct the preconditioner
-  double start = 0;
-  double end = 0;
-  start = MPI_Wtime();
-
   ApplyMode applymode = ApplyMode::Additive;
   auto applymode_param = ptree.get("applymode", "additive");
   if (applymode_param == "additive") {
@@ -357,6 +353,7 @@ int main(int argc, char *argv[])
     }
 
     auto basis_vecs = buildNicolaidesCoarseSpace(ext_indices.get_remote_indices(), *schwarz->getOverlappingMat(), native_template_vecs, interior_dof_mask, *schwarz->getPartitionOfUnity(), ptree);
+    MPI_Barrier(MPI_COMM_WORLD);
 
     auto nicolaides = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
                                                                                                                                            ext_indices.get_remote_par_indices());
@@ -365,6 +362,7 @@ int main(int argc, char *argv[])
   else if (coarsespace == "geneo") {
     auto basis_vecs = buildGenEOCoarseSpace(ext_indices.get_remote_par_indices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, interior_dof_mask,
                                             native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(), ptree);
+    MPI_Barrier(MPI_COMM_WORLD);
 
     auto geneo = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
                                                                                                                                       ext_indices.get_remote_par_indices());
@@ -373,6 +371,7 @@ int main(int argc, char *argv[])
   else if (coarsespace == "msgfem") {
     auto basis_vecs = buildMsGFEMCoarseSpace(ext_indices.get_remote_par_indices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, interior_dof_mask,
                                              native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(), ptree);
+    MPI_Barrier(MPI_COMM_WORLD);
 
     visuvec = basis_vecs[ptree.get("n_vis", 0)];
 
@@ -387,11 +386,7 @@ int main(int argc, char *argv[])
     spdlog::error("Unknown coarse space type '{}'", coarsespace);
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
-  end = MPI_Wtime();
-  spdlog::info("Done setting up preconditioner, took {:.5f}s", (end - start));
-
   Logger::get().endEvent(prec_setup);
-
   MPI_Barrier(MPI_COMM_WORLD);
 
   Logger::get().startEvent(solve);
