@@ -167,75 +167,80 @@ public:
   {
     spdlog::trace("Called jacobian_volume");
 
-    auto M_before = mat.container();
-    Dune::PDELab::LocalOperatorApply::jacobianVolume(*lop, eg, lfsu, x, lfsv, mat);
-    auto M_after = mat.container();
-
-    Dune::PDELab::LFSIndexCache cache(lfsu);
-    cache.update();
-
-    for (std::size_t i = 0; i < lfsu.size(); ++i) {
-      auto gi = cache.containerIndex(i)[0];
-      for (std::size_t j = 0; j < lfsu.size(); ++j) { // TODO: We assume lfsu == lfsv
-        auto gj = cache.containerIndex(j)[0];
-
-        // TODO: Here and below we assume that an unordered_map zero initialises a double when inserting a new entry. Is this true?
-        curr_neumann_corrections[gi][gj] += M_after(lfsu, i, lfsv, j) - M_before(lfsu, i, lfsv, j);
-      }
+    if (on_boundary_mask_for_rank == nullptr) {
+      Dune::PDELab::LocalOperatorApply::jacobianVolume(*lop, eg, lfsu, x, lfsv, mat);
     }
+    else {
+      auto M_before = mat.container();
+      Dune::PDELab::LocalOperatorApply::jacobianVolume(*lop, eg, lfsu, x, lfsv, mat);
+      auto M_after = mat.container();
 
-    // Corrections for other ranks
-    for (const auto &[rank, mask] : *on_boundary_mask_for_rank) {
-      bool hasDofAtBoundary = false;
-      bool hasDofInsideBoundary = false;
-      for (std::size_t i = 0; i < cache.size(); ++i) {
-        auto dofidx = cache.containerIndex(i)[0];
+      Dune::PDELab::LFSIndexCache cache(lfsu);
+      cache.update();
 
-        if ((*on_boundary_mask_for_rank).at(rank)[dofidx]) {
-          hasDofAtBoundary = true;
-        }
+      for (std::size_t i = 0; i < lfsu.size(); ++i) {
+        auto gi = cache.containerIndex(i)[0];
+        for (std::size_t j = 0; j < lfsu.size(); ++j) { // TODO: We assume lfsu == lfsv
+          auto gj = cache.containerIndex(j)[0];
 
-        if ((*inside_boundary_mask_for_rank).at(rank)[dofidx]) {
-          hasDofInsideBoundary = true;
+          // TODO: Here and below we assume that an unordered_map zero initialises a double when inserting a new entry. Is this true?
+          curr_neumann_corrections[gi][gj] += M_after(lfsu, i, lfsv, j) - M_before(lfsu, i, lfsv, j);
         }
       }
 
-      if (hasDofAtBoundary and not hasDofInsideBoundary) {
-        for (const auto &[row, cols] : curr_neumann_corrections) {
-          for (const auto &[col, val] : cols) {
-            if ((*on_boundary_mask_for_rank).at(rank)[row] and (*on_boundary_mask_for_rank).at(rank)[col]) {
-              neumann_correction_matrices[rank][row][col] += val;
+      // Corrections for other ranks
+      for (const auto &[rank, mask] : *on_boundary_mask_for_rank) {
+        bool hasDofAtBoundary = false;
+        bool hasDofInsideBoundary = false;
+        for (std::size_t i = 0; i < cache.size(); ++i) {
+          auto dofidx = cache.containerIndex(i)[0];
+
+          if ((*on_boundary_mask_for_rank).at(rank)[dofidx]) {
+            hasDofAtBoundary = true;
+          }
+
+          if ((*inside_boundary_mask_for_rank).at(rank)[dofidx]) {
+            hasDofInsideBoundary = true;
+          }
+        }
+
+        if (hasDofAtBoundary and not hasDofInsideBoundary) {
+          for (const auto &[row, cols] : curr_neumann_corrections) {
+            for (const auto &[col, val] : cols) {
+              if ((*on_boundary_mask_for_rank).at(rank)[row] and (*on_boundary_mask_for_rank).at(rank)[col]) {
+                neumann_correction_matrices[rank][row][col] += val;
+              }
             }
           }
         }
       }
-    }
 
-    // Corrections for ourselves
-    bool hasDofAtBoundary = false;
-    bool hasDofOutsideBoundary = false;
-    for (std::size_t i = 0; i < cache.size(); ++i) {
-      auto dofidx = cache.containerIndex(i)[0];
+      // Corrections for ourselves
+      bool hasDofAtBoundary = false;
+      bool hasDofOutsideBoundary = false;
+      for (std::size_t i = 0; i < cache.size(); ++i) {
+        auto dofidx = cache.containerIndex(i)[0];
 
-      if ((*on_boundary_mask)[dofidx]) {
-        hasDofAtBoundary = true;
+        if ((*on_boundary_mask)[dofidx]) {
+          hasDofAtBoundary = true;
+        }
+
+        if ((*outside_boundary_mask)[dofidx]) {
+          hasDofOutsideBoundary = true;
+        }
       }
-
-      if ((*outside_boundary_mask)[dofidx]) {
-        hasDofOutsideBoundary = true;
-      }
-    }
-    if (hasDofAtBoundary and hasDofOutsideBoundary) {
-      for (const auto &[row, cols] : curr_neumann_corrections) {
-        for (const auto &[col, val] : cols) {
-          if ((*on_boundary_mask)[row] and (*on_boundary_mask)[col]) {
-            neumann_correction_matrices[-1][row][col] += val; // -1 means our own corrections
+      if (hasDofAtBoundary and hasDofOutsideBoundary) {
+        for (const auto &[row, cols] : curr_neumann_corrections) {
+          for (const auto &[col, val] : cols) {
+            if ((*on_boundary_mask)[row] and (*on_boundary_mask)[col]) {
+              neumann_correction_matrices[-1][row][col] += val; // -1 means our own corrections
+            }
           }
         }
       }
-    }
 
-    curr_neumann_corrections.clear();
+      curr_neumann_corrections.clear();
+    }
   }
 
   template <typename EG, typename LFSU, typename X, typename LFSV, typename M>
@@ -260,8 +265,8 @@ public:
   }
 
   template <class Mat>
-  void setMasks(const Mat &A, const std::map<int, std::vector<bool>> *on_boundary_mask_for_rank, const std::map<int, std::vector<bool>> *inside_boundary_mask_for_rank,
-                const std::vector<bool> *on_boundary_mask, const std::vector<bool> *outside_boundary_mask)
+  void set_masks(const Mat &A, const std::map<int, std::vector<bool>> *on_boundary_mask_for_rank, const std::map<int, std::vector<bool>> *inside_boundary_mask_for_rank,
+                 const std::vector<bool> *on_boundary_mask, const std::vector<bool> *outside_boundary_mask)
   {
     this->on_boundary_mask_for_rank = on_boundary_mask_for_rank;
     this->inside_boundary_mask_for_rank = inside_boundary_mask_for_rank;
@@ -303,6 +308,14 @@ public:
       }
     }
     An.compress();
+  }
+
+  void reset_masks()
+  {
+    on_boundary_mask_for_rank = nullptr;
+    inside_boundary_mask_for_rank = nullptr;
+    on_boundary_mask = nullptr;
+    outside_boundary_mask = nullptr;
   }
 
   template <class GLIS>
