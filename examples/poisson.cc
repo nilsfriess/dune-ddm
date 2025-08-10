@@ -7,21 +7,20 @@
 
 #include <dune-pdelab-config.hh>
 
-#include "overlap_extension.hh"
-#include "poisson.hh"
-
 #define USE_UGGRID 0 // Set to zero to use YASPGrid
 #define GRID_DIM 2
 
-#include <cmath>
-#include <mpi.h>
-#include <spdlog/spdlog.h>
-
 #include <algorithm>
 #include <bitset>
+#include <cmath>
 #include <cstddef>
+#include <iostream>
+#include <set>
+#include <string>
+#include <utility>
 
 #include <dune/common/densevector.hh>
+#include <dune/common/exceptions.hh>
 #include <dune/common/fmatrix.hh>
 #include <dune/common/fvector.hh>
 #include <dune/common/iteratorfacades.hh>
@@ -57,25 +56,23 @@
 #include <dune/pdelab/common/function.hh>
 #include <dune/pdelab/common/multiindex.hh>
 #include <dune/pdelab/common/vtkexport.hh>
+#include <dune/pdelab/gridfunctionspace/vtk.hh>
 #include <dune/pdelab/localoperator/permeability_adapter.hh>
 #include <dune/pdelab/ordering/transformations.hh>
 
-#include <iostream>
-#include <numeric>
-#include <set>
-#include <string>
-#include <utility>
+#include <mpi.h>
+#include <spdlog/spdlog.h>
 
-#include "coarsespaces/geneo.hh"
-#include "coarsespaces/msgfem.hh"
-#include "coarsespaces/nicolaides.hh"
+#include "coarsespaces/coarse_spaces.hh"
 #include "combined_preconditioner.hh"
 #include "datahandles.hh"
 #include "galerkin_preconditioner.hh"
 #include "helpers.hh"
 #include "logger.hh"
+#include "overlap_extension.hh"
+#include "poisson.hh"
+#include "pou.hh"
 #include "schwarz.hh"
-#include "spdlog/common.h"
 
 template <class Vec, class Communication>
 class MaskedScalarProduct : public Dune::ScalarProduct<Vec> {
@@ -111,7 +108,7 @@ private:
 };
 
 namespace {
-auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPIHelper &helper)
+auto make_grid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPIHelper &helper)
 {
   auto *event = Logger::get().registerEvent("Grid", "create");
   Logger::ScopedLog sl(event);
@@ -155,7 +152,7 @@ auto makeGrid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPI
 }
 
 template <class GFS>
-auto makeRemoteIndices(const GFS &gfs, const Dune::MPIHelper &helper)
+auto make_remote_indices(const GFS &gfs, const Dune::MPIHelper &helper)
 {
   using Dune::PDELab::Backend::native;
 
@@ -212,6 +209,20 @@ auto makeRemoteIndices(const GFS &gfs, const Dune::MPIHelper &helper)
   auto remoteindices = std::make_shared<RemoteIndices>(paridxs, paridxs, helper.getCommunicator(), neighbours);
   return makeRemoteParallelIndices(remoteindices);
 }
+
+template <class Vec, class RemoteIndices>
+bool is_pou(const Vec &pou, const RemoteIndices &remote_indices)
+{
+  AttributeSet allAttributes{Attribute::owner, Attribute::copy};
+  Dune::Interface all_all_interface;
+  all_all_interface.build(remote_indices, allAttributes, allAttributes);
+  Dune::VariableSizeCommunicator all_all_comm(all_all_interface);
+  AddVectorDataHandle<Vec> advdh;
+  Vec v = pou;
+  advdh.setVec(v);
+  all_all_comm.forward(advdh);
+  return std::all_of(v.begin(), v.end(), [](auto val) { return std::abs(val - 1.0) < 1e10; });
+}
 } // namespace
 
 int main(int argc, char *argv[])
@@ -231,28 +242,109 @@ int main(int argc, char *argv[])
   Logger::get().startEvent(matrix_setup);
   Dune::ParameterTree ptree;
   Dune::ParameterTreeParser ptreeparser;
+  ptreeparser.readINITree("poisson.ini", ptree);
   ptreeparser.readOptions(argc, argv, ptree);
   const auto verbose = ptree.get("verbose", 0);
 
-  auto grid = makeGrid(ptree, helper);
+  // Create the grid view
+  auto grid = make_grid(ptree, helper);
   auto gv = grid->leafGridView();
 
-  PoissonProblem problem(gv, helper);
-  const auto &gfs = problem.getGFS();
-
-  auto remoteparidxs = makeRemoteIndices(gfs, helper);
-  const auto &remoteindices = *remoteparidxs.first;
-  const auto &paridxs = *remoteparidxs.second;
-
-  ExtendedRemoteIndices ext_indices(remoteindices, problem.getA(), ptree.get("overlap", 1));
-  const auto [Aovlp, remote_ncorr_triples, own_ncorr_triples, interior_dof_mask] = problem.assembleJacobian(remoteindices, ext_indices, ptree.get("overlap", 1));
-
+  // Set up the finite element problem. This also assembles the sparsity pattern of the matrix.
+  PoissonProblem<decltype(gv)> problem(gv, helper);
   using Vec = decltype(problem)::Vec;
   using Mat = decltype(problem)::Mat;
 
+  // Using the sparsity pattern of the matrix, create the overlapping subdomains by extending this index set
+  auto remoteparidxs = make_remote_indices(problem.getGFS(), helper);
+  ExtendedRemoteIndices ext_indices(*remoteparidxs.first, problem.getA(), ptree.get("overlap", 1));
+
+  // The nonzero pattern of the non-overlapping matrix is now set up, and we have a parallel index set
+  // on the overlapping subdomains. Now we can assemble the overlapping matrices.
+  const auto &coarsespace_subtree = ptree.sub("coarsespace");
+  auto coarsespace = coarsespace_subtree.get("type", "geneo");
+  if (coarsespace == "geneo") {
+    problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::Overlap, true);
+  }
+  else if (coarsespace == "msgfem") {
+    problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
+  }
+  else if (coarsespace == "pou") {
+    problem.assemble_dirichlet_matrix_only(ext_indices);
+  }
+  else if (coarsespace == "geneo_ring" or coarsespace == "msgfem_ring") {
+    problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, false);
+  }
+  else {
+    DUNE_THROW(Dune::NotImplemented, "Unknown coarse space");
+  }
+
+  // Extract the three matrices that have been assembled
+  auto A_dir = problem.get_dirichlet_matrix();
+  auto A_neu = problem.get_first_neumann_matrix();
+  auto B_neu = problem.get_second_neumann_matrix();
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  Logger::get().endEvent(matrix_setup);
+  Logger::get().startEvent(prec_setup);
+
+  // Next, create a partition of unity
+  auto pou = std::make_shared<Native<Vec>>(create_pou(*A_dir, ext_indices, ptree));
+  if (!is_pou(*pou, ext_indices.get_remote_indices())) {
+    spdlog::warn("POU does not add up to 1");
+  }
+  else {
+    spdlog::debug("POU adds up to 1");
+  }
+
+  // Now we can create the preconditioner. First the fine level overlapping Schwarz method
+  auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(A_dir, ext_indices, pou, ptree);
+
+  using CoarseLevel = GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(*remoteparidxs.first)>>;
+  std::shared_ptr<CoarseLevel> coarse;
+
+  std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> basis;
+  const auto zero_at_dirichlet = [&](auto &&x) {
+    for (std::size_t i = 0; i < x.size(); ++i) {
+      if (problem.get_overlapping_dirichlet_mask()[i] > 0) {
+        x[i] = 0;
+      }
+    }
+  };
+
+  if (coarsespace == "geneo") {
+    basis = std::move(build_geneo_coarse_space(*A_neu, *B_neu, *pou, ptree));
+    std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
+    coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+  }
+  else if (coarsespace == "geneo_ring") {
+    basis = std::move(build_geneo_ring_coarse_space(*A_dir, *A_neu, *pou, problem.get_neumann_region_to_subdomain(), problem.get_overlapping_interior_to_subdomain(), ptree));
+    std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
+    coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+  }
+  else if (coarsespace == "msgfem") {
+    // We only pass one matrix here, because the oversampling is simulated using the partition of unity
+    basis = std::move(build_msgfem_coarse_space(*A_neu, *pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), ptree));
+    std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
+    coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+  }
+  else if (coarsespace == "pou") {
+    basis = std::move(build_pou_coarse_space(*pou));
+    std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
+    coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+  }
+  else if (coarsespace == "none") {
+    // Nothing to do here
+  }
+  else {
+    DUNE_THROW(Dune::NotImplemented, "Unknown coarse space");
+  }
+
+  // Finally, create the parallel scalar product, parallel operator, and the two-level preconditioner
+
   // Create a mask for the owned indices for the scalar product
   std::vector<unsigned> mask(problem.getD().N(), 1);
-  for (const auto &idx : paridxs) {
+  for (const auto &idx : *remoteparidxs.second) {
     if (idx.local().attribute() != Attribute::owner) {
       mask[idx.local()] = 0;
     }
@@ -267,127 +359,26 @@ int main(int argc, char *argv[])
   // Build the parallel operator
   const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
   Dune::Interface all_all_interface;
-  all_all_interface.build(remoteindices, allAttributes, allAttributes);
+  all_all_interface.build(*remoteparidxs.first, allAttributes, allAttributes);
   auto communicator = std::make_shared<Dune::BufferedCommunicator>();
   communicator->build<Native<Vec>>(all_all_interface);
   auto op = std::make_shared<NonoverlappingOperator<Native<Mat>, Native<Vec>, Native<Vec>>>(problem.getA(), communicator);
 
-  // Construct the preconditioner
+  // Lastly, build the full preconditioner
   ApplyMode applymode = ApplyMode::Additive;
   auto applymode_param = ptree.get("applymode", "additive");
-  if (applymode_param == "additive") {
-    applymode = ApplyMode::Additive;
-  }
-  else if (applymode_param == "multiplicative") {
+  if (applymode_param == "multiplicative") {
     applymode = ApplyMode::Multiplicative;
   }
-  else {
-    applymode = ApplyMode::Additive;
-    spdlog::warn("Unknown apply mode for combined preconditioner, using 'additive' instead");
+  CombinedPreconditioner<Native<Vec>> prec(ptree);
+  prec.set_op(op);
+  prec.add(schwarz);
+  if (coarse) {
+    prec.add(coarse);
   }
-  Logger::get().endEvent(matrix_setup);
 
   MPI_Barrier(MPI_COMM_WORLD);
-
-  Logger::get().startEvent(prec_setup);
-  auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(Aovlp, ext_indices, ptree);
-
-  CombinedPreconditioner<Native<Vec>> prec(applymode, {schwarz}, op);
-
-  // Check if partition of unity is actually a partition of unity
-  Native<Vec> pou_vis;
-  {
-    AttributeSet allAttributes{Attribute::owner, Attribute::copy};
-    Dune::Interface all_all_interface;
-    all_all_interface.build(ext_indices.get_remote_indices(), allAttributes, allAttributes);
-    Dune::VariableSizeCommunicator all_all_comm(all_all_interface);
-    AddVectorDataHandle<Native<Vec>> advdh;
-
-    auto pou = *schwarz->getPartitionOfUnity();
-    pou_vis = pou;
-
-    advdh.setVec(pou);
-    all_all_comm.forward(advdh);
-
-    auto all_one = std::all_of(pou.begin(), pou.end(), [](auto val) { return std::abs(val - 1.0) < 1e-10; });
-    if (!all_one) {
-      spdlog::get("all_ranks")->error("Partition of unity does not add up to 1, max is {}, min is {}", *std::max_element(pou.begin(), pou.end()), *std::min_element(pou.begin(), pou.end()));
-      // MPI_Abort(MPI_COMM_WORLD, 12);
-    }
-    else {
-      spdlog::get("all_ranks")->debug("Partition of unity does add up to 1");
-    }
-  }
-
-  Native<Vec> visuvec(pou_vis.N());
-  const auto coarsespace = ptree.get("coarsespace", "geneo");
-  if (coarsespace == "nicolaides") {
-    int nvecs = ptree.get("nvecs", 1);
-    if (nvecs < 1 or nvecs > GRID_DIM + 1) {
-      nvecs = 1;
-      spdlog::warn("Wrong number of template vectors, using 1 instead");
-    }
-
-    std::vector<Vec> template_vecs(nvecs, Vec(gfs));
-    Dune::PDELab::interpolate([](const auto &) { return 1; }, gfs, template_vecs[0]);
-    if (nvecs > 1) {
-      Dune::PDELab::interpolate([](const auto &x) { return x[0]; }, gfs, template_vecs[1]);
-    }
-    if (nvecs > 2) {
-      Dune::PDELab::interpolate([](const auto &x) { return x[1]; }, gfs, template_vecs[2]);
-    }
-    if (nvecs > 3) {
-      Dune::PDELab::interpolate([](const auto &x) { return x[2]; }, gfs, template_vecs[3]);
-    }
-    for (auto &template_vec : template_vecs) {
-      for (std::size_t i = 0; i < template_vec.N(); ++i) {
-        if (native(problem.getDirichletMask())[i] > 0) {
-          native(template_vec)[i] = 0;
-        }
-      }
-    }
-
-    std::vector<Native<Vec>> native_template_vecs(template_vecs.size());
-    for (std::size_t i = 0; i < template_vecs.size(); ++i) {
-      native_template_vecs[i] = native(template_vecs[i]);
-    }
-
-    auto basis_vecs = buildNicolaidesCoarseSpace(ext_indices.get_remote_indices(), *schwarz->getOverlappingMat(), native_template_vecs, interior_dof_mask, *schwarz->getPartitionOfUnity(), ptree);
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    auto nicolaides = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
-                                                                                                                                           ext_indices.get_remote_par_indices());
-    prec.add(nicolaides);
-  }
-  else if (coarsespace == "geneo") {
-    auto basis_vecs = buildGenEOCoarseSpace(ext_indices.get_remote_par_indices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, interior_dof_mask,
-                                            native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(), ptree);
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    auto geneo = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
-                                                                                                                                      ext_indices.get_remote_par_indices());
-    prec.add(geneo);
-  }
-  else if (coarsespace == "msgfem") {
-    auto basis_vecs = buildMsGFEMCoarseSpace(ext_indices.get_remote_par_indices(), *schwarz->getOverlappingMat(), remote_ncorr_triples, own_ncorr_triples, interior_dof_mask,
-                                             native(problem.getDirichletMask()), *schwarz->getPartitionOfUnity(), ptree);
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    visuvec = basis_vecs[ptree.get("n_vis", 0)];
-
-    auto msgfem = std::make_shared<GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(remoteindices)>>>(*schwarz->getOverlappingMat(), basis_vecs,
-                                                                                                                                       ext_indices.get_remote_par_indices());
-    prec.add(msgfem);
-  }
-  else if (coarsespace == "none") {
-    // Nothing to do here
-  }
-  else {
-    spdlog::error("Unknown coarse space type '{}'", coarsespace);
-    MPI_Abort(MPI_COMM_WORLD, 1);
-  }
   Logger::get().endEvent(prec_setup);
-  MPI_Barrier(MPI_COMM_WORLD);
 
   Logger::get().startEvent(solve);
   using SolverVec = Native<Vec>;
@@ -424,29 +415,28 @@ int main(int argc, char *argv[])
 
   // Visualisation
   if (ptree.get("visualise", true)) {
-    Dune::SubsamplingVTKWriter writer(problem.getEntitySet(), Dune::refinementLevels(0));
+    Dune::SubsamplingVTKWriter writer(gv, Dune::refinementLevels(0));
+
+    using P = decltype(problem);
+    using DGF = Dune::PDELab::DiscreteGridFunction<P::GFS, P::Vec>;
+    using VTKF = Dune::PDELab::VTKGridFunctionAdapter<DGF>;
+
+    // Write solution
+    Dune::PDELab::addSolutionToVTKWriter(writer, problem.getGFS(), problem.getXVec());
 
     // Write MPI partitioning
-    std::vector<int> rankVec(problem.getEntitySet().size(0), helper.rank());
-    Dune::P0VTKFunction rankFunc(problem.getEntitySet(), rankVec, "Rank");
+    std::vector<int> rankVec(gv.size(0), helper.rank());
+    Dune::P0VTKFunction rankFunc(gv, rankVec, "Rank");
     writer.addCellData(Dune::stackobject_to_shared_ptr(rankFunc));
 
-    // Write interior cells
-    auto dof_mask = interior_dof_mask;
-    Dune::P1VTKFunction interiorFunc(problem.getEntitySet(), dof_mask, "Interior");
-    writer.addVertexData(Dune::stackobject_to_shared_ptr(interiorFunc));
+    // // Write interior cells
+    // auto dof_mask = interior_dof_mask;
+    // Dune::P1VTKFunction interiorFunc(gv, dof_mask, "Interior");
+    // writer.addVertexData(Dune::stackobject_to_shared_ptr(interiorFunc));
 
-    // Plot the finite element solution
-    Dune::P1VTKFunction residualFunc(problem.getEntitySet(), problem.getD(), "Residual");
-    writer.addVertexData(Dune::stackobject_to_shared_ptr(residualFunc));
-
-    // Plot the finite element solution
-    Dune::P1VTKFunction solutionFunc(problem.getEntitySet(), problem.getX(), "Solution");
-    writer.addVertexData(Dune::stackobject_to_shared_ptr(solutionFunc));
-
-    PermeabilityAdapter permdgf(problem.getEntitySet(), problem.getUnderlyingProblem()); // This is defined in PDELab but not in a namespace
-    typedef Dune::PDELab::VTKGridFunctionAdapter<decltype(permdgf)> PermVTKDGF;
-    writer.addCellData(std::make_shared<PermVTKDGF>(permdgf, "log(K)"));
+    // Plot the rhs
+    DGF dgfb(problem.getGFS(), problem.getDVec());
+    writer.addVertexData(std::make_shared<VTKF>(dgfb, "RHS"));
 
     // Write some additional output
     AttributeSet allAttributes{Attribute::owner, Attribute::copy};
@@ -455,51 +445,8 @@ int main(int argc, char *argv[])
     Dune::VariableSizeCommunicator all_all_comm(all_all_interface);
     AddVectorDataHandle<Native<Vec>> advdh;
 
-    // Overlapping subdomain
-    Native<Vec> ovlp_subdomain(ext_indices.size());
-    ovlp_subdomain = helper.rank() == ptree.get("debug_rank", 0) ? 1 : 0;
-    advdh.setVec(ovlp_subdomain);
-    all_all_comm.forward(advdh);
-    Native<Vec> ovlp_subdomain_small(paridxs.size());
-    for (std::size_t i = 0; i < ovlp_subdomain_small.size(); ++i) {
-      ovlp_subdomain_small[i] = ovlp_subdomain[i];
-    }
-    Dune::P1VTKFunction ovlp_subdomain_function(problem.getEntitySet(), ovlp_subdomain_small, "Overlapping Subdomain");
-    writer.addVertexData(Dune::stackobject_to_shared_ptr(ovlp_subdomain_function));
-
-    // Inner ring corrections
-    Native<Vec> inner_ring_corrections(dof_mask.size());
-    inner_ring_corrections = 0;
-    for (const auto &triple : own_ncorr_triples) {
-      inner_ring_corrections[triple.row] = 1;
-      inner_ring_corrections[triple.col] = 1;
-    }
-    Dune::P1VTKFunction inner_ring_corrections_function(problem.getEntitySet(), inner_ring_corrections, "Our corrections");
-    writer.addVertexData(Dune::stackobject_to_shared_ptr(inner_ring_corrections_function));
-
-    // Remote ring correction for rank `debug_rank`
-    Native<Vec> remote_ring_corrections(ext_indices.size());
-    remote_ring_corrections = 0;
-
-    for (const auto &triple : remote_ncorr_triples) {
-      if (triple.rank == ptree.get("debug_rank", 0)) {
-        auto lrow = ext_indices.get_parallel_index_set()[triple.row].local();
-        auto lcol = ext_indices.get_parallel_index_set()[triple.col].local();
-
-        remote_ring_corrections[lrow] = 1;
-        remote_ring_corrections[lcol] = 1;
-      }
-    }
-    advdh.setVec(remote_ring_corrections);
-    all_all_comm.forward(advdh);
-    Native<Vec> remote_ring_corrections_small(paridxs.size());
-    for (std::size_t i = 0; i < remote_ring_corrections_small.size(); ++i) {
-      remote_ring_corrections_small[i] = remote_ring_corrections[i];
-    }
-    Dune::P1VTKFunction remote_ring_corrections_function(problem.getEntitySet(), remote_ring_corrections_small, "Other corrections");
-    writer.addVertexData(Dune::stackobject_to_shared_ptr(remote_ring_corrections_function));
-
-    // Visualise pou
+    // Plot the partition of unity
+    auto pou_vis = *pou;
     if (helper.rank() != ptree.get("debug_rank", 0)) {
       pou_vis = 0;
     }
@@ -510,27 +457,156 @@ int main(int argc, char *argv[])
     for (std::size_t i = 0; i < pou_vec_small.N(); ++i) {
       pou_vec_small[i] = pou_vis[i];
     }
-    Dune::P1VTKFunction pouFunc(problem.getEntitySet(), pou_vec_small, "POU");
-    writer.addVertexData(Dune::stackobject_to_shared_ptr(pouFunc));
+    P::Vec pougf(problem.getGFS(), pou_vec_small);
+    DGF dgfpou(problem.getGFS(), pougf);
+    writer.addVertexData(std::make_shared<VTKF>(dgfpou, "POU"));
 
-    // Add a vector with the dof numbering for debugging
-    Native<Vec> dof_numbers(problem.getX().N());
-    dof_numbers = 0;
-    if (helper.rank() == ptree.get("debug_rank", 0)) {
-      std::iota(dof_numbers.begin(), dof_numbers.end(), 0);
-    }
-    Dune::P1VTKFunction dofFunc(problem.getEntitySet(), dof_numbers, "DOFs");
-    writer.addVertexData(Dune::stackobject_to_shared_ptr(dofFunc));
-
-    // Visualise one of the basis vectors extracted after setup of the coarse space
-    if (helper.rank() != ptree.get("debug_rank", 0)) {
-      visuvec = 0;
-    }
-    advdh.setVec(visuvec);
+    // Overlapping subdomain
+    Native<Vec> ovlp_subdomain(ext_indices.size());
+    ovlp_subdomain = helper.rank() == ptree.get("debug_rank", 0) ? 1 : 0;
+    advdh.setVec(ovlp_subdomain);
     all_all_comm.forward(advdh);
-    visuvec.resize(problem.getX().N());
-    Dune::P1VTKFunction basisFunc(problem.getEntitySet(), visuvec, "Basis function");
-    writer.addVertexData(Dune::stackobject_to_shared_ptr(basisFunc));
+    Native<Vec> ovlp_subdomain_small(problem.getX().N());
+    for (std::size_t i = 0; i < ovlp_subdomain_small.size(); ++i) {
+      ovlp_subdomain_small[i] = ovlp_subdomain[i];
+    }
+    P::Vec ovlpgf(problem.getGFS(), ovlp_subdomain_small);
+    DGF dgfovlp(problem.getGFS(), ovlpgf);
+    writer.addVertexData(std::make_shared<VTKF>(dgfovlp, "Ovlp. subdm."));
+
+    // Basis vectors. We need to take into account that the ranks might have a different number of basis vectors
+    auto n_basis = basis.size();
+    auto debug_rank = ptree.get("debug_rank", 0);
+    auto bcast_root = debug_rank;
+    if (debug_rank >= helper.size()) {
+      bcast_root = 0;
+      if (helper.rank() == 0) {
+        spdlog::warn("debug_rank ({}) >= number of processes ({}), using rank 0 for broadcast", debug_rank, helper.size());
+      }
+    }
+    MPI_Bcast(&n_basis, 1, MPI_UNSIGNED_LONG, bcast_root, helper.getCommunicator());
+    std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> small_basis_vecs(n_basis); // The need to be allocated here so that they are not freed before visualising
+    for (std::size_t k = 0; k < n_basis; ++k) {
+      auto bvec_vis = basis[0];
+      if (helper.rank() != bcast_root) {
+        bvec_vis = 0;
+      }
+      else {
+        bvec_vis = basis[k];
+      }
+      advdh.setVec(bvec_vis);
+      all_all_comm.forward(advdh);
+
+      small_basis_vecs[k].resize(problem.getX().N());
+      for (std::size_t i = 0; i < problem.getX().N(); ++i) {
+        small_basis_vecs[k][i] = bvec_vis[i];
+      }
+      auto pougf = std::make_shared<P::Vec>(problem.getGFS(), small_basis_vecs[k]);
+      auto dgfpou = std::make_shared<DGF>(Dune::stackobject_to_shared_ptr(problem.getGFS()), pougf);
+      writer.addVertexData(std::make_shared<VTKF>(dgfpou, "Basis vec " + std::format("{:04}", k)));
+    }
+
+    // Interior region
+    Native<Vec> interior_region(ext_indices.size());
+    interior_region = 0;
+    if (helper.rank() == ptree.get("debug_rank", 0)) {
+      for (const auto &idx : problem.get_overlapping_interior_to_subdomain()) {
+        interior_region[idx] = 1;
+      }
+    }
+    advdh.setVec(interior_region);
+    all_all_comm.forward(advdh);
+    Native<Vec> interior_region_small(problem.getX().N());
+    for (std::size_t i = 0; i < interior_region_small.size(); ++i) {
+      interior_region_small[i] = interior_region[i];
+    }
+    P::Vec interior_gf(problem.getGFS(), interior_region_small);
+    DGF interior_dgf(problem.getGFS(), interior_gf);
+    writer.addVertexData(std::make_shared<VTKF>(interior_dgf, "Interior region"));
+
+    // Ring region
+    Native<Vec> ring_region(ext_indices.size());
+    ring_region = 0;
+    if (helper.rank() == ptree.get("debug_rank", 0)) {
+      for (const auto &idx : problem.get_neumann_region_to_subdomain()) {
+        ring_region[idx] = 1;
+      }
+    }
+    advdh.setVec(ring_region);
+    all_all_comm.forward(advdh);
+    Native<Vec> ring_region_small(problem.getX().N());
+    for (std::size_t i = 0; i < ring_region_small.size(); ++i) {
+      ring_region_small[i] = ring_region[i];
+    }
+    P::Vec ring_gf(problem.getGFS(), ring_region_small);
+    DGF ring_dgf(problem.getGFS(), ring_gf);
+    writer.addVertexData(std::make_shared<VTKF>(ring_dgf, "Ring region"));
+
+    // // Inner ring corrections
+    // Native<Vec> inner_ring_corrections(dof_mask.size());
+    // inner_ring_corrections = 0;
+    // for (const auto &triple : own_ncorr_triples) {
+    //   inner_ring_corrections[triple.row] = 1;
+    //   inner_ring_corrections[triple.col] = 1;
+    // }
+    // Dune::P1VTKFunction inner_ring_corrections_function(gv, inner_ring_corrections, "Our corrections");
+    // writer.addVertexData(Dune::stackobject_to_shared_ptr(inner_ring_corrections_function));
+
+    // // Remote ring correction for rank `debug_rank`
+    // Native<Vec> remote_ring_corrections(ext_indices.size());
+    // remote_ring_corrections = 0;
+
+    // for (const auto &triple : remote_ncorr_triples) {
+    //   if (triple.rank == ptree.get("debug_rank", 0)) {
+    //     auto lrow = ext_indices.get_parallel_index_set()[triple.row].local();
+    //     auto lcol = ext_indices.get_parallel_index_set()[triple.col].local();
+
+    //     remote_ring_corrections[lrow] = 1;
+    //     remote_ring_corrections[lcol] = 1;
+    //   }
+    // }
+    // advdh.setVec(remote_ring_corrections);
+    // all_all_comm.forward(advdh);
+    // Native<Vec> remote_ring_corrections_small(paridxs.size());
+    // for (std::size_t i = 0; i < remote_ring_corrections_small.size(); ++i) {
+    //   remote_ring_corrections_small[i] = remote_ring_corrections[i];
+    // }
+    // Dune::P1VTKFunction remote_ring_corrections_function(gv, remote_ring_corrections_small, "Other corrections");
+    // writer.addVertexData(Dune::stackobject_to_shared_ptr(remote_ring_corrections_function));
+
+    // // Visualise pou
+    // auto pou_vis = *pou;
+    // if (helper.rank() != ptree.get("debug_rank", 0)) {
+    //   pou_vis = 0;
+    // }
+    // advdh.setVec(pou_vis);
+    // all_all_comm.forward(advdh);
+
+    // Native<Vec> pou_vec_small(problem.getX().N());
+    // for (std::size_t i = 0; i < pou_vec_small.N(); ++i) {
+    //   pou_vec_small[i] = pou_vis[i];
+    // }
+    // Dune::P1VTKFunction pouFunc(gv, pou_vec_small, "POU");
+    // writer.addVertexData(Dune::stackobject_to_shared_ptr(pouFunc));
+
+    // // Add a vector with the dof numbering for debugging
+    // Native<Vec> dof_numbers(problem.getX().N());
+    // dof_numbers = 0;
+    // if (helper.rank() == ptree.get("debug_rank", 0)) {
+    //   std::iota(dof_numbers.begin(), dof_numbers.end(), 0);
+    // }
+    // Dune::P1VTKFunction dofFunc(gv, dof_numbers, "DOFs");
+    // writer.addVertexData(Dune::stackobject_to_shared_ptr(dofFunc));
+
+    // // Visualise one of the basis vectors extracted after setup of the coarse space
+    // if (helper.rank() != ptree.get("debug_rank", 0)) {
+    //   visuvec = 0;
+    // }
+    // advdh.setVec(visuvec);
+    // all_all_comm.forward(advdh);
+    // visuvec.resize(problem.getX().N());
+    // Dune::P1VTKFunction basisFunc(gv, visuvec, "Basis function");
+    // writer.addVertexData(Dune::stackobject_to_shared_ptr(basisFunc));
 
     writer.write(ptree.get("filename", "Poisson"));
   }
