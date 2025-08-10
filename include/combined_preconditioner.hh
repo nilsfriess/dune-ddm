@@ -4,6 +4,7 @@
 #include "spdlog/spdlog.h"
 
 #include <dune/common/exceptions.hh>
+#include <dune/common/parametertree.hh>
 #include <dune/istl/io.hh>
 #include <dune/istl/operators.hh>
 #include <dune/istl/preconditioner.hh>
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 #include <mpi.h>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -22,28 +24,26 @@ enum class ApplyMode : std::uint8_t { Additive, Multiplicative };
  * This class allows to combine two preconditioners of type Dune::Preconditioner<X, Y>
  * into a new one (either additively or multiplicatively). If the apply mode is
  * multiplicative, then an operator of type Dune::LinearOperator<X, Y> must be provided
- * using the method setOp (or it must be passed in the constructor).
+ * using the method set_op().
  */
 template <class X, class Y = X>
 class CombinedPreconditioner : public Dune::Preconditioner<X, Y> {
 public:
-  explicit CombinedPreconditioner(ApplyMode mode = ApplyMode::Additive, std::initializer_list<std::shared_ptr<Dune::Preconditioner<X, Y>>> preconditioners = {},
-                                  std::shared_ptr<Dune::LinearOperator<X, Y>> A = nullptr)
-      : mode(mode), A(A)
+  explicit CombinedPreconditioner(const Dune::ParameterTree &ptree, const std::string &subtree_name = "combined_preconditioner")
   {
-    if (preconditioners.size() > 0) {
-      precs.reserve(preconditioners.size());
-      std::move(preconditioners.begin(), preconditioners.end(), std::back_inserter(precs));
-    }
-    else {
-      precs.reserve(2); // In many cases, we expect this to be used to combine two preconditioners (e.g. two level Schwarz)
-    }
+    const auto &subtree = ptree.sub(subtree_name);
+    const auto mode_string = subtree.get("mode", "additive");
 
-    if (mode == ApplyMode::Additive) {
+    if (mode_string == "additive") {
+      mode = ApplyMode::Additive;
       spdlog::info("Setting up CombinedPreconditioner in 'additive' mode (currently has {} preconditioners)", precs.size());
     }
-    else if (mode == ApplyMode::Multiplicative) {
+    else if (mode_string == "multiplicative") {
+      mode = ApplyMode::Multiplicative;
       spdlog::info("Setting up CombinedPreconditioner in 'multiplicative' mode (currently has {} preconditioners)", precs.size());
+    }
+    else {
+      DUNE_THROW(Dune::NotImplemented, "Unknown apply mode in CombinedPreconditioner, use either additive or multiplicative");
     }
 
     initLogEvents();
@@ -76,7 +76,7 @@ public:
     spdlog::info("Adding new preconditioner to CombinedPreconditioner, now has {}", precs.size());
   }
 
-  void setOp(std::shared_ptr<Dune::LinearOperator<X, Y>> A) { this->A = A; }
+  void set_op(std::shared_ptr<Dune::LinearOperator<X, Y>> A) { this->A = A; }
 
   void pre(X &x, Y &y) override
   {
@@ -111,7 +111,7 @@ public:
     }
     else if (mode == ApplyMode::Multiplicative) {
       if (!A) {
-        DUNE_THROW(Dune::Exception, "ERROR: ApplyMode is multiplicative but operator A is not provided. Set with `setOp`");
+        DUNE_THROW(Dune::Exception, "ERROR: ApplyMode is multiplicative but operator A is not provided. Set with `set_op`");
       }
 
       Y dnext(d);

@@ -69,6 +69,13 @@ public:
 
     // Actually extend the overlap
     extend_overlap(remoteids, A);
+
+    // When we're done, we create a boundary mask on the overlapping index set
+    ovlp_boundary_mask.resize(size(), false);
+    auto n_indices_last_added = index_set_sizes[index_set_sizes.size() - 1] - index_set_sizes[index_set_sizes.size() - 2];
+    for (std::size_t i = size() - n_indices_last_added; i < size(); ++i) {
+      ovlp_boundary_mask[i] = true;
+    }
   }
 
   const RemoteIndices &get_remote_indices() const { return *ext_indices.first; }
@@ -76,6 +83,7 @@ public:
   RemoteParallelIndices<RemoteIndices> get_remote_par_indices() { return ext_indices; }
   int get_overlap() const { return overlap; }
   std::size_t size() const { return get_parallel_index_set().size(); }
+  const std::vector<bool> &get_overlapping_boundary_mask() const { return ovlp_boundary_mask; }
 
   Dune::VariableSizeCommunicator<> &get_overlapping_communicator() const { return *varcomm; }
 
@@ -255,6 +263,8 @@ private:
   std::unordered_set<GlobalIndex> gis; // Global indices we know
 
   std::vector<int> boundary_distance; // Distance of dofs to the boundary
+
+  std::vector<bool> ovlp_boundary_mask; // A mask for the dofs at the overlapping subdomain boundary
 
   Logger::Event *extend_event;
 
