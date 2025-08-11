@@ -78,7 +78,6 @@ public:
 
 #ifndef DUNE_DDM_HAVE_STRUMPACK
       solver = std::make_unique<Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>(A_minus_sigma_B);
-      solver->setOption(UMFPACK_IRSTEP, 0);
 #else
       solver = std::make_unique<Dune::STRUMPACK<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>(A_minus_sigma_B);
 #endif
