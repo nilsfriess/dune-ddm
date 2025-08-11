@@ -1,7 +1,10 @@
 #include <dune-istl-config.hh>
 
 #include <dune/istl/preconditioner.hh>
+#include <dune/istl/solver.hh>
 #include <dune/istl/umfpack.hh>
+#include <dune/istl/cholmod.hh>
+
 #include <mpi.h>
 
 #include <dune/common/parametertree.hh>
@@ -63,6 +66,8 @@ class SymShiftInvert {
 public:
   using Scalar = double;
 
+  using Solver = Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>;
+
   SymShiftInvert(const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &A, const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>> &B) : A(A), B(B), b(A.N())
   {
     solve_event = Logger::get().registerOrGetEvent("Eigensolver", "solve A-sB");
@@ -77,7 +82,11 @@ public:
       A_minus_sigma_B.axpy(-sigma, B);
 
 #ifndef DUNE_DDM_HAVE_STRUMPACK
-      solver = std::make_unique<Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>(A_minus_sigma_B);
+      solver = std::make_unique<Solver>();
+      // solver->setOption(UMFPACK_STRATEGY, UMFPACK_STRATEGY_SYMMETRIC);
+      solver->setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
+      solver->setOption(UMFPACK_IRSTEP, 0);
+      solver->setMatrix(A_minus_sigma_B);
 #else
       solver = std::make_unique<Dune::STRUMPACK<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>(A_minus_sigma_B);
 #endif
@@ -103,7 +112,7 @@ private:
   mutable std::vector<double> b;
 
 #ifndef DUNE_DDM_HAVE_STRUMPACK
-  std::unique_ptr<Dune::UMFPack<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>> solver{nullptr};
+  std::unique_ptr<Solver> solver{nullptr};
 #else
   std::unique_ptr<Dune::STRUMPACK<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>> solver{nullptr};
 #endif
