@@ -146,7 +146,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
   if (eigensolver == Eigensolver::Spectra) {
     spdlog::get("all_ranks")->debug("Solving eigenproblem Ax=lBx of size {} with nnz(A) = {}, nnz(B) = {}", A.N(), A.nonzeroes(), B.nonzeroes());
 
-#if 0
+#if 1
     using OpType = SymShiftInvert;
     using BOpType = MatOp;
 
