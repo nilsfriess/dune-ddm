@@ -328,6 +328,12 @@ int main(int argc, char *argv[])
     std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
     coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
   }
+  else if (coarsespace == "msgfem_ring") {
+    basis = std::move(build_msgfem_ring_coarse_space(*A_dir, *A_neu, *pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), 
+                                                     problem.get_neumann_region_to_subdomain(), problem.get_overlapping_interior_to_subdomain(), ptree));
+    std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
+    coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+  }
   else if (coarsespace == "pou") {
     basis = std::move(build_pou_coarse_space(*pou));
     std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
