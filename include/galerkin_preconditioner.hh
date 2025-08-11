@@ -104,15 +104,6 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   };
 
 public:
-  // GalerkinPreconditioner(const Mat &A, const Vec &pou, const Vec &t, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), restr_vecs(1, Vec(pou.N(), 0)), N(ris.second->size()), d_ovlp(N),
-  // x_ovlp(N)
-  // {
-  //   registerLogEvents();
-  //   buildCommunicationInterfaces(ris);
-  //   buildRestrictionVector(pou, t, restr_vecs[0]);
-  //   buildSolver(A);
-  // }
-
   GalerkinPreconditioner(const Mat &A, const std::vector<Vec> &ts, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), N(ris.second->size()), d_ovlp(N), x_ovlp(N), num_t(ts.size())
   {
     registerLogEvents();
@@ -232,23 +223,6 @@ private:
     MPI_Allreduce(&num_restr_vecs, &max_num_t, 1, MPI_UNSIGNED_LONG, MPI_MAX, ris.first->communicator());
     return max_num_t;
   }
-
-  // void buildRestrictionVector(const Vec &pou, const Vec &t, Vec &restr)
-  // {
-  //   // Initialise r to be the "template" vector and make consistent on the overlapping index set
-  //   restr = 0;
-  //   for (std::size_t i = 0; i < t.N(); ++i) {
-  //     restr[i] = t[i];
-  //   }
-
-  //   cvdh.setVec(restr);
-  //   owner_copy_comm->forward(cvdh);
-
-  //   // Multiply with the partition of unity
-  //   for (std::size_t i = 0; i < restr.N(); ++i) {
-  //     restr[i] *= pou[i];
-  //   }
-  // }
 
   // TODO: Remove some of the logging, this was just added to find out where the most time is spent,
   //       because this function can become the bottleneck for large simulations.
@@ -436,7 +410,7 @@ private:
 
     Logger::get().startEvent(factor_A0);
     if (rank == 0) {
-      spdlog::info("Size of coarse space matrix: {}x{}", A0.N(), A0.M());
+      spdlog::info("Size of coarse space matrix: {}x{}, nonzeros: {}", A0.N(), A0.M(), A0.nonzeroes());
       solver = std::make_unique<Solver>(A0);
       solver->setOption(UMFPACK_IRSTEP, 0);
     }
