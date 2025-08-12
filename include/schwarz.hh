@@ -16,6 +16,7 @@
 
 #include "helpers.hh"
 #include "logger.hh"
+#include "pou.hh"
 #include "spdlog/spdlog.h"
 #include "strumpack.hh"
 
@@ -105,14 +106,14 @@ class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   };
 
 public:
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<Vec> pou, SchwarzType type = SchwarzType::Restricted,
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<PartitionOfUnity> pou, SchwarzType type = SchwarzType::Restricted,
                         bool factorise_at_first_iteration = false)
       : Aovlp(std::move(Aovlp)), ext_indices(ext_indices), type(type), pou(std::move(pou)), factorise_at_first_iteration(factorise_at_first_iteration)
   {
     init();
   }
 
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<Vec> pou, const Dune::ParameterTree &ptree, const std::string &subtree_prefix = "schwarz")
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree &ptree, const std::string &subtree_prefix = "schwarz")
       : Aovlp(std::move(Aovlp)), ext_indices(ext_indices), pou(std::move(pou))
   {
     const auto &subtree = ptree.sub(subtree_prefix);
@@ -173,7 +174,7 @@ public:
     }
     else if (type == SchwarzType::Restricted) {
       if (pou) {
-        for (std::size_t i = 0; i < pou->N(); ++i) {
+        for (std::size_t i = 0; i < pou->size(); ++i) {
           (*x_ovlp)[i] *= (*pou)[i];
         }
       }
@@ -188,7 +189,7 @@ public:
   }
 
   Solver &getSolver() { return *solver; }
-  std::shared_ptr<Vec> getPartitionOfUnity() const { return pou; }
+  std::shared_ptr<PartitionOfUnity> getPartitionOfUnity() const { return pou; }
 
 private:
   void init()
@@ -229,7 +230,7 @@ private:
   std::unique_ptr<Vec> d_ovlp; // Defect on overlapping index set
   std::unique_ptr<Vec> x_ovlp; // Solution on overlapping index set
 
-  std::shared_ptr<Vec> pou{nullptr}; // partition of unity (might be null)
+  std::shared_ptr<PartitionOfUnity> pou{nullptr}; // partition of unity (might be null)
 
   Dune::Interface all_all_interface;
   Dune::BufferedCommunicator all_all_comm;

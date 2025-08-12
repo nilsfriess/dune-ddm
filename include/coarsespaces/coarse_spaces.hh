@@ -16,6 +16,7 @@
 
 #include "coarsespaces/energy_minimal_extension.hh"
 #include "eigensolvers.hh"
+#include "pou.hh"
 
 namespace detail {
 
@@ -72,6 +73,19 @@ void finalize_eigenvectors(std::vector<Vec> &eigenvectors, const Vec &pou)
   }
 }
 
+template <class Vec>
+inline void finalize_eigenvectors(std::vector<Vec> &eigenvectors, const PartitionOfUnity &pou)
+{
+  for (auto &vec : eigenvectors) {
+    // Apply partition of unity scaling
+    for (std::size_t i = 0; i < vec.size(); ++i) {
+      vec[i] *= pou[i];
+    }
+    // Normalize to unit length
+    vec *= 1. / vec.two_norm();
+  }
+}
+
 /**
  * @brief Scale matrix entries with partition of unity weights.
  *
@@ -85,6 +99,18 @@ void finalize_eigenvectors(std::vector<Vec> &eigenvectors, const Vec &pou)
  */
 template <class Mat, class Vec>
 void scale_matrix_with_pou(Mat &C, const Vec &pou, const std::vector<std::size_t> &index_mapping = {})
+{
+  for (auto ri = C.begin(); ri != C.end(); ++ri) {
+    for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+      std::size_t i_idx = index_mapping.empty() ? ri.index() : index_mapping[ri.index()];
+      std::size_t j_idx = index_mapping.empty() ? ci.index() : index_mapping[ci.index()];
+      *ci *= pou[i_idx] * pou[j_idx];
+    }
+  }
+}
+
+template <class Mat>
+inline void scale_matrix_with_pou(Mat &C, const PartitionOfUnity &pou, const std::vector<std::size_t> &index_mapping = {})
 {
   for (auto ri = C.begin(); ri != C.end(); ++ri) {
     for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
@@ -128,13 +154,13 @@ void scale_matrix_with_pou(Mat &C, const Vec &pou, const std::vector<std::size_t
  * @throws Dune::Exception if matrix and partition of unity sizes do not match.
  * @throws Dune::NotImplemented for unknown mode in ptree.
  */
-template <class Mat, class Vec>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_coarse_space(const Mat &A, const Mat &B, const Vec &pou, const Dune::ParameterTree &ptree,
+template <class Mat>
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_coarse_space(const Mat &A, const Mat &B, const PartitionOfUnity &pou, const Dune::ParameterTree &ptree,
                                                                                       const std::string &ptree_prefix = "geneo")
 {
   spdlog::info("Setting up GenEO coarse space");
 
-  if (pou.N() != A.N()) {
+  if (pou.size() != A.N()) {
     DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
   }
 
@@ -180,12 +206,14 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_coarse_
  *
  * @throws Dune::NotImplemented for unknown mode in ptree.
  */
-template <class Mat, class Vec>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_ring_coarse_space(const Mat &A_dir, const Mat &A, const Vec &pou, const std::vector<std::size_t> &ring_to_subdomain,
+template <class Mat>
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_ring_coarse_space(const Mat &A_dir, const Mat &A, const PartitionOfUnity &pou, const std::vector<std::size_t> &ring_to_subdomain,
                                                                                            const std::vector<std::size_t> &interior_to_subdomain, const Dune::ParameterTree &ptree,
                                                                                            const std::string &ptree_prefix = "geneo_ring")
 {
   spdlog::info("Setting up GenEO ring coarse space");
+
+  using Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>;
 
   if (ring_to_subdomain.empty()) {
     DUNE_THROW(Dune::Exception, "The ring to subdomain mapping is empty, cannot build MsGFEM ring coarse space");
@@ -342,17 +370,19 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_ring_co
  * @throws Dune::Exception if matrix and mask sizes do not match.
  * @throws Dune::NotImplemented for unknown mode in ptree.
  */
-template <class Mat, class Vec, class MaskVec1, class MaskVec2>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_msgfem_coarse_space(const Mat &A, const Vec &pou, const MaskVec1 &dirichlet_mask, const MaskVec2 &subdomain_boundary_mask,
+template <class Mat, class MaskVec1, class MaskVec2>
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_msgfem_coarse_space(const Mat &A, const PartitionOfUnity &pou, const MaskVec1 &dirichlet_mask, const MaskVec2 &subdomain_boundary_mask,
                                                                                        const Dune::ParameterTree &ptree, const std::string &ptree_prefix = "msgfem")
 {
   if (dirichlet_mask.N() != A.N()) {
     DUNE_THROW(Dune::Exception, "The matrix and the Dirichlet mask must have the same size");
   }
 
-  if (pou.N() != A.N()) {
+  if (pou.size() != A.N()) {
     DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
   }
+
+  using Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>;
 
   const auto &subtree = ptree.sub(ptree_prefix);
 
@@ -520,17 +550,15 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_msgfem_coarse
  * @throws Dune::Exception if matrix and mask sizes do not match.
  * @throws Dune::NotImplemented for unknown mode in ptree.
  */
-template <class Mat, class Vec, class MaskVec1, class MaskVec2>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_msgfem_ring_coarse_space(const Mat &A_dir, const Mat &A, const Vec &pou, const MaskVec1 &dirichlet_mask,
+template <class Mat, class MaskVec1, class MaskVec2>
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_msgfem_ring_coarse_space(const Mat &A_dir, const Mat &A, const PartitionOfUnity &pou, const MaskVec1 &dirichlet_mask,
                                                                                             const MaskVec2 &subdomain_boundary_mask, const std::vector<std::size_t> &ring_to_subdomain,
                                                                                             const std::vector<std::size_t> &interior_to_subdomain, const Dune::ParameterTree &ptree,
                                                                                             const std::string &ptree_prefix = "msgfem_ring")
 {
-  spdlog::info("Setting up MsGFEM ring coarse space");
+  using Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>;
 
-  // Note: In ring context, we work with subsets so full domain size checks are not applicable
-  // The matrix A, pou, and masks are for the full overlapping domain,
-  // but we extract ring subsets using the ring_to_subdomain mapping
+  spdlog::info("Setting up MsGFEM ring coarse space");
 
   // Handle edge case: empty ring
   if (ring_to_subdomain.empty()) {
@@ -780,17 +808,16 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_msgfem_ring_c
  * @param pou Partition of unity vector for scaling.
  * @return Vector containing a single normalized POU coarse space basis vector.
  */
-template <class Vec>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_pou_coarse_space(const Vec &pou)
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_pou_coarse_space(const PartitionOfUnity &pou)
 {
   spdlog::info("Setting up POU coarse space");
 
   // Create a single basis vector that is constant 1, scaled by partition of unity
   std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> basis(1);
-  basis[0].resize(pou.N());
+  basis[0].resize(pou.size());
 
   // Initialize with constant 1
-  for (std::size_t i = 0; i < basis[0].N(); ++i) {
+  for (std::size_t i = 0; i < pou.size(); ++i) {
     basis[0][i] = 1.0;
   }
 

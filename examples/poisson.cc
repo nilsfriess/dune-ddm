@@ -289,8 +289,8 @@ int main(int argc, char *argv[])
   Logger::get().startEvent(prec_setup);
 
   // Next, create a partition of unity
-  auto pou = std::make_shared<Native<Vec>>(create_pou(*A_dir, ext_indices, ptree));
-  if (!is_pou(*pou, ext_indices.get_remote_indices())) {
+  auto pou = std::make_shared<PartitionOfUnity>(*A_dir, ext_indices, ptree);
+  if (!is_pou(pou->vector(), ext_indices.get_remote_indices())) {
     spdlog::warn("POU does not add up to 1");
   }
   else {
@@ -452,7 +452,7 @@ int main(int argc, char *argv[])
     AddVectorDataHandle<Native<Vec>> advdh;
 
     // Plot the partition of unity
-    auto pou_vis = *pou;
+    auto pou_vis = pou->vector();
     if (helper.rank() != ptree.get("debug_rank", 0)) {
       pou_vis = 0;
     }
