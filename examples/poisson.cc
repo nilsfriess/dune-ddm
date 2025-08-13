@@ -227,398 +227,414 @@ bool is_pou(const Vec &pou, const RemoteIndices &remote_indices)
 
 int main(int argc, char *argv[])
 {
-  using Dune::PDELab::Backend::native;
-  using Dune::PDELab::Backend::Native;
+  try {
+    using Dune::PDELab::Backend::native;
+    using Dune::PDELab::Backend::Native;
 
-  const auto &helper = Dune::MPIHelper::instance(argc, argv);
-  setup_loggers(helper.rank(), argc, argv);
+    const auto &helper = Dune::MPIHelper::instance(argc, argv);
+    setup_loggers(helper.rank(), argc, argv);
 
-  auto *matrix_setup = Logger::get().registerEvent("Total", "Setup problem");
-  auto *prec_setup = Logger::get().registerEvent("Total", "Setup preconditioner");
-  auto *solve = Logger::get().registerEvent("Total", "Linear solve");
-  auto *total = Logger::get().registerEvent("Total", "Total time");
-  Logger::get().startEvent(total);
+    auto *matrix_setup = Logger::get().registerEvent("Total", "Setup problem");
+    auto *prec_setup = Logger::get().registerEvent("Total", "Setup preconditioner");
+    auto *solve = Logger::get().registerEvent("Total", "Linear solve");
+    auto *total = Logger::get().registerEvent("Total", "Total time");
+    Logger::get().startEvent(total);
 
-  Logger::get().startEvent(matrix_setup);
-  Dune::ParameterTree ptree;
-  Dune::ParameterTreeParser ptreeparser;
-  ptreeparser.readINITree("poisson.ini", ptree);
-  ptreeparser.readOptions(argc, argv, ptree);
-  const auto verbose = ptree.get("verbose", 0);
+    Logger::get().startEvent(matrix_setup);
+    Dune::ParameterTree ptree;
+    Dune::ParameterTreeParser ptreeparser;
+    ptreeparser.readINITree("poisson.ini", ptree);
+    ptreeparser.readOptions(argc, argv, ptree);
+    const auto verbose = ptree.get("verbose", 0);
 
-  // Create the grid view
-  auto grid = make_grid(ptree, helper);
-  auto gv = grid->leafGridView();
+    // Create the grid view
+    auto grid = make_grid(ptree, helper);
+    auto gv = grid->leafGridView();
 
-  // Set up the finite element problem. This also assembles the sparsity pattern of the matrix.
-  PoissonProblem<decltype(gv)> problem(gv, helper);
-  using Vec = decltype(problem)::Vec;
-  using Mat = decltype(problem)::Mat;
+    // Set up the finite element problem. This also assembles the sparsity pattern of the matrix.
+    PoissonProblem problem(gv, helper);
+    using Vec = decltype(problem)::Vec;
+    using Mat = decltype(problem)::Mat;
 
-  // Using the sparsity pattern of the matrix, create the overlapping subdomains by extending this index set
-  auto remoteparidxs = make_remote_indices(problem.getGFS(), helper);
-  ExtendedRemoteIndices ext_indices(*remoteparidxs.first, problem.getA(), ptree.get("overlap", 1));
+    // Using the sparsity pattern of the matrix, create the overlapping subdomains by extending this index set
+    auto remoteparidxs = make_remote_indices(problem.getGFS(), helper);
+    ExtendedRemoteIndices ext_indices(*remoteparidxs.first, problem.getA(), ptree.get("overlap", 1));
 
-  // The nonzero pattern of the non-overlapping matrix is now set up, and we have a parallel index set
-  // on the overlapping subdomains. Now we can assemble the overlapping matrices.
-  const auto &coarsespace_subtree = ptree.sub("coarsespace");
-  auto coarsespace = coarsespace_subtree.get("type", "geneo");
-  if (coarsespace == "geneo") {
-    problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::Overlap, true);
-  }
-  else if (coarsespace == "msgfem") {
-    problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
-  }
-  else if (coarsespace == "pou") {
-    problem.assemble_dirichlet_matrix_only(ext_indices);
-  }
-  else if (coarsespace == "geneo_ring" or coarsespace == "msgfem_ring") {
-    problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, false);
-  }
-  else {
-    DUNE_THROW(Dune::NotImplemented, "Unknown coarse space");
-  }
+    // The nonzero pattern of the non-overlapping matrix is now set up, and we have a parallel index set
+    // on the overlapping subdomains. Now we can assemble the overlapping matrices.
+    const auto &coarsespace_subtree = ptree.sub("coarsespace");
+    auto coarsespace = coarsespace_subtree.get("type", "geneo");
+    if (coarsespace == "geneo") {
+      problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::Overlap, true);
+    }
+    else if (coarsespace == "msgfem") {
+      problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
+    }
+    else if (coarsespace == "pou") {
+      problem.assemble_dirichlet_matrix_only(ext_indices);
+    }
+    else if (coarsespace == "geneo_ring" or coarsespace == "msgfem_ring") {
+      problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, false);
+    }
+    else {
+      DUNE_THROW(Dune::NotImplemented, "Unknown coarse space");
+    }
 
-  // Extract the three matrices that have been assembled
-  auto A_dir = problem.get_dirichlet_matrix();
-  auto A_neu = problem.get_first_neumann_matrix();
-  auto B_neu = problem.get_second_neumann_matrix();
+    // Extract the three matrices that have been assembled
+    auto A_dir = problem.get_dirichlet_matrix();
+    auto A_neu = problem.get_first_neumann_matrix();
+    auto B_neu = problem.get_second_neumann_matrix();
 
-  MPI_Barrier(MPI_COMM_WORLD);
-  Logger::get().endEvent(matrix_setup);
-  Logger::get().startEvent(prec_setup);
+    MPI_Barrier(MPI_COMM_WORLD);
+    Logger::get().endEvent(matrix_setup);
+    Logger::get().startEvent(prec_setup);
 
-  // Next, create a partition of unity
-  auto pou = std::make_shared<PartitionOfUnity>(*A_dir, ext_indices, ptree);
-  if (!is_pou(pou->vector(), ext_indices.get_remote_indices())) {
-    spdlog::warn("POU does not add up to 1");
-  }
-  else {
-    spdlog::debug("POU adds up to 1");
-  }
+    // Next, create a partition of unity
+    auto pou = std::make_shared<PartitionOfUnity>(*A_dir, ext_indices, ptree);
+    if (!is_pou(pou->vector(), ext_indices.get_remote_indices())) {
+      spdlog::warn("POU does not add up to 1");
+    }
+    else {
+      spdlog::debug("POU adds up to 1");
+    }
 
-  // Now we can create the preconditioner. First the fine level overlapping Schwarz method
-  auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(A_dir, ext_indices, pou, ptree);
+    // Now we can create the preconditioner. First the fine level overlapping Schwarz method
+    auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(A_dir, ext_indices, pou, ptree);
 
-  using CoarseLevel = GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(*remoteparidxs.first)>>;
-  std::shared_ptr<CoarseLevel> coarse;
+    using CoarseLevel = GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(*remoteparidxs.first)>>;
+    std::shared_ptr<CoarseLevel> coarse;
 
-  std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> basis;
-  const auto zero_at_dirichlet = [&](auto &&x) {
-    for (std::size_t i = 0; i < x.size(); ++i) {
-      if (problem.get_overlapping_dirichlet_mask()[i] > 0) {
-        x[i] = 0;
+    std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> basis;
+    const auto zero_at_dirichlet = [&](auto &&x) {
+      for (std::size_t i = 0; i < x.size(); ++i) {
+        if (problem.get_overlapping_dirichlet_mask()[i] > 0) {
+          x[i] = 0;
+        }
+      }
+    };
+
+    if (coarsespace == "geneo") {
+      basis = std::move(build_geneo_coarse_space(*A_neu, *B_neu, *pou, ptree));
+      std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
+      coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+    }
+    else if (coarsespace == "geneo_ring") {
+      basis = std::move(build_geneo_ring_coarse_space(*A_dir, *A_neu, *pou, problem.get_neumann_region_to_subdomain(), problem.get_overlapping_interior_to_subdomain(), ptree));
+      std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
+      coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+    }
+    else if (coarsespace == "msgfem") {
+      // We only pass one matrix here, because the oversampling is simulated using the partition of unity
+      basis = std::move(build_msgfem_coarse_space(*A_neu, *pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), ptree));
+      std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
+      coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+    }
+    else if (coarsespace == "msgfem_ring") {
+      basis = std::move(build_msgfem_ring_coarse_space(*A_dir, *A_neu, *pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(),
+                                                       problem.get_neumann_region_to_subdomain(), problem.get_overlapping_interior_to_subdomain(), ptree));
+      std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
+      coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+    }
+    else if (coarsespace == "pou") {
+      basis = std::move(build_pou_coarse_space(*pou));
+      std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
+      coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+    }
+    else if (coarsespace == "none") {
+      // Nothing to do here
+    }
+    else {
+      DUNE_THROW(Dune::NotImplemented, "Unknown coarse space");
+    }
+
+    // Finally, create the parallel scalar product, parallel operator, and the two-level preconditioner
+
+    // Create a mask for the owned indices for the scalar product
+    std::vector<unsigned> mask(problem.getD().N(), 1);
+    for (const auto &idx : *remoteparidxs.second) {
+      if (idx.local().attribute() != Attribute::owner) {
+        mask[idx.local()] = 0;
       }
     }
-  };
 
-  if (coarsespace == "geneo") {
-    basis = std::move(build_geneo_coarse_space(*A_neu, *B_neu, *pou, ptree));
-    std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
-    coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
-  }
-  else if (coarsespace == "geneo_ring") {
-    basis = std::move(build_geneo_ring_coarse_space(*A_dir, *A_neu, *pou, problem.get_neumann_region_to_subdomain(), problem.get_overlapping_interior_to_subdomain(), ptree));
-    std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
-    coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
-  }
-  else if (coarsespace == "msgfem") {
-    // We only pass one matrix here, because the oversampling is simulated using the partition of unity
-    basis = std::move(build_msgfem_coarse_space(*A_neu, *pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), ptree));
-    std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
-    coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
-  }
-  else if (coarsespace == "msgfem_ring") {
-    basis = std::move(build_msgfem_ring_coarse_space(*A_dir, *A_neu, *pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), 
-                                                     problem.get_neumann_region_to_subdomain(), problem.get_overlapping_interior_to_subdomain(), ptree));
-    std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
-    coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
-  }
-  else if (coarsespace == "pou") {
-    basis = std::move(build_pou_coarse_space(*pou));
-    std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
-    coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
-  }
-  else if (coarsespace == "none") {
-    // Nothing to do here
-  }
-  else {
-    DUNE_THROW(Dune::NotImplemented, "Unknown coarse space");
-  }
+    auto my_dofs = std::count_if(mask.begin(), mask.end(), [](auto e) { return e > 0; });
+    auto sum = helper.getCommunication().sum(my_dofs);
+    spdlog::info("Total dofs: {}", sum);
 
-  // Finally, create the parallel scalar product, parallel operator, and the two-level preconditioner
+    MaskedScalarProduct<Native<Vec>, decltype(helper.getCommunication())> sp(mask, helper.getCommunication());
 
-  // Create a mask for the owned indices for the scalar product
-  std::vector<unsigned> mask(problem.getD().N(), 1);
-  for (const auto &idx : *remoteparidxs.second) {
-    if (idx.local().attribute() != Attribute::owner) {
-      mask[idx.local()] = 0;
-    }
-  }
-
-  auto my_dofs = std::count_if(mask.begin(), mask.end(), [](auto e) { return e > 0; });
-  auto sum = helper.getCommunication().sum(my_dofs);
-  spdlog::info("Total dofs: {}", sum);
-
-  MaskedScalarProduct<Native<Vec>, decltype(helper.getCommunication())> sp(mask, helper.getCommunication());
-
-  // Build the parallel operator
-  const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
-  Dune::Interface all_all_interface;
-  all_all_interface.build(*remoteparidxs.first, allAttributes, allAttributes);
-  auto communicator = std::make_shared<Dune::BufferedCommunicator>();
-  communicator->build<Native<Vec>>(all_all_interface);
-  auto op = std::make_shared<NonoverlappingOperator<Native<Mat>, Native<Vec>, Native<Vec>>>(problem.getA(), communicator);
-
-  // Lastly, build the full preconditioner
-  ApplyMode applymode = ApplyMode::Additive;
-  auto applymode_param = ptree.get("applymode", "additive");
-  if (applymode_param == "multiplicative") {
-    applymode = ApplyMode::Multiplicative;
-  }
-  CombinedPreconditioner<Native<Vec>> prec(ptree);
-  prec.set_op(op);
-  prec.add(schwarz);
-  if (coarse) {
-    prec.add(coarse);
-  }
-
-  MPI_Barrier(MPI_COMM_WORLD);
-  Logger::get().endEvent(prec_setup);
-
-  Logger::get().startEvent(solve);
-  using SolverVec = Native<Vec>;
-  std::unique_ptr<Dune::IterativeSolver<SolverVec, SolverVec>> solver;
-  auto maxit = ptree.get("maxit", 1000);
-  auto tol = ptree.get("tolerance", 1e-8);
-  auto solvertype = ptree.get("solver", "gmres");
-  if (solvertype == "cg") {
-    solver = std::make_unique<Dune::CGSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0, helper.rank() == 0 ? verbose > 0 : false);
-  }
-  else if (solvertype == "none") {
-    solver = std::make_unique<Dune::LoopSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
-  }
-  else if (solvertype == "bicgstab") {
-    solver = std::make_unique<Dune::BiCGSTABSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
-  }
-  else {
-    solver = std::make_unique<Dune::RestartedGMResSolver<SolverVec>>(*op, sp, prec, tol, 50, maxit, helper.rank() == 0 ? verbose : 0);
-    if (solvertype != "gmres") {
-      if (helper.rank() == 0) {
-        std::cout << "WARNING: Unknown solver type '" << solvertype << "', using GMRES instead\n";
-      }
-    }
-  }
-
-  Dune::InverseOperatorResult res;
-  Native<Vec> v(native(problem.getX()));
-  Native<Vec> b = problem.getD();
-
-  v = 0;
-  solver->apply(v, b, res);
-  problem.getX() -= v;
-  Logger::get().endEvent(solve);
-
-  // Visualisation
-  if (ptree.get("visualise", true)) {
-    Dune::SubsamplingVTKWriter writer(gv, Dune::refinementLevels(0));
-
-    using P = decltype(problem);
-    using DGF = Dune::PDELab::DiscreteGridFunction<P::GFS, P::Vec>;
-    using VTKF = Dune::PDELab::VTKGridFunctionAdapter<DGF>;
-
-    // Write solution
-    Dune::PDELab::addSolutionToVTKWriter(writer, problem.getGFS(), problem.getXVec());
-
-    // Write MPI partitioning
-    std::vector<int> rankVec(gv.size(0), helper.rank());
-    Dune::P0VTKFunction rankFunc(gv, rankVec, "Rank");
-    writer.addCellData(Dune::stackobject_to_shared_ptr(rankFunc));
-
-    // // Write interior cells
-    // auto dof_mask = interior_dof_mask;
-    // Dune::P1VTKFunction interiorFunc(gv, dof_mask, "Interior");
-    // writer.addVertexData(Dune::stackobject_to_shared_ptr(interiorFunc));
-
-    // Plot the rhs
-    DGF dgfb(problem.getGFS(), problem.getDVec());
-    writer.addVertexData(std::make_shared<VTKF>(dgfb, "RHS"));
-
-    // Write some additional output
-    AttributeSet allAttributes{Attribute::owner, Attribute::copy};
+    // Build the parallel operator
+    const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
     Dune::Interface all_all_interface;
-    all_all_interface.build(ext_indices.get_remote_indices(), allAttributes, allAttributes);
-    Dune::VariableSizeCommunicator all_all_comm(all_all_interface);
-    AddVectorDataHandle<Native<Vec>> advdh;
+    all_all_interface.build(*remoteparidxs.first, allAttributes, allAttributes);
+    auto communicator = std::make_shared<Dune::BufferedCommunicator>();
+    communicator->build<Native<Vec>>(all_all_interface);
+    auto op = std::make_shared<NonoverlappingOperator<Native<Mat>, Native<Vec>, Native<Vec>>>(problem.getA(), communicator);
 
-    // Plot the partition of unity
-    auto pou_vis = pou->vector();
-    if (helper.rank() != ptree.get("debug_rank", 0)) {
-      pou_vis = 0;
+    // Lastly, build the full preconditioner
+    ApplyMode applymode = ApplyMode::Additive;
+    auto applymode_param = ptree.get("applymode", "additive");
+    if (applymode_param == "multiplicative") {
+      applymode = ApplyMode::Multiplicative;
     }
-    advdh.setVec(pou_vis);
-    all_all_comm.forward(advdh);
-
-    Native<Vec> pou_vec_small(problem.getX().N());
-    for (std::size_t i = 0; i < pou_vec_small.N(); ++i) {
-      pou_vec_small[i] = pou_vis[i];
+    CombinedPreconditioner<Native<Vec>> prec(ptree);
+    prec.set_op(op);
+    prec.add(schwarz);
+    if (coarse) {
+      prec.add(coarse);
     }
-    P::Vec pougf(problem.getGFS(), pou_vec_small);
-    DGF dgfpou(problem.getGFS(), pougf);
-    writer.addVertexData(std::make_shared<VTKF>(dgfpou, "POU"));
 
-    // Overlapping subdomain
-    Native<Vec> ovlp_subdomain(ext_indices.size());
-    ovlp_subdomain = helper.rank() == ptree.get("debug_rank", 0) ? 1 : 0;
-    advdh.setVec(ovlp_subdomain);
-    all_all_comm.forward(advdh);
-    Native<Vec> ovlp_subdomain_small(problem.getX().N());
-    for (std::size_t i = 0; i < ovlp_subdomain_small.size(); ++i) {
-      ovlp_subdomain_small[i] = ovlp_subdomain[i];
+    MPI_Barrier(MPI_COMM_WORLD);
+    Logger::get().endEvent(prec_setup);
+
+    Logger::get().startEvent(solve);
+    using SolverVec = Native<Vec>;
+    std::unique_ptr<Dune::IterativeSolver<SolverVec, SolverVec>> solver;
+    auto maxit = ptree.get("maxit", 1000);
+    auto tol = ptree.get("tolerance", 1e-8);
+    auto solvertype = ptree.get("solver", "gmres");
+    if (solvertype == "cg") {
+      solver = std::make_unique<Dune::CGSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0, helper.rank() == 0 ? verbose > 0 : false);
     }
-    P::Vec ovlpgf(problem.getGFS(), ovlp_subdomain_small);
-    DGF dgfovlp(problem.getGFS(), ovlpgf);
-    writer.addVertexData(std::make_shared<VTKF>(dgfovlp, "Ovlp. subdm."));
-
-    // Basis vectors. We need to take into account that the ranks might have a different number of basis vectors
-    auto n_basis = basis.size();
-    auto debug_rank = ptree.get("debug_rank", 0);
-    auto bcast_root = debug_rank;
-    if (debug_rank >= helper.size()) {
-      bcast_root = 0;
-      if (helper.rank() == 0) {
-        spdlog::warn("debug_rank ({}) >= number of processes ({}), using rank 0 for broadcast", debug_rank, helper.size());
+    else if (solvertype == "none") {
+      solver = std::make_unique<Dune::LoopSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
+    }
+    else if (solvertype == "bicgstab") {
+      solver = std::make_unique<Dune::BiCGSTABSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
+    }
+    else {
+      solver = std::make_unique<Dune::RestartedGMResSolver<SolverVec>>(*op, sp, prec, tol, 50, maxit, helper.rank() == 0 ? verbose : 0);
+      if (solvertype != "gmres") {
+        if (helper.rank() == 0) {
+          std::cout << "WARNING: Unknown solver type '" << solvertype << "', using GMRES instead\n";
+        }
       }
     }
-    MPI_Bcast(&n_basis, 1, MPI_UNSIGNED_LONG, bcast_root, helper.getCommunicator());
-    std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> small_basis_vecs(n_basis); // The need to be allocated here so that they are not freed before visualising
-    for (std::size_t k = 0; k < n_basis; ++k) {
-      auto bvec_vis = basis[0];
-      if (helper.rank() != bcast_root) {
-        bvec_vis = 0;
+
+    Dune::InverseOperatorResult res;
+    Native<Vec> v(native(problem.getX()));
+    Native<Vec> b = problem.getD();
+
+    v = 0;
+    solver->apply(v, b, res);
+    problem.getX() -= v;
+    Logger::get().endEvent(solve);
+
+    // Visualisation
+    if (ptree.get("visualise", true)) {
+      Dune::SubsamplingVTKWriter writer(gv, Dune::refinementLevels(0));
+
+      using P = decltype(problem);
+      using DGF = Dune::PDELab::DiscreteGridFunction<P::GFS, P::Vec>;
+      using VTKF = Dune::PDELab::VTKGridFunctionAdapter<DGF>;
+
+      // Write solution
+      Dune::PDELab::addSolutionToVTKWriter(writer, problem.getGFS(), problem.getXVec());
+
+      // Write MPI partitioning
+      std::vector<int> rankVec(gv.size(0), helper.rank());
+      Dune::P0VTKFunction rankFunc(gv, rankVec, "Rank");
+      writer.addCellData(Dune::stackobject_to_shared_ptr(rankFunc));
+
+      // // Write interior cells
+      // auto dof_mask = interior_dof_mask;
+      // Dune::P1VTKFunction interiorFunc(gv, dof_mask, "Interior");
+      // writer.addVertexData(Dune::stackobject_to_shared_ptr(interiorFunc));
+
+      // Plot the rhs
+      DGF dgfb(problem.getGFS(), problem.getDVec());
+      writer.addVertexData(std::make_shared<VTKF>(dgfb, "RHS"));
+
+      // Write some additional output
+      AttributeSet allAttributes{Attribute::owner, Attribute::copy};
+      Dune::Interface all_all_interface;
+      all_all_interface.build(ext_indices.get_remote_indices(), allAttributes, allAttributes);
+      Dune::VariableSizeCommunicator all_all_comm(all_all_interface);
+      AddVectorDataHandle<Native<Vec>> advdh;
+
+      // Plot the partition of unity
+      auto pou_vis = pou->vector();
+      if (helper.rank() != ptree.get("debug_rank", 0)) {
+        pou_vis = 0;
       }
-      else {
-        bvec_vis = basis[k];
-      }
-      advdh.setVec(bvec_vis);
+      advdh.setVec(pou_vis);
       all_all_comm.forward(advdh);
 
-      small_basis_vecs[k].resize(problem.getX().N());
-      for (std::size_t i = 0; i < problem.getX().N(); ++i) {
-        small_basis_vecs[k][i] = bvec_vis[i];
+      Native<Vec> pou_vec_small(problem.getX().N());
+      for (std::size_t i = 0; i < pou_vec_small.N(); ++i) {
+        pou_vec_small[i] = pou_vis[i];
       }
-      auto pougf = std::make_shared<P::Vec>(problem.getGFS(), small_basis_vecs[k]);
-      auto dgfpou = std::make_shared<DGF>(Dune::stackobject_to_shared_ptr(problem.getGFS()), pougf);
-      writer.addVertexData(std::make_shared<VTKF>(dgfpou, "Basis vec " + std::format("{:04}", k)));
-    }
+      P::Vec pougf(problem.getGFS(), pou_vec_small);
+      DGF dgfpou(problem.getGFS(), pougf);
+      writer.addVertexData(std::make_shared<VTKF>(dgfpou, "POU"));
 
-    // Interior region
-    Native<Vec> interior_region(ext_indices.size());
-    interior_region = 0;
-    if (helper.rank() == ptree.get("debug_rank", 0)) {
-      for (const auto &idx : problem.get_overlapping_interior_to_subdomain()) {
-        interior_region[idx] = 1;
+      // Overlapping subdomain
+      Native<Vec> ovlp_subdomain(ext_indices.size());
+      ovlp_subdomain = helper.rank() == ptree.get("debug_rank", 0) ? 1 : 0;
+      advdh.setVec(ovlp_subdomain);
+      all_all_comm.forward(advdh);
+      Native<Vec> ovlp_subdomain_small(problem.getX().N());
+      for (std::size_t i = 0; i < ovlp_subdomain_small.size(); ++i) {
+        ovlp_subdomain_small[i] = ovlp_subdomain[i];
       }
-    }
-    advdh.setVec(interior_region);
-    all_all_comm.forward(advdh);
-    Native<Vec> interior_region_small(problem.getX().N());
-    for (std::size_t i = 0; i < interior_region_small.size(); ++i) {
-      interior_region_small[i] = interior_region[i];
-    }
-    P::Vec interior_gf(problem.getGFS(), interior_region_small);
-    DGF interior_dgf(problem.getGFS(), interior_gf);
-    writer.addVertexData(std::make_shared<VTKF>(interior_dgf, "Interior region"));
+      P::Vec ovlpgf(problem.getGFS(), ovlp_subdomain_small);
+      DGF dgfovlp(problem.getGFS(), ovlpgf);
+      writer.addVertexData(std::make_shared<VTKF>(dgfovlp, "Ovlp. subdm."));
 
-    // Ring region
-    Native<Vec> ring_region(ext_indices.size());
-    ring_region = 0;
-    if (helper.rank() == ptree.get("debug_rank", 0)) {
-      for (const auto &idx : problem.get_neumann_region_to_subdomain()) {
-        ring_region[idx] = 1;
+      // Basis vectors. We need to take into account that the ranks might have a different number of basis vectors
+      auto n_basis = basis.size();
+      auto debug_rank = ptree.get("debug_rank", 0);
+      auto bcast_root = debug_rank;
+      if (debug_rank >= helper.size()) {
+        bcast_root = 0;
+        if (helper.rank() == 0) {
+          spdlog::warn("debug_rank ({}) >= number of processes ({}), using rank 0 for broadcast", debug_rank, helper.size());
+        }
       }
+      MPI_Bcast(&n_basis, 1, MPI_UNSIGNED_LONG, bcast_root, helper.getCommunicator());
+      std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> small_basis_vecs(n_basis); // The need to be allocated here so that they are not freed before visualising
+      for (std::size_t k = 0; k < n_basis; ++k) {
+        auto bvec_vis = basis[0];
+        if (helper.rank() != bcast_root) {
+          bvec_vis = 0;
+        }
+        else {
+          bvec_vis = basis[k];
+        }
+        advdh.setVec(bvec_vis);
+        all_all_comm.forward(advdh);
+
+        small_basis_vecs[k].resize(problem.getX().N());
+        for (std::size_t i = 0; i < problem.getX().N(); ++i) {
+          small_basis_vecs[k][i] = bvec_vis[i];
+        }
+        auto pougf = std::make_shared<P::Vec>(problem.getGFS(), small_basis_vecs[k]);
+        auto dgfpou = std::make_shared<DGF>(Dune::stackobject_to_shared_ptr(problem.getGFS()), pougf);
+        writer.addVertexData(std::make_shared<VTKF>(dgfpou, "Basis vec " + std::format("{:04}", k)));
+      }
+
+      // Interior region
+      Native<Vec> interior_region(ext_indices.size());
+      interior_region = 0;
+      if (helper.rank() == ptree.get("debug_rank", 0)) {
+        for (const auto &idx : problem.get_overlapping_interior_to_subdomain()) {
+          interior_region[idx] = 1;
+        }
+      }
+      advdh.setVec(interior_region);
+      all_all_comm.forward(advdh);
+      Native<Vec> interior_region_small(problem.getX().N());
+      for (std::size_t i = 0; i < interior_region_small.size(); ++i) {
+        interior_region_small[i] = interior_region[i];
+      }
+      P::Vec interior_gf(problem.getGFS(), interior_region_small);
+      DGF interior_dgf(problem.getGFS(), interior_gf);
+      writer.addVertexData(std::make_shared<VTKF>(interior_dgf, "Interior region"));
+
+      // Ring region
+      Native<Vec> ring_region(ext_indices.size());
+      ring_region = 0;
+      if (helper.rank() == ptree.get("debug_rank", 0)) {
+        for (const auto &idx : problem.get_neumann_region_to_subdomain()) {
+          ring_region[idx] = 1;
+        }
+      }
+      advdh.setVec(ring_region);
+      all_all_comm.forward(advdh);
+      Native<Vec> ring_region_small(problem.getX().N());
+      for (std::size_t i = 0; i < ring_region_small.size(); ++i) {
+        ring_region_small[i] = ring_region[i];
+      }
+      P::Vec ring_gf(problem.getGFS(), ring_region_small);
+      DGF ring_dgf(problem.getGFS(), ring_gf);
+      writer.addVertexData(std::make_shared<VTKF>(ring_dgf, "Ring region"));
+
+      // // Inner ring corrections
+      // Native<Vec> inner_ring_corrections(dof_mask.size());
+      // inner_ring_corrections = 0;
+      // for (const auto &triple : own_ncorr_triples) {
+      //   inner_ring_corrections[triple.row] = 1;
+      //   inner_ring_corrections[triple.col] = 1;
+      // }
+      // Dune::P1VTKFunction inner_ring_corrections_function(gv, inner_ring_corrections, "Our corrections");
+      // writer.addVertexData(Dune::stackobject_to_shared_ptr(inner_ring_corrections_function));
+
+      // // Remote ring correction for rank `debug_rank`
+      // Native<Vec> remote_ring_corrections(ext_indices.size());
+      // remote_ring_corrections = 0;
+
+      // for (const auto &triple : remote_ncorr_triples) {
+      //   if (triple.rank == ptree.get("debug_rank", 0)) {
+      //     auto lrow = ext_indices.get_parallel_index_set()[triple.row].local();
+      //     auto lcol = ext_indices.get_parallel_index_set()[triple.col].local();
+
+      //     remote_ring_corrections[lrow] = 1;
+      //     remote_ring_corrections[lcol] = 1;
+      //   }
+      // }
+      // advdh.setVec(remote_ring_corrections);
+      // all_all_comm.forward(advdh);
+      // Native<Vec> remote_ring_corrections_small(paridxs.size());
+      // for (std::size_t i = 0; i < remote_ring_corrections_small.size(); ++i) {
+      //   remote_ring_corrections_small[i] = remote_ring_corrections[i];
+      // }
+      // Dune::P1VTKFunction remote_ring_corrections_function(gv, remote_ring_corrections_small, "Other corrections");
+      // writer.addVertexData(Dune::stackobject_to_shared_ptr(remote_ring_corrections_function));
+
+      // // Visualise pou
+      // auto pou_vis = *pou;
+      // if (helper.rank() != ptree.get("debug_rank", 0)) {
+      //   pou_vis = 0;
+      // }
+      // advdh.setVec(pou_vis);
+      // all_all_comm.forward(advdh);
+
+      // Native<Vec> pou_vec_small(problem.getX().N());
+      // for (std::size_t i = 0; i < pou_vec_small.N(); ++i) {
+      //   pou_vec_small[i] = pou_vis[i];
+      // }
+      // Dune::P1VTKFunction pouFunc(gv, pou_vec_small, "POU");
+      // writer.addVertexData(Dune::stackobject_to_shared_ptr(pouFunc));
+
+      // // Add a vector with the dof numbering for debugging
+      // Native<Vec> dof_numbers(problem.getX().N());
+      // dof_numbers = 0;
+      // if (helper.rank() == ptree.get("debug_rank", 0)) {
+      //   std::iota(dof_numbers.begin(), dof_numbers.end(), 0);
+      // }
+      // Dune::P1VTKFunction dofFunc(gv, dof_numbers, "DOFs");
+      // writer.addVertexData(Dune::stackobject_to_shared_ptr(dofFunc));
+
+      // // Visualise one of the basis vectors extracted after setup of the coarse space
+      // if (helper.rank() != ptree.get("debug_rank", 0)) {
+      //   visuvec = 0;
+      // }
+      // advdh.setVec(visuvec);
+      // all_all_comm.forward(advdh);
+      // visuvec.resize(problem.getX().N());
+      // Dune::P1VTKFunction basisFunc(gv, visuvec, "Basis function");
+      // writer.addVertexData(Dune::stackobject_to_shared_ptr(basisFunc));
+
+      writer.write(ptree.get("filename", "Poisson"));
     }
-    advdh.setVec(ring_region);
-    all_all_comm.forward(advdh);
-    Native<Vec> ring_region_small(problem.getX().N());
-    for (std::size_t i = 0; i < ring_region_small.size(); ++i) {
-      ring_region_small[i] = ring_region[i];
+
+    Logger::get().endEvent(total);
+    if (ptree.get("view_report", true)) {
+      Logger::get().report(helper.getCommunicator());
     }
-    P::Vec ring_gf(problem.getGFS(), ring_region_small);
-    DGF ring_dgf(problem.getGFS(), ring_gf);
-    writer.addVertexData(std::make_shared<VTKF>(ring_dgf, "Ring region"));
-
-    // // Inner ring corrections
-    // Native<Vec> inner_ring_corrections(dof_mask.size());
-    // inner_ring_corrections = 0;
-    // for (const auto &triple : own_ncorr_triples) {
-    //   inner_ring_corrections[triple.row] = 1;
-    //   inner_ring_corrections[triple.col] = 1;
-    // }
-    // Dune::P1VTKFunction inner_ring_corrections_function(gv, inner_ring_corrections, "Our corrections");
-    // writer.addVertexData(Dune::stackobject_to_shared_ptr(inner_ring_corrections_function));
-
-    // // Remote ring correction for rank `debug_rank`
-    // Native<Vec> remote_ring_corrections(ext_indices.size());
-    // remote_ring_corrections = 0;
-
-    // for (const auto &triple : remote_ncorr_triples) {
-    //   if (triple.rank == ptree.get("debug_rank", 0)) {
-    //     auto lrow = ext_indices.get_parallel_index_set()[triple.row].local();
-    //     auto lcol = ext_indices.get_parallel_index_set()[triple.col].local();
-
-    //     remote_ring_corrections[lrow] = 1;
-    //     remote_ring_corrections[lcol] = 1;
-    //   }
-    // }
-    // advdh.setVec(remote_ring_corrections);
-    // all_all_comm.forward(advdh);
-    // Native<Vec> remote_ring_corrections_small(paridxs.size());
-    // for (std::size_t i = 0; i < remote_ring_corrections_small.size(); ++i) {
-    //   remote_ring_corrections_small[i] = remote_ring_corrections[i];
-    // }
-    // Dune::P1VTKFunction remote_ring_corrections_function(gv, remote_ring_corrections_small, "Other corrections");
-    // writer.addVertexData(Dune::stackobject_to_shared_ptr(remote_ring_corrections_function));
-
-    // // Visualise pou
-    // auto pou_vis = *pou;
-    // if (helper.rank() != ptree.get("debug_rank", 0)) {
-    //   pou_vis = 0;
-    // }
-    // advdh.setVec(pou_vis);
-    // all_all_comm.forward(advdh);
-
-    // Native<Vec> pou_vec_small(problem.getX().N());
-    // for (std::size_t i = 0; i < pou_vec_small.N(); ++i) {
-    //   pou_vec_small[i] = pou_vis[i];
-    // }
-    // Dune::P1VTKFunction pouFunc(gv, pou_vec_small, "POU");
-    // writer.addVertexData(Dune::stackobject_to_shared_ptr(pouFunc));
-
-    // // Add a vector with the dof numbering for debugging
-    // Native<Vec> dof_numbers(problem.getX().N());
-    // dof_numbers = 0;
-    // if (helper.rank() == ptree.get("debug_rank", 0)) {
-    //   std::iota(dof_numbers.begin(), dof_numbers.end(), 0);
-    // }
-    // Dune::P1VTKFunction dofFunc(gv, dof_numbers, "DOFs");
-    // writer.addVertexData(Dune::stackobject_to_shared_ptr(dofFunc));
-
-    // // Visualise one of the basis vectors extracted after setup of the coarse space
-    // if (helper.rank() != ptree.get("debug_rank", 0)) {
-    //   visuvec = 0;
-    // }
-    // advdh.setVec(visuvec);
-    // all_all_comm.forward(advdh);
-    // visuvec.resize(problem.getX().N());
-    // Dune::P1VTKFunction basisFunc(gv, visuvec, "Basis function");
-    // writer.addVertexData(Dune::stackobject_to_shared_ptr(basisFunc));
-
-    writer.write(ptree.get("filename", "Poisson"));
+  }
+  catch (const Dune::Exception &e) {
+    std::cerr << "Caught Dune exception: " << e << '\n';
+    return 1;
+  }
+  catch (const std::exception &e) {
+    std::cerr << "Caught std exception: " << e.what() << '\n';
+    return 1;
+  }
+  catch (...) {
+    std::cerr << "Caught unknown exception" << '\n';
+    return 1;
   }
 
-  Logger::get().endEvent(total);
-  if (ptree.get("view_report", true)) {
-    Logger::get().report(helper.getCommunicator());
-  }
+  return 0;
 }
