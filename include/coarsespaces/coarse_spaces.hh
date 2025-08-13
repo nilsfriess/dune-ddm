@@ -58,21 +58,8 @@ inline Dune::ParameterTree parse_eigensolver_params(const Dune::ParameterTree &s
  * coarse space construction methods.
  *
  * @param eigenvectors Vector of eigenvectors to process (modified in-place).
- * @param pou Partition of unity vector for scaling.
+ * @param pou Partition of unity.
  */
-template <class Vec>
-void finalize_eigenvectors(std::vector<Vec> &eigenvectors, const Vec &pou)
-{
-  for (auto &vec : eigenvectors) {
-    // Apply partition of unity scaling
-    for (std::size_t i = 0; i < vec.N(); ++i) {
-      vec[i] *= pou[i];
-    }
-    // Normalize to unit length
-    vec *= 1. / vec.two_norm();
-  }
-}
-
 template <class Vec>
 inline void finalize_eigenvectors(std::vector<Vec> &eigenvectors, const PartitionOfUnity &pou)
 {
@@ -207,9 +194,9 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_coarse_
  * @throws Dune::NotImplemented for unknown mode in ptree.
  */
 template <class Mat>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_ring_coarse_space(const Mat &A_dir, const Mat &A, const PartitionOfUnity &pou, const std::vector<std::size_t> &ring_to_subdomain,
-                                                                                           const std::vector<std::size_t> &interior_to_subdomain, const Dune::ParameterTree &ptree,
-                                                                                           const std::string &ptree_prefix = "geneo_ring")
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_ring_coarse_space(const Mat &A_dir, const Mat &A, const PartitionOfUnity &pou,
+                                                                                           const std::vector<std::size_t> &ring_to_subdomain, const std::vector<std::size_t> &interior_to_subdomain,
+                                                                                           const Dune::ParameterTree &ptree, const std::string &ptree_prefix = "geneo_ring")
 {
   spdlog::info("Setting up GenEO ring coarse space");
 
@@ -371,8 +358,9 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_ring_co
  * @throws Dune::NotImplemented for unknown mode in ptree.
  */
 template <class Mat, class MaskVec1, class MaskVec2>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_msgfem_coarse_space(const Mat &A, const PartitionOfUnity &pou, const MaskVec1 &dirichlet_mask, const MaskVec2 &subdomain_boundary_mask,
-                                                                                       const Dune::ParameterTree &ptree, const std::string &ptree_prefix = "msgfem")
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_msgfem_coarse_space(const Mat &A, const PartitionOfUnity &pou, const MaskVec1 &dirichlet_mask,
+                                                                                       const MaskVec2 &subdomain_boundary_mask, const Dune::ParameterTree &ptree,
+                                                                                       const std::string &ptree_prefix = "msgfem")
 {
   if (dirichlet_mask.N() != A.N()) {
     DUNE_THROW(Dune::Exception, "The matrix and the Dirichlet mask must have the same size");
@@ -808,7 +796,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_msgfem_ring_c
  * @param pou Partition of unity vector for scaling.
  * @return Vector containing a single normalized POU coarse space basis vector.
  */
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_pou_coarse_space(const PartitionOfUnity &pou)
+inline std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_pou_coarse_space(const PartitionOfUnity &pou)
 {
   spdlog::info("Setting up POU coarse space");
 
