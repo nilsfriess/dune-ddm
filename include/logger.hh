@@ -1,6 +1,26 @@
 #pragma once
 
+/** @file logger.hh
+    @brief Performance logging utilities for MPI parallel programs.
+
+    This file provides a singleton Logger class for timing events across MPI processes
+    and a setup function for configuring spdlog loggers in MPI environments.
+*/
+
+/**
+ * @defgroup Logging Performance Logging
+ * @brief Utilities for performance monitoring and logging in MPI parallel programs.
+ *
+ * This module provides:
+ * - A singleton Logger class for timing events and generating performance reports
+ * - MPI-aware logging setup utilities
+ * - Scoped timing helpers for automatic event timing
+ *
+ * @{
+ */
+
 #include <chrono>
+#include <deque>
 #include <iomanip>
 #include <iostream>
 #include <mpi.h>
@@ -75,7 +95,7 @@ public:
     return instance;
   }
 
-  Logger() { families.reserve(100); }
+  Logger() = default;
   Logger(const Logger &) = delete;
   Logger(Logger &&) = delete;
   Logger &operator=(const Logger &) = delete;
@@ -307,12 +327,58 @@ private:
     return digits;
   }
 
-  // TODO: This is a bit sketchy because we preallocate memory for the families and events;
-  //       as soon as either of the vectors has to be resized, all pointers to the events
-  //       become invalid. For now it works well enough.
-  std::vector<Family> families;
+  // Storage for families with stable pointers (deque never invalidates pointers to existing elements)
+  std::deque<Family> families;
 };
 
+/**
+ * @brief Setup spdlog loggers for MPI parallel programs.
+ *
+ * This function configures logging in an MPI environment by setting up two loggers:
+ * 1. **Default logger**: Only active on rank 0, uses format "[HH:MM:SS.mmm] [level:0] message"
+ * 2. **All ranks logger**: Active on all ranks, uses format "[HH:MM:SS.mmm] [level:rank] message"
+ *
+ * The function also processes command-line arguments to set log levels dynamically.
+ * On ranks other than 0, the default logger is silenced to avoid duplicate output.
+ *
+ * @param rank The MPI rank of the current process
+ * @param argc Reference to argument count (may be modified by spdlog argument parsing)
+ * @param argv Reference to argument array (may be modified by spdlog argument parsing)
+ *
+ * @note This function should be called early in main() after MPI_Init() but before
+ *       any logging operations.
+ *
+ * ### Usage Example:
+ * @code{.cpp}
+ * int main(int argc, char** argv) {
+ *   MPI_Init(&argc, &argv);
+ *
+ *   int rank;
+ *   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+ *
+ *   setup_loggers(rank, argc, argv);
+ *
+ *   // Now you can use logging
+ *   spdlog::info("This only appears on rank 0");
+ *   spdlog::get("all_ranks")->info("This appears on all ranks with rank number");
+ *
+ *   MPI_Finalize();
+ * }
+ * @endcode
+ *
+ * ### Command Line Log Level Control:
+ * You can control log levels via command line arguments using the SPDLOG_LEVEL format:
+ * @code{.bash}
+ * # Set all loggers to debug level
+ * ./myprogram "SPDLOG_LEVEL=debug"
+ *
+ * # Set all loggers to info level
+ * ./myprogram "SPDLOG_LEVEL=info"
+ *
+ * # Turn off default logger but keep all_ranks logger at debug level
+ * ./myprogram "SPDLOG_LEVEL=off,all_ranks=debug"
+ * @endcode
+ */
 inline void setup_loggers(int rank, int &argc, char **&argv)
 {
   // Default logger (only active on rank 0)
@@ -333,3 +399,5 @@ inline void setup_loggers(int rank, int &argc, char **&argv)
     spdlog::default_logger()->set_level(spdlog::level::off); // Silence logs on all ranks except zero for the default logger
   }
 }
+
+/** @} */ // End of Logging group
