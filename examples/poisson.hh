@@ -7,6 +7,8 @@
 
 #include <dune/common/version.hh>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-W#warnings" // Silence annoying warnings about #warnings in PDELab headers
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/indexset.hh>
 #include <dune/common/parallel/interface.hh>
@@ -31,6 +33,7 @@
 #include <dune/pdelab/localoperator/convectiondiffusiondg.hh>
 #include <dune/pdelab/localoperator/convectiondiffusionfem.hh>
 #include <dune/pdelab/localoperator/convectiondiffusionparameter.hh>
+#pragma pop diagnostic
 
 #include <limits>
 #include <map>
