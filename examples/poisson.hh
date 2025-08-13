@@ -142,7 +142,7 @@ public:
 };
 
 /** @brief Model problem with complex heterogeneous coefficient patterns (islands)
- * 
+ *
  *  This class defines a convection-diffusion problem with complex heterogeneous
  *  diffusion coefficients arranged in geometric patterns resembling "islands".
  *  The coefficient distribution includes:
@@ -150,11 +150,11 @@ public:
  *  - Triangular and trapezoidal regions with high coefficients
  *  - Checkerboard pattern in parts of the domain
  *  - Coefficient values ranging from 1.0 to 10^5 * (position-dependent factors)
- * 
+ *
  *  This creates an even more challenging test case for domain decomposition
  *  methods than the beam problem, with irregular coefficient patterns.
- * 
- *  @tparam GridView The DUNE grid view type  
+ *
+ *  @tparam GridView The DUNE grid view type
  *  @tparam RF The range field type (typically double)
  */
 template <class GridView, class RF>
@@ -223,9 +223,9 @@ public:
 };
 
 /** @brief Check if a grid type is a YASPGrid
- *  
+ *
  *  Distinguishes YASPGrid from UGGrid using the method "torus" which only exists in YASPGrid.
- *  
+ *
  *  @tparam Grid The grid type to check
  *  @return true if the grid is a YASPGrid, false otherwise
  */
@@ -236,25 +236,25 @@ constexpr bool isYASPGrid()
 }
 
 /** @brief A PDELab-based solver for convection-diffusion problems with domain decomposition support
- * 
+ *
  *  This class implements a finite element solver for convection-diffusion problems using the DUNE
  *  PDELab framework. It is specifically designed for domain decomposition methods and provides
  *  functionality to assemble overlapping Dirichlet and Neumann matrices required for coarse space
  *  construction in methods like GenEO and MsGFEM.
- * 
+ *
  *  Key features:
  *  - Supports both continuous Galerkin (CG) and discontinuous Galerkin (DG) discretizations
  *  - Automatic finite element selection based on grid type (Qk for structured, Pk for unstructured)
  *  - Efficient assembly of overlapping matrices for domain decomposition coarse spaces
  *  - Built-in Dirichlet boundary condition handling and symmetric elimination
  *  - MPI-aware parallel assembly with communication of Neumann correction terms
- * 
+ *
  *  The class handles the complete workflow from grid function space setup to matrix assembly,
  *  including proper treatment of constraints, boundary conditions, and parallel communication.
- * 
+ *
  *  @tparam GridView The DUNE grid view type
  *  @tparam USEDG Whether to use discontinuous Galerkin (true) or continuous Galerkin (false)
- * 
+ *
  *  @note The class uses OverlappingEntitySet even in non-overlapping settings to prevent
  *        PDELab from attempting automatic data distribution, as all parallel communication
  *        is handled manually for domain decomposition purposes.
@@ -303,11 +303,11 @@ public:
   using NativeVec = Dune::PDELab::Backend::Native<Vec>;
 
   /** @brief Constructor that sets up the complete finite element discretization
-   * 
+   *
    *  Initializes the grid function space, finite element map, constraints, and assembles
    *  the initial system state including sparsity pattern and residual vector. The constructor
    *  performs the following steps:
-   *  
+   *
    *  1. Sets up finite element map (FEM) based on grid type and discretization choice
    *  2. Creates grid function space (GFS) with appropriate constraints
    *  3. Initializes solution vector with Dirichlet boundary values
@@ -315,10 +315,10 @@ public:
    *  5. Creates grid operator for matrix/vector assembly
    *  6. Assembles initial sparsity pattern and residual vector
    *  7. Performs parallel communication of residual if running with multiple processes
-   * 
+   *
    *  @param gv The grid view defining the computational domain
    *  @param helper MPI helper for parallel communication setup
-   * 
+   *
    *  @note After construction, the object is ready for matrix assembly operations
    *        via assemble_overlapping_matrices() or assemble_dirichlet_matrix_only()
    */
@@ -367,7 +367,7 @@ public:
   /** @brief Assemble only the overlapping Dirichlet matrix
 
       This is a simplified version of assemble_overlapping_matrices() that only assembles
-      the Dirichlet matrix. This is sufficient for coarse spaces like POU that don't 
+      the Dirichlet matrix. This is sufficient for coarse spaces like POU that don't
       require Neumann matrices for eigenproblems.
 
       The created matrix can be accessed via get_dirichlet_matrix().
@@ -774,32 +774,32 @@ public:
   /** @name Vector and matrix accessors
    *  Methods to access the various vectors and matrices used in the problem setup.
    */
-  
+
   /** @brief Get the solution vector (PDELab backend)
    *  @return Reference to the initial solution vector with Dirichlet boundary values
    */
   Vec &getXVec() { return *x0; }
-  
+
   /** @brief Get the solution vector (native ISTL)
    *  @return Reference to the native ISTL solution vector
    */
   NativeVec &getX() { return Dune::PDELab::Backend::native(*x0); }
-  
+
   /** @brief Get the residual vector (native ISTL)
    *  @return Reference to the native ISTL residual vector
    */
   NativeVec &getD() const { return Dune::PDELab::Backend::native(*d); }
-  
+
   /** @brief Get the residual vector (PDELab backend)
    *  @return Reference to the PDELab residual vector
    */
   Vec &getDVec() const { return *d; }
-  
+
   /** @brief Get the Dirichlet constraint mask
    *  @return Reference to vector with 1.0 at Dirichlet DOFs, 0.0 elsewhere
    */
   const Vec &getDirichletMask() const { return *dirichlet_mask; }
-  
+
   /** @brief Get the overlapping Dirichlet constraint mask
    *  @return Reference to Dirichlet mask on the overlapping subdomain (valid after matrix assembly)
    */
@@ -815,12 +815,12 @@ public:
   /** @name Grid function space and entity set accessors
    *  Methods to access the underlying DUNE/PDELab objects.
    */
-  
+
   /** @brief Get the grid function space
    *  @return Reference to the PDELab grid function space
    */
   const GFS &getGFS() const { return *gfs; }
-  
+
   /** @brief Get the entity set
    *  @return Reference to the overlapping entity set used for assembly
    */
@@ -837,23 +837,23 @@ public:
    *  Methods to access matrices assembled for domain decomposition coarse spaces.
    *  These are only valid after calling assemble_overlapping_matrices() or assemble_dirichlet_matrix_only().
    */
-  
+
   /** @brief Get the overlapping Dirichlet matrix
-   *  
+   *
    *  Returns the matrix corresponding to the PDE with Dirichlet boundary conditions
    *  at the overlapping subdomain boundary. This matrix is used on the fine level
    *  in two-level Schwarz methods.
-   *  
+   *
    *  @return Shared pointer to the Dirichlet matrix (nullptr if not yet assembled)
    */
   std::shared_ptr<NativeMat> get_dirichlet_matrix() { return A_dir; }
 
   /** @brief Get the first overlapping Neumann matrix
-   *  
+   *
    *  Returns the matrix corresponding to the PDE with Neumann boundary conditions
    *  at the overlapping subdomain boundary. The region where this matrix is defined
    *  depends on the NeumannRegion parameter used in assemble_overlapping_matrices().
-   *  
+   *
    *  @return Shared pointer to the first Neumann matrix (nullptr if not yet assembled)
    */
   std::shared_ptr<NativeMat> get_first_neumann_matrix() { return A_neu; }
@@ -863,7 +863,7 @@ public:
    *  Returns the restricted Neumann matrix, which may be defined on a different region
    *  than the first Neumann matrix. If both Neumann regions are identical, this returns
    *  the same pointer as get_first_neumann_matrix().
-   *  
+   *
    *  @return Shared pointer to the second Neumann matrix (nullptr if not yet assembled)
    *  @see assemble_overlapping_matrices() for details on when matrices are shared
    */
@@ -874,14 +874,14 @@ public:
   /** @name Index mapping accessors
    *  Methods to access index mappings between different regions (used for ring coarse spaces).
    */
-  
+
   /** @brief Get mapping from Neumann region to subdomain indices
    *  @return Vector mapping Neumann region DOF indices to subdomain DOF indices
    *  @note Only populated when neumann_size_as_dirichlet=false in assemble_overlapping_matrices()
    */
   const std::vector<std::size_t> &get_neumann_region_to_subdomain() const { return neumann_region_to_subdomain; }
 
-  /** @brief Get mapping from overlapping interior to subdomain indices  
+  /** @brief Get mapping from overlapping interior to subdomain indices
    *  @return Vector mapping interior overlap DOF indices to subdomain DOF indices
    *  @note Used for ring coarse space construction
    */
@@ -889,12 +889,12 @@ public:
 
 private:
   /** @brief Symmetrically eliminate Dirichlet degrees of freedom from a matrix
-   * 
+   *
    *  For Dirichlet DOFs (where dirichlet_mask > 0), sets the diagonal entry to 1.0
    *  and all off-diagonal entries in that row to 0.0. Also zeros out the column
    *  entries corresponding to Dirichlet DOFs in other rows. This maintains the
    *  symmetric structure of the matrix while enforcing Dirichlet constraints.
-   * 
+   *
    *  @param A Matrix to modify (modified in place)
    *  @param dirichlet_mask Vector with non-zero values at Dirichlet DOF indices
    */
@@ -917,12 +917,12 @@ private:
   }
 
   /** @brief Symmetrically eliminate Dirichlet degrees of freedom using index mapping
-   * 
+   *
    *  Similar to eliminate_dirichlet() but uses an index mapping to translate between
    *  matrix indices and mask indices. This is used when the matrix has different
    *  dimensions than the mask (e.g., for restricted Neumann matrices).
-   * 
-   *  @param A Matrix to modify (modified in place) 
+   *
+   *  @param A Matrix to modify (modified in place)
    *  @param dirichlet_mask Vector with non-zero values at Dirichlet DOF indices
    *  @param map Index mapping from matrix indices to mask indices
    */
@@ -946,40 +946,40 @@ private:
 
   ///@{
   /** @name Core DUNE/PDELab objects */
-  ES es;                                           ///< Overlapping entity set for local assembly
-  std::unique_ptr<FEM> fem;                        ///< Finite element map
-  std::unique_ptr<GFS> gfs;                        ///< Grid function space
+  ES es;                    ///< Overlapping entity set for local assembly
+  std::unique_ptr<FEM> fem; ///< Finite element map
+  std::unique_ptr<GFS> gfs; ///< Grid function space
 
-  BC bc;                                           ///< Boundary condition adapter
-  CC cc;                                           ///< Constraints container  
-  ModelProblem modelProblem;                       ///< PDE parameter object (coefficients, boundary conditions, source term)
+  BC bc;                     ///< Boundary condition adapter
+  CC cc;                     ///< Constraints container
+  ModelProblem modelProblem; ///< PDE parameter object (coefficients, boundary conditions, source term)
 
-  LOP lop;                                         ///< Local operator for PDE assembly
-  std::unique_ptr<AssembleWrapper<LOP>> wrapper;   ///< Assembly wrapper for mask handling
-  std::unique_ptr<GO> go;                          ///< Grid operator for matrix/vector assembly
+  LOP lop;                                       ///< Local operator for PDE assembly
+  std::unique_ptr<AssembleWrapper<LOP>> wrapper; ///< Assembly wrapper for mask handling
+  std::unique_ptr<GO> go;                        ///< Grid operator for matrix/vector assembly
   ///@}
 
   ///@{
   /** @name Solution and system vectors/matrices */
-  std::unique_ptr<Vec> x;                          ///< Current solution vector
-  std::unique_ptr<Vec> x0;                         ///< Initial solution vector (with Dirichlet boundary values)
-  std::unique_ptr<Vec> d;                          ///< Residual vector
-  std::unique_ptr<Vec> dirichlet_mask;             ///< Mask vector (1.0 at Dirichlet DOFs, 0.0 elsewhere)
-  std::unique_ptr<Mat> As;                         ///< System matrix (PDELab backend)
+  std::unique_ptr<Vec> x;              ///< Current solution vector
+  std::unique_ptr<Vec> x0;             ///< Initial solution vector (with Dirichlet boundary values)
+  std::unique_ptr<Vec> d;              ///< Residual vector
+  std::unique_ptr<Vec> dirichlet_mask; ///< Mask vector (1.0 at Dirichlet DOFs, 0.0 elsewhere)
+  std::unique_ptr<Mat> As;             ///< System matrix (PDELab backend)
   ///@}
 
   ///@{
   /** @name Domain decomposition matrices */
-  std::shared_ptr<NativeMat> A_dir;                ///< Overlapping Dirichlet matrix (assembled after matrix assembly call)
-  std::shared_ptr<NativeMat> A_neu;                ///< First overlapping Neumann matrix
-  std::shared_ptr<NativeMat> B_neu;                ///< Second/restricted Neumann matrix (may share memory with A_neu)
+  std::shared_ptr<NativeMat> A_dir; ///< Overlapping Dirichlet matrix (assembled after matrix assembly call)
+  std::shared_ptr<NativeMat> A_neu; ///< First overlapping Neumann matrix
+  std::shared_ptr<NativeMat> B_neu; ///< Second/restricted Neumann matrix (may share memory with A_neu)
   ///@}
 
-  ///@{  
+  ///@{
   /** @name Index mappings for ring coarse spaces */
   std::vector<std::size_t> neumann_region_to_subdomain; ///< Mapping from Neumann region DOF index to subdomain DOF index
   std::vector<std::size_t> interior_to_subdomain;       ///< Mapping from interior overlap DOF index to subdomain DOF index
   ///@}
 
-  NativeVec dirichlet_mask_ovlp;                   ///< Dirichlet mask on overlapping subdomain
+  NativeVec dirichlet_mask_ovlp; ///< Dirichlet mask on overlapping subdomain
 };
