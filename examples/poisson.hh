@@ -619,18 +619,20 @@ public:
       // Just to be sure
       eliminate_dirichlet(*A_neu, dirichlet_mask_ovlp);
     }
-    else if (first_neumann_region == NeumannRegion::ExtendedOverlap) {
+    else if (first_neumann_region == NeumannRegion::ExtendedOverlap or first_neumann_region == NeumannRegion::Overlap) {
+      auto neumann_region_width = first_neumann_region == NeumannRegion::ExtendedOverlap ? 2 * overlap + 1 : 2 * overlap;
+
       if (neumann_size_as_dirichlet) {
         // First create a copy of the Dirichlet matrix, but only those entries in the extended overlap region
         auto avg = A_dir->nonzeroes() / A_dir->N() + 2;
         A_neu = std::make_shared<NativeMat>(A_dir->N(), A_dir->N(), avg, 0.2, NativeMat::implicit);
         for (auto ri = A_dir->begin(); ri != A_dir->end(); ++ri) {
-          if (boundary_dst[ri.index()] > 2 * overlap + 1) {
+          if (boundary_dst[ri.index()] > neumann_region_width) {
             continue;
           }
 
           for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-            if (boundary_dst[ci.index()] > 2 * overlap + 1) {
+            if (boundary_dst[ci.index()] > neumann_region_width) {
               continue;
             }
 
@@ -664,11 +666,11 @@ public:
         // In this case, we essentially do the same thing as above but now the matrix is only defined on the overlap region
         // (whereas above it is just zero everywhere else). We start by creating an index set for the overlap region, i.e.,
         // a vector with as many entries as there are dofs in the overlap regions that maps 'overlap region index' -> 'subdomain index'.
-        auto n = std::count_if(boundary_dst.begin(), boundary_dst.end(), [overlap](auto &&x) { return x <= 2 * overlap + 1; });
+        auto n = std::count_if(boundary_dst.begin(), boundary_dst.end(), [&](auto &&x) { return x <= neumann_region_width; });
         neumann_region_to_subdomain.resize(n);
         std::size_t cnt = 0;
         for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
-          if (boundary_dst[i] <= 2 * overlap + 1) {
+          if (boundary_dst[i] <= neumann_region_width) {
             neumann_region_to_subdomain[cnt++] = i;
           }
         }
@@ -680,17 +682,6 @@ public:
           subdomain_to_neumann_region[neumann_region_to_subdomain[i]] = i;
         }
 
-        // Additionally, create a mapping from the interior, overlapping one layer with the extended overlap, to the subdomain
-        // TODO: I'm not sure if this is the correct place to build this. This is only needed in the ring coarse spaces.
-        auto N = std::count_if(boundary_dst.begin(), boundary_dst.end(), [&](auto &&x) { return x >= 2 * overlap; });
-        interior_to_subdomain.resize(N);
-        cnt = 0;
-        for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
-          if (boundary_dst[i] >= 2 * overlap) {
-            interior_to_subdomain[cnt++] = i;
-          }
-        }
-
         // Then, build the matrix
         auto avg = A_dir->nonzeroes() / A_dir->N() + 2;
         A_neu = std::make_shared<NativeMat>(n, n, avg, 0.2, NativeMat::implicit);
@@ -698,7 +689,7 @@ public:
         for (std::size_t i = 0; i < neumann_region_to_subdomain.size(); ++i) {
           auto ri = neumann_region_to_subdomain[i];
           for (auto ci = (*A_dir)[ri].begin(); ci != (*A_dir)[ri].end(); ++ci) {
-            if (boundary_dst[ci.index()] > 2 * overlap + 1) {
+            if (boundary_dst[ci.index()] > neumann_region_width) {
               continue;
             }
 
@@ -881,12 +872,6 @@ public:
    */
   const std::vector<std::size_t> &get_neumann_region_to_subdomain() const { return neumann_region_to_subdomain; }
 
-  /** @brief Get mapping from overlapping interior to subdomain indices
-   *  @return Vector mapping interior overlap DOF indices to subdomain DOF indices
-   *  @note Used for ring coarse space construction
-   */
-  const std::vector<std::size_t> &get_overlapping_interior_to_subdomain() const { return interior_to_subdomain; }
-
 private:
   /** @brief Symmetrically eliminate Dirichlet degrees of freedom from a matrix
    *
@@ -978,7 +963,6 @@ private:
   ///@{
   /** @name Index mappings for ring coarse spaces */
   std::vector<std::size_t> neumann_region_to_subdomain; ///< Mapping from Neumann region DOF index to subdomain DOF index
-  std::vector<std::size_t> interior_to_subdomain;       ///< Mapping from interior overlap DOF index to subdomain DOF index
   ///@}
 
   NativeVec dirichlet_mask_ovlp; ///< Dirichlet mask on overlapping subdomain

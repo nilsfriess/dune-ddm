@@ -273,8 +273,11 @@ int main(int argc, char *argv[])
     else if (coarsespace == "pou") {
       problem.assemble_dirichlet_matrix_only(ext_indices);
     }
-    else if (coarsespace == "geneo_ring" or coarsespace == "msgfem_ring") {
+    else if (coarsespace == "geneo_ring") {
       problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, false);
+    }
+    else if (coarsespace == "msgfem_ring") {
+      problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::Overlap, NeumannRegion::Overlap, false);
     }
     else {
       DUNE_THROW(Dune::NotImplemented, "Unknown coarse space");
@@ -319,7 +322,7 @@ int main(int argc, char *argv[])
       coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
     }
     else if (coarsespace == "geneo_ring") {
-      basis = std::move(build_geneo_ring_coarse_space(*A_dir, *A_neu, *pou, problem.get_neumann_region_to_subdomain(), problem.get_overlapping_interior_to_subdomain(), ptree));
+      basis = std::move(build_geneo_ring_coarse_space(*A_dir, *A_neu, *pou, problem.get_neumann_region_to_subdomain(), ptree));
       std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
       coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
     }
@@ -329,12 +332,12 @@ int main(int argc, char *argv[])
       std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
       coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
     }
-    else if (coarsespace == "msgfem_ring") {
-      basis = std::move(build_msgfem_ring_coarse_space(*A_dir, *A_neu, *pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(),
-                                                       problem.get_neumann_region_to_subdomain(), problem.get_overlapping_interior_to_subdomain(), ptree));
-      std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
-      coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
-    }
+    // else if (coarsespace == "msgfem_ring") {
+    //   basis = std::move(build_msgfem_ring_coarse_space(*A_dir, *A_neu, *pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(),
+    //                                                    problem.get_neumann_region_to_subdomain(), problem.get_overlapping_interior_to_subdomain(), ptree));
+    //   std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
+    //   coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+    // }
     else if (coarsespace == "pou") {
       basis = std::move(build_pou_coarse_space(*pou));
       std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
@@ -513,23 +516,23 @@ int main(int argc, char *argv[])
         writer.addVertexData(std::make_shared<VTKF>(dgfpou, "Basis vec " + std::format("{:04}", k)));
       }
 
-      // Interior region
-      Native<Vec> interior_region(ext_indices.size());
-      interior_region = 0;
-      if (helper.rank() == ptree.get("debug_rank", 0)) {
-        for (const auto &idx : problem.get_overlapping_interior_to_subdomain()) {
-          interior_region[idx] = 1;
-        }
-      }
-      advdh.setVec(interior_region);
-      all_all_comm.forward(advdh);
-      Native<Vec> interior_region_small(problem.getX().N());
-      for (std::size_t i = 0; i < interior_region_small.size(); ++i) {
-        interior_region_small[i] = interior_region[i];
-      }
-      P::Vec interior_gf(problem.getGFS(), interior_region_small);
-      DGF interior_dgf(problem.getGFS(), interior_gf);
-      writer.addVertexData(std::make_shared<VTKF>(interior_dgf, "Interior region"));
+      // // Interior region
+      // Native<Vec> interior_region(ext_indices.size());
+      // interior_region = 0;
+      // if (helper.rank() == ptree.get("debug_rank", 0)) {
+      //   for (const auto &idx : problem.get_overlapping_interior_to_subdomain()) {
+      //     interior_region[idx] = 1;
+      //   }
+      // }
+      // advdh.setVec(interior_region);
+      // all_all_comm.forward(advdh);
+      // Native<Vec> interior_region_small(problem.getX().N());
+      // for (std::size_t i = 0; i < interior_region_small.size(); ++i) {
+      //   interior_region_small[i] = interior_region[i];
+      // }
+      // P::Vec interior_gf(problem.getGFS(), interior_region_small);
+      // DGF interior_dgf(problem.getGFS(), interior_gf);
+      // writer.addVertexData(std::make_shared<VTKF>(interior_dgf, "Interior region"));
 
       // Ring region
       Native<Vec> ring_region(ext_indices.size());

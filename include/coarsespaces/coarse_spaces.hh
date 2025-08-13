@@ -171,6 +171,11 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_coarse_
  * This is computationally cheaper than the classical GenEO method since both the
  * eigenproblem and extension are more efficient than solving on the full domain.
  *
+ * The interior-to-subdomain mapping and inner ring boundary are automatically computed
+ * based on the connectivity information in the Dirichlet matrix A_dir. DOFs not in the
+ * ring are identified as interior DOFs, and the inner ring boundary is determined by
+ * finding ring DOFs that have neighbors outside the ring.
+ *
  * The selection of eigenfunctions is controlled via parameters in the subtree
  * of \p ptree named \p ptree_prefix ("geneo_ring" by default).
  *
@@ -182,11 +187,10 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_coarse_
  *   - `n_max`: Maximum number of eigenvectors (default: 100)
  *   - `threshold`: Eigenvalue threshold for selection (default: 0.5)
  *
- * @param A_dir Dirichlet matrix for energy-minimal extension.
- * @param A Matrix for eigenproblem (typically Neumann matrix).
+ * @param A_dir Dirichlet matrix for energy-minimal extension and connectivity analysis.
+ * @param A Matrix for eigenproblem (typically Neumann matrix on the ring).
  * @param pou Partition of unity vector.
  * @param ring_to_subdomain Mapping from ring dofs to subdomain indices.
- * @param interior_to_subdomain Mapping from interior dofs to subdomain indices.
  * @param ptree ParameterTree containing solver and selection parameters.
  * @param ptree_prefix Prefix for parameter subtree (default: "geneo_ring").
  * @return Vector of normalized GenEO ring coarse space basis vectors.
@@ -195,30 +199,48 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_coarse_
  */
 template <class Mat>
 std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_ring_coarse_space(const Mat &A_dir, const Mat &A, const PartitionOfUnity &pou,
-                                                                                           const std::vector<std::size_t> &ring_to_subdomain, const std::vector<std::size_t> &interior_to_subdomain,
-                                                                                           const Dune::ParameterTree &ptree, const std::string &ptree_prefix = "geneo_ring")
+                                                                                           const std::vector<std::size_t> &ring_to_subdomain, const Dune::ParameterTree &ptree,
+                                                                                           const std::string &ptree_prefix = "geneo_ring")
 {
   spdlog::info("Setting up GenEO ring coarse space");
 
   using Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>;
 
-  if (ring_to_subdomain.empty()) {
-    DUNE_THROW(Dune::Exception, "The ring to subdomain mapping is empty, cannot build MsGFEM ring coarse space");
-  }
-
   const auto &subtree = ptree.sub(ptree_prefix);
 
-  std::unordered_set<std::size_t> subdomain_to_ring;
-  for (const auto &i : ring_to_subdomain) {
-    subdomain_to_ring.insert(i);
+  // We first create a modified partition of unity that vanishes in the interior (i.e. the region outside the "ring")
+  // and on the inner boundary of the ring. We also create a interior-to-subdomain mapping.
+
+  std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
+  for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
+    subdomain_to_ring[ring_to_subdomain[i]] = i;
   }
 
+  std::vector<std::size_t> interior_to_subdomain(A_dir.N() - ring_to_subdomain.size(), 0);
+  std::vector<std::size_t> inner_ring_boundary_to_subdomain;
+  std::unordered_set<std::size_t> inner_ring_boundary_dofs; // For fast lookup
+  inner_ring_boundary_to_subdomain.reserve(ring_to_subdomain.size());
+
   auto mod_pou = pou;
-  for (const auto &i : interior_to_subdomain) {
-    if (not subdomain_to_ring.contains(i)) {
+  std::size_t cnt = 0;
+  for (std::size_t i = 0; i < mod_pou.size(); ++i) {
+    if (not subdomain_to_ring.contains(i)) { // Zero in the interior
+      interior_to_subdomain[cnt++] = i;
       mod_pou[i] = 0;
     }
+    else {
+      for (auto ci = A_dir[i].begin(); ci != A_dir[i].end(); ++ci) {
+        if (not subdomain_to_ring.contains(ci.index())) {
+          // A neighbouring dof of dof i is outside the ring => dof i is on the ring boundary
+          inner_ring_boundary_dofs.insert(i);
+          inner_ring_boundary_to_subdomain.push_back(i);
+          mod_pou[i] = 0;
+          break;
+        }
+      }
+    }
   }
+  assert(cnt == interior_to_subdomain.size());
 
   Mat C = A; // The rhs of the eigenproblem
   detail::scale_matrix_with_pou(C, mod_pou, ring_to_subdomain);
@@ -227,78 +249,54 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_ring_co
   Dune::ParameterTree eig_ptree = detail::parse_eigensolver_params(subtree);
   auto eigenvectors = solveGEVP(A, C, Eigensolver::Spectra, eig_ptree);
 
-  // We need to identify the boundary from which we extend the eigenvectors. This can be
-  // done by looping over the interior dofs and check if they have a neighbour that is in
-  // the ring.
-  std::unordered_set<std::size_t> ring_dofs;
-  for (const auto &i : ring_to_subdomain) {
-    ring_dofs.insert(i);
-  }
-
-  std::unordered_set<std::size_t> interior_dofs;
-  for (const auto &i : interior_to_subdomain) {
-    interior_dofs.insert(i);
-  }
-
+  // Now we have computed a set of eigenvectors on the ring. To obtain basis vectors on the full
+  // subdomain, we extend those eigenvectors energy-minimally to the interior. However, we don't
+  // extend from the inner ring boundary but from one layer within the ring, as required by the
+  // theory.
+  // TODO: Allow to extend from the inner ring boundary to compare the effect in the numerical results.
   std::vector<std::size_t> inside_ring_boundary_to_subdomain;
   inside_ring_boundary_to_subdomain.reserve(ring_to_subdomain.size());
-  for (const auto &idx : interior_to_subdomain) {
-    for (auto ci = A_dir[idx].begin(); ci != A_dir[idx].end(); ++ci) {
-      if (idx == ci.index() or interior_dofs.contains(ci.index())) {
-        continue;
-      }
-
-      if (ring_dofs.contains(ci.index())) {
-        inside_ring_boundary_to_subdomain.push_back(idx);
-        continue;
+  for (auto i : ring_to_subdomain) {
+    for (auto ci = A_dir[i].begin(); ci != A_dir[i].end(); ++ci) {
+      // Check if a neighbouring dof of dof i lies on the inner ring boundary but i itself does not
+      if (inner_ring_boundary_dofs.contains(ci.index()) and not inner_ring_boundary_dofs.contains(i)) {
+        inside_ring_boundary_to_subdomain.push_back(i);
       }
     }
   }
 
-  std::unordered_set<std::size_t> inside_ring_boundary_dofs;
-  for (const auto &i : inside_ring_boundary_to_subdomain) {
-    inside_ring_boundary_dofs.insert(i);
+  // Of course we then also have to extend the "interior" to also include the inner ring boundary
+  std::vector<std::size_t> extended_interior_to_subdomain(interior_to_subdomain.size() + inner_ring_boundary_to_subdomain.size());
+  cnt = 0;
+  for (auto i : interior_to_subdomain) {
+    extended_interior_to_subdomain[cnt++] = i;
   }
-
-  std::vector<std::size_t> actual_interior_to_subdomain;
-  actual_interior_to_subdomain.reserve(interior_to_subdomain.size());
-
-  for (const auto &i : interior_to_subdomain) {
-    if (not inside_ring_boundary_dofs.contains(i)) {
-      actual_interior_to_subdomain.push_back(i);
-    }
-  }
-
-  // Invert the mapping
-  std::unordered_map<std::size_t, std::size_t> subdomain_to_inside_ring_boundary;
-  subdomain_to_inside_ring_boundary.reserve(inside_ring_boundary_to_subdomain.size());
-  for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) {
-    subdomain_to_inside_ring_boundary[inside_ring_boundary_to_subdomain[i]] = i;
+  for (auto i : inner_ring_boundary_to_subdomain) {
+    extended_interior_to_subdomain[cnt++] = i;
   }
 
   // Next, we extend the eigenvectors energy-minimally to the rest of the domain
-  EnergyMinimalExtension<Mat, Vec> ext(A_dir, actual_interior_to_subdomain, inside_ring_boundary_to_subdomain);
+  EnergyMinimalExtension<Mat, Vec> ext(A_dir, extended_interior_to_subdomain, inside_ring_boundary_to_subdomain);
+
+  // Here we create another map from 'inside ring boundary' to 'ring' to avoid too many hash map lookups below
+  std::vector<std::size_t> inside_boundary_to_ring(inside_ring_boundary_to_subdomain.size());
+  for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) {
+    inside_boundary_to_ring[i] = subdomain_to_ring[inside_ring_boundary_to_subdomain[i]];
+  }
 
   Vec zero(A_dir.N());
   zero = 0;
   std::vector<Vec> combined_vectors(eigenvectors.size(), zero);
 
+  Vec dirichlet_data(inside_ring_boundary_to_subdomain.size()); // Will be set each iteration
   for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
     const auto &evec = eigenvectors[k];
 
-    Vec evec_dirichlet(inside_ring_boundary_to_subdomain.size());
-    for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) {
-      evec_dirichlet[i] = evec[inside_ring_boundary_to_subdomain[i]];
+    for (std::size_t i = 0; i < inside_boundary_to_ring.size(); ++i) {
+      dirichlet_data[i] = evec[inside_boundary_to_ring[i]];
     }
 
-    for (std::size_t i = 0; i < evec.N(); ++i) {
-      auto subdomain_idx = ring_to_subdomain[i];
-      if (subdomain_to_inside_ring_boundary.contains(subdomain_idx)) {
-        evec_dirichlet[subdomain_to_inside_ring_boundary[subdomain_idx]] = evec[i];
-      }
-    }
-
-    auto interior_vec = ext.extend(evec_dirichlet);
+    auto interior_vec = ext.extend(dirichlet_data);
 
     // First set the values in the ring
     for (std::size_t i = 0; i < evec.N(); ++i) {
@@ -307,7 +305,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> build_geneo_ring_co
 
     // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
     for (std::size_t i = 0; i < interior_vec.N(); ++i) {
-      combined_vectors[k][actual_interior_to_subdomain[i]] = interior_vec[i];
+      combined_vectors[k][extended_interior_to_subdomain[i]] = interior_vec[i];
     }
   }
 
