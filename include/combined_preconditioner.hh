@@ -16,19 +16,42 @@
 #include <utility>
 #include <vector>
 
-enum class ApplyMode : std::uint8_t { Additive, Multiplicative };
+/**
+ * @brief Enumeration for different modes of combining preconditioners
+ */
+enum class ApplyMode : std::uint8_t {
+  Additive,      /**< Sum all preconditioner results: P = P₁ + P₂ + ... + Pₙ */
+  Multiplicative /**< Apply preconditioners sequentially with residual updates */
+};
 
 /**
  * @brief A class to combine multiple preconditioners to create a new one.
  *
- * This class allows to combine two preconditioners of type Dune::Preconditioner<X, Y>
- * into a new one (either additively or multiplicatively). If the apply mode is
- * multiplicative, then an operator of type Dune::LinearOperator<X, Y> must be provided
- * using the method set_op().
+ * This class allows to combine multiple preconditioners of type Dune::Preconditioner<X, Y>
+ * into a new one (either additively or multiplicatively). Preconditioners are applied
+ * in the order they are added using the add() method.
+ *
+ * In additive mode, the result is the sum of all preconditioner applications:
+ * P = P₁ + P₂ + ... + Pₙ
+ *
+ * In multiplicative mode, preconditioners are applied sequentially with residual updates:
+ * x₀ = P₁(d), x₁ = x₀ + P₂(d - A*x₀), x₂ = x₁ + P₃(d - A*x₁), ...
+ * For multiplicative mode, an operator A must be provided using set_op().
  */
 template <class X, class Y = X>
 class CombinedPreconditioner : public Dune::Preconditioner<X, Y> {
 public:
+  /**
+   * @brief Constructor that sets up the combined preconditioner from configuration.
+   *
+   * @param ptree Parameter tree containing configuration options
+   * @param subtree_name Name of the subtree in ptree to read configuration from (default: "combined_preconditioner")
+   *
+   * Configuration options:
+   * - mode: Either "additive" or "multiplicative" (default: "additive")
+   *
+   * @throws Dune::NotImplemented if an unknown mode is specified
+   */
   explicit CombinedPreconditioner(const Dune::ParameterTree &ptree, const std::string &subtree_name = "combined_preconditioner")
   {
     const auto &subtree = ptree.sub(subtree_name);
@@ -60,9 +83,10 @@ public:
 
   /**
    * Add another preconditioner. The order in which the preconditioners are applied is
-   * the same order in which they are added (either using this method, the constructor,
-   * or a combination of both).
-   * @param prec The new preconditioner
+   * the same order in which they are added using this method.
+   *
+   * @param prec The new preconditioner to add
+   * @throws Dune::Exception if the category of the new preconditioner doesn't match existing ones
    */
   void add(std::shared_ptr<Dune::Preconditioner<X, Y>> prec)
   {
@@ -76,6 +100,15 @@ public:
     spdlog::info("Adding new preconditioner to CombinedPreconditioner, now has {}", precs.size());
   }
 
+  /**
+   * @brief Set the linear operator for multiplicative mode.
+   *
+   * This operator is required when using multiplicative mode to compute residuals
+   * between preconditioner applications. The operator A should represent the same
+   * linear system that the preconditioners are designed to solve.
+   *
+   * @param A The linear operator
+   */
   void set_op(std::shared_ptr<Dune::LinearOperator<X, Y>> A) { this->A = A; }
 
   void pre(X &x, Y &y) override
@@ -131,12 +164,18 @@ public:
   }
 
 private:
+  /** @brief Initialize logging events for performance monitoring */
   void initLogEvents() { apply_event = Logger::get().registerEvent("CombinedPreconditioner", "apply"); }
 
+  /** @brief Vector of preconditioners to be combined */
   std::vector<std::shared_ptr<Dune::Preconditioner<X, Y>>> precs;
+
+  /** @brief Mode for combining preconditioners (additive or multiplicative) */
   ApplyMode mode;
 
+  /** @brief Linear operator used for residual computation in multiplicative mode */
   std::shared_ptr<Dune::LinearOperator<X, Y>> A;
 
+  /** @brief Logging event for timing the apply method */
   Logger::Event *apply_event{};
 };
