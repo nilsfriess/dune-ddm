@@ -48,22 +48,22 @@
 
 /** @brief Determines the region where the "restricted Neumann" matrix is defined (to be used with the function PoissonProblem#assemble_overlapping_matrices()).
  */
-enum class NeumannRegion {
+enum class NeumannRegion : std::uint8_t {
   Overlap,         ///< Restricted Neumann matrix is only defined in the overlapping region
   ExtendedOverlap, ///< Restricted Neumann matrix is defined in the overlap + one additional layer of finite elements towards the interior
   All              ///< Restricted Neumann matrix is defined on the whole subdomain
 };
 
 /** @brief Model problem with heterogeneous coefficients arranged in vertical beams
- * 
+ *
  *  This class defines a convection-diffusion problem with strongly heterogeneous
  *  diffusion coefficients. The domain features vertical "beams" with high diffusion
  *  coefficient (1e6) arranged in a regular pattern, surrounded by regions with
  *  low diffusion coefficient (1). This creates a challenging problem for domain
  *  decomposition methods due to the strong contrast in material properties.
- * 
+ *
  *  The problem uses Dirichlet boundary conditions and a unit source term.
- * 
+ *
  *  @tparam GridView The DUNE grid view type
  *  @tparam RF The range field type (typically double)
  */
