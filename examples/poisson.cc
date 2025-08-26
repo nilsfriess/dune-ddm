@@ -62,6 +62,7 @@
 
 #include <mpi.h>
 #include <spdlog/spdlog.h>
+#include <taskflow/taskflow.hpp>
 
 #include "coarsespaces/coarse_spaces.hh"
 #include "combined_preconditioner.hh"
@@ -234,6 +235,9 @@ int main(int argc, char *argv[])
     const auto &helper = Dune::MPIHelper::instance(argc, argv);
     setup_loggers(helper.rank(), argc, argv);
 
+    // Create the taskflow that will hold all the tasks
+    tf::Taskflow taskflow("Main taskflow");
+
     auto *matrix_setup = Logger::get().registerEvent("Total", "Setup problem");
     auto *prec_setup = Logger::get().registerEvent("Total", "Setup preconditioner");
     auto *solve = Logger::get().registerEvent("Total", "Linear solve");
@@ -273,7 +277,7 @@ int main(int argc, char *argv[])
     else if (coarsespace == "msgfem") {
       problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
     }
-    else if (coarsespace == "pou") {
+    else if (coarsespace == "pou" or coarsespace == "none") {
       problem.assemble_dirichlet_matrix_only(ext_indices);
     }
     else if (coarsespace == "geneo_ring") {
@@ -305,12 +309,12 @@ int main(int argc, char *argv[])
     }
 
     // Now we can create the preconditioner. First the fine level overlapping Schwarz method
-    auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(A_dir, ext_indices, pou, ptree);
+    spdlog::info("Setting up tasks");
+    auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(A_dir, ext_indices, pou, ptree, taskflow);
 
     using CoarseLevel = GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(*remoteparidxs.first)>>;
     std::shared_ptr<CoarseLevel> coarse;
 
-    std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> basis;
     const auto zero_at_dirichlet = [&](auto &&x) {
       for (std::size_t i = 0; i < x.size(); ++i) {
         if (problem.get_overlapping_dirichlet_mask()[i] > 0) {
@@ -319,32 +323,27 @@ int main(int argc, char *argv[])
       }
     };
 
+    std::unique_ptr<CoarseSpaceBuilder<>> coarse_space = nullptr;
+
     if (coarsespace == "geneo") {
-      basis = std::move(build_geneo_coarse_space(*A_neu, *B_neu, *pou, ptree));
-      std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
-      coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+      coarse_space = std::make_unique<GenEOCoarseSpace<Native<Mat>>>(A_neu, B_neu, pou, ptree, taskflow);
     }
     else if (coarsespace == "geneo_ring") {
-      basis = std::move(build_geneo_ring_coarse_space(*A_dir, *A_neu, *pou, problem.get_neumann_region_to_subdomain(), ptree));
-      std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
-      coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+      coarse_space = std::make_unique<GenEORingCoarseSpace<Native<Mat>>>(A_dir, A_neu, pou, problem.get_neumann_region_to_subdomain(), ptree, taskflow);
     }
     else if (coarsespace == "msgfem") {
       // We only pass one matrix here, because the oversampling is simulated using the partition of unity
-      basis = std::move(build_msgfem_coarse_space(*A_neu, *pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), ptree));
-      std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
-      coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+      coarse_space = std::make_unique<
+          MsGFEMCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>, std::remove_reference_t<decltype(ext_indices.get_overlapping_boundary_mask())>>>(
+          A_neu, pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), ptree, taskflow);
     }
     else if (coarsespace == "msgfem_ring") {
-      basis = std::move(build_msgfem_ring_coarse_space(*A_dir, *A_neu, overlap, *pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(),
-                                                       problem.get_neumann_region_to_subdomain(), ptree));
-      std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
-      coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+      coarse_space = std::make_unique<MsGFEMRingCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>,
+                                                            std::remove_reference_t<decltype(ext_indices.get_overlapping_boundary_mask())>>>(
+          A_dir, A_neu, overlap, pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), problem.get_neumann_region_to_subdomain(), ptree, taskflow);
     }
     else if (coarsespace == "pou") {
-      basis = std::move(build_pou_coarse_space(*pou));
-      std::for_each(basis.begin(), basis.end(), zero_at_dirichlet);
-      coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+      coarse_space = std::make_unique<POUCoarseSpace<>>(pou, taskflow);
     }
     else if (coarsespace == "none") {
       // Nothing to do here
@@ -353,21 +352,18 @@ int main(int argc, char *argv[])
       DUNE_THROW(Dune::NotImplemented, "Unknown coarse space");
     }
 
-    // Finally, create the parallel scalar product, parallel operator, and the two-level preconditioner
+    tf::Task prec_setup_task;
+    std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> basis;
+    if (coarse_space) {
+      prec_setup_task = taskflow.emplace([&]() {
+        basis = coarse_space->get_basis();
+        std::ranges::for_each(basis, zero_at_dirichlet);
+        coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+      });
 
-    // Create a mask for the owned indices for the scalar product
-    std::vector<unsigned> mask(problem.getD().N(), 1);
-    for (const auto &idx : *remoteparidxs.second) {
-      if (idx.local().attribute() != Attribute::owner) {
-        mask[idx.local()] = 0;
-      }
+      prec_setup_task.name("Build coarse preconditioner");
+      prec_setup_task.succeed(coarse_space->get_setup_task());
     }
-
-    auto my_dofs = std::count_if(mask.begin(), mask.end(), [](auto e) { return e > 0; });
-    auto sum = helper.getCommunication().sum(my_dofs);
-    spdlog::info("Total dofs: {}", sum);
-
-    MaskedScalarProduct<Native<Vec>, decltype(helper.getCommunication())> sp(mask, helper.getCommunication());
 
     // Build the parallel operator
     const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
@@ -377,54 +373,95 @@ int main(int argc, char *argv[])
     communicator->build<Native<Vec>>(all_all_interface);
     auto op = std::make_shared<NonoverlappingOperator<Native<Mat>, Native<Vec>, Native<Vec>>>(problem.getA(), communicator);
 
-    // Lastly, build the full preconditioner
-    ApplyMode applymode = ApplyMode::Additive;
-    auto applymode_param = ptree.get("applymode", "additive");
-    if (applymode_param == "multiplicative") {
-      applymode = ApplyMode::Multiplicative;
-    }
     CombinedPreconditioner<Native<Vec>> prec(ptree);
-    prec.set_op(op);
-    prec.add(schwarz);
-    if (coarse) {
-      prec.add(coarse);
-    }
+    auto combine_preconditioners_task = taskflow
+                                            .emplace([&]() {
+                                              // Lastly, build the full preconditioner
+                                              ApplyMode applymode = ApplyMode::Additive;
+                                              auto applymode_param = ptree.get("applymode", "additive");
+                                              if (applymode_param == "multiplicative") {
+                                                applymode = ApplyMode::Multiplicative;
+                                              }
 
-    MPI_Barrier(MPI_COMM_WORLD);
-    Logger::get().endEvent(prec_setup);
+                                              prec.set_op(op);
+                                              prec.add(schwarz);
+                                              if (coarse) {
+                                                prec.add(coarse);
+                                              }
 
-    Logger::get().startEvent(solve);
-    using SolverVec = Native<Vec>;
-    std::unique_ptr<Dune::IterativeSolver<SolverVec, SolverVec>> solver;
-    auto maxit = ptree.get("maxit", 1000);
-    auto tol = ptree.get("tolerance", 1e-8);
-    auto solvertype = ptree.get("solver", "gmres");
-    if (solvertype == "cg") {
-      solver = std::make_unique<Dune::CGSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0, helper.rank() == 0 ? verbose > 0 : false);
-    }
-    else if (solvertype == "none") {
-      solver = std::make_unique<Dune::LoopSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
-    }
-    else if (solvertype == "bicgstab") {
-      solver = std::make_unique<Dune::BiCGSTABSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
-    }
-    else {
-      solver = std::make_unique<Dune::RestartedGMResSolver<SolverVec>>(*op, sp, prec, tol, 50, maxit, helper.rank() == 0 ? verbose : 0);
-      if (solvertype != "gmres") {
-        if (helper.rank() == 0) {
-          std::cout << "WARNING: Unknown solver type '" << solvertype << "', using GMRES instead\n";
-        }
-      }
-    }
+                                              MPI_Barrier(MPI_COMM_WORLD);
+                                              Logger::get().endEvent(prec_setup);
+                                            })
+                                            .name("Setup combined preconditioner")
+                                            .succeed(prec_setup_task, schwarz->get_setup_task());
 
-    Dune::InverseOperatorResult res;
-    Native<Vec> v(native(problem.getX()));
-    Native<Vec> b = problem.getD();
+    auto setup_solver_task = taskflow
+                                 .emplace([&]() {
+                                   // Create a mask for the owned indices for the scalar product
+                                   std::vector<unsigned> mask(problem.getD().N(), 1);
+                                   for (const auto &idx : *remoteparidxs.second) {
+                                     if (idx.local().attribute() != Attribute::owner) {
+                                       mask[idx.local()] = 0;
+                                     }
+                                   }
 
-    v = 0;
-    solver->apply(v, b, res);
-    problem.getX() -= v;
-    Logger::get().endEvent(solve);
+                                   auto my_dofs = std::count_if(mask.begin(), mask.end(), [](auto e) { return e > 0; });
+                                   auto sum = helper.getCommunication().sum(my_dofs);
+                                   spdlog::info("Total dofs: {}", sum);
+
+                                   MaskedScalarProduct<Native<Vec>, decltype(helper.getCommunication())> sp(mask, helper.getCommunication());
+
+                                   Logger::get().startEvent(solve);
+                                   using SolverVec = Native<Vec>;
+                                   std::unique_ptr<Dune::IterativeSolver<SolverVec, SolverVec>> solver;
+                                   auto maxit = ptree.get("maxit", 1000);
+                                   auto tol = ptree.get("tolerance", 1e-8);
+                                   auto solvertype = ptree.get("solver", "gmres");
+                                   if (solvertype == "cg") {
+                                     solver = std::make_unique<Dune::CGSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0, helper.rank() == 0 ? verbose > 0 : false);
+                                   }
+                                   else if (solvertype == "none") {
+                                     solver = std::make_unique<Dune::LoopSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
+                                   }
+                                   else if (solvertype == "bicgstab") {
+                                     solver = std::make_unique<Dune::BiCGSTABSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
+                                   }
+                                   else {
+                                     solver = std::make_unique<Dune::RestartedGMResSolver<SolverVec>>(*op, sp, prec, tol, 50, maxit, helper.rank() == 0 ? verbose : 0);
+                                     if (solvertype != "gmres") {
+                                       if (helper.rank() == 0) {
+                                         std::cout << "WARNING: Unknown solver type '" << solvertype << "', using GMRES instead\n";
+                                       }
+                                     }
+                                   }
+
+                                   Dune::InverseOperatorResult res;
+                                   Native<Vec> v(native(problem.getX()));
+                                   Native<Vec> b = problem.getD();
+
+                                   v = 0;
+                                   solver->apply(v, b, res);
+                                   problem.getX() -= v;
+                                   Logger::get().endEvent(solve);
+                                 })
+                                 .name("Solve linear system")
+                                 .succeed(combine_preconditioners_task);
+
+    spdlog::info("Starting taskflow execution");
+    tf::Executor executor(ptree.get("taskflow_executor_threads", 2));
+    std::shared_ptr<tf::TFProfObserver> observer;
+    if (helper.rank() == 0) {
+      observer = executor.make_observer<tf::TFProfObserver>();
+    }
+    executor.run(taskflow).wait();
+
+    if (helper.rank() == 0) {
+      std::ofstream dot_file("poisson.dot");
+      taskflow.dump(dot_file);
+
+      std::ofstream json_file("poisson.json");
+      observer->dump(json_file);
+    }
 
     // Visualisation
     if (ptree.get("visualise", true)) {

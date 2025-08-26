@@ -44,6 +44,16 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Spectra)
 
+message(STATUS "Trying to download Taskflow (C++ Parallel Programming Library)")
+set(TF_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(TF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  Taskflow
+  GIT_REPOSITORY https://github.com/taskflow/taskflow.git
+  GIT_TAG        v3.8.0
+)
+FetchContent_MakeAvailable(Taskflow)
+
 option(DUNE_DDM_WITH_BLOPEX "Download and enable BLOPEX" OFF)
 if(${DUNE_DDM_WITH_BLOPEX})
   message(STATUS "Trying to download BLOPEX (implementation of LOBPCG)")

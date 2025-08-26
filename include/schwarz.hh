@@ -27,6 +27,8 @@
 #include "spdlog/spdlog.h"
 #include "strumpack.hh"
 
+#include <taskflow/taskflow.hpp>
+
 /**
  * @brief Linear operator for non-overlapping domain decomposition.
  *
@@ -151,21 +153,21 @@ class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   };
 
 public:
-  /**
-   * @brief Construct Schwarz preconditioner with explicit parameters.
-   *
-   * @param Aovlp Shared pointer to the overlapping subdomain matrix
-   * @param ext_indices Extended remote indices for communication setup
-   * @param pou Shared pointer to partition of unity (can be nullptr for standard Schwarz)
-   * @param type Type of Schwarz method (Standard or Restricted)
-   * @param factorise_at_first_iteration If true, delay matrix factorization until first apply
-   */
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<PartitionOfUnity> pou, SchwarzType type = SchwarzType::Restricted,
-                        bool factorise_at_first_iteration = false)
-      : Aovlp(std::move(Aovlp)), ext_indices(ext_indices), type(type), pou(std::move(pou)), factorise_at_first_iteration(factorise_at_first_iteration)
-  {
-    init();
-  }
+  // /**
+  //  * @brief Construct Schwarz preconditioner with explicit parameters.
+  //  *
+  //  * @param Aovlp Shared pointer to the overlapping subdomain matrix
+  //  * @param ext_indices Extended remote indices for communication setup
+  //  * @param pou Shared pointer to partition of unity (can be nullptr for standard Schwarz)
+  //  * @param type Type of Schwarz method (Standard or Restricted)
+  //  * @param factorise_at_first_iteration If true, delay matrix factorization until first apply
+  //  */
+  // SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<PartitionOfUnity> pou, SchwarzType type = SchwarzType::Restricted,
+  //                       bool factorise_at_first_iteration = false)
+  //     : Aovlp(std::move(Aovlp)), ext_indices(ext_indices), type(type), pou(std::move(pou)), factorise_at_first_iteration(factorise_at_first_iteration)
+  // {
+  //   init();
+  // }
 
   /**
    * @brief Construct Schwarz preconditioner from parameter tree.
@@ -180,7 +182,7 @@ public:
    * @param ptree Parameter tree containing configuration
    * @param subtree_name Name of the subtree containing Schwarz parameters
    */
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree &ptree,
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree &ptree, tf::Taskflow &taskflow,
                         const std::string &subtree_name = "schwarz")
       : Aovlp(std::move(Aovlp)), ext_indices(ext_indices), pou(std::move(pou))
   {
@@ -197,7 +199,7 @@ public:
       DUNE_THROW(Dune::NotImplemented, "Unknown Schwarz type '" + type_string + "'");
     }
 
-    init();
+    setup_task = taskflow.emplace([&]() { init(); }).name("Init overlapping Schwarz preconditioner");
   }
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
@@ -276,6 +278,12 @@ public:
    */
   Solver &getSolver() { return *solver; }
 
+  /**
+   * @brief Return the setup task.
+   * @return Reference to the setup task
+   */
+  tf::Task &get_setup_task() { return setup_task; }
+
 private:
   /**
    * @brief Initialize the preconditioner.
@@ -334,6 +342,9 @@ private:
   SchwarzType type; ///< Type of Schwarz method (standard or restricted)
 
   bool factorise_at_first_iteration; ///< Whether to delay factorization until first apply
+
+  // Task-related
+  tf::Task setup_task;
 
   // Performance monitoring events
   Logger::Event *apply_event{nullptr};           ///< Event for timing the apply method
