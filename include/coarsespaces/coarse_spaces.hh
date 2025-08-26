@@ -535,7 +535,7 @@ public:
                              B.compress();
 
                              // Now we can solve the eigenproblem
-                             auto eigenvectors = solveGEVP(A_lhs, B, Eigensolver::PRIMME, eig_ptree);
+                             auto eigenvectors = solveGEVP(A_lhs, B, Eigensolver::Spectra, eig_ptree);
 
                              // Finally, extract the actual eigenvectors
                              Vec v(A->N());
