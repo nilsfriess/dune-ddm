@@ -6,5 +6,6 @@ AlignAfterOpenBracket: Align
 BreakBeforeBraces: Stroustrup
 ColumnLimit: 200
 AlwaysBreakTemplateDeclarations: Yes
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
 ...
 

@@ -71,7 +71,7 @@ endif()
 find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK)
 
 # optionally find STRUMPACK
-find_package(STRUMPACK CONFIG)
+find_package(STRUMPACK CONFIG REQUIRED)
 
 add_library(eigensolvers src/eigensolvers.cc)
 target_include_directories(eigensolvers PUBLIC ${PROJECT_SOURCE_DIR}/include)

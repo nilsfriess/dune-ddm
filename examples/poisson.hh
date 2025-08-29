@@ -8,7 +8,7 @@
 #include <dune/common/version.hh>
 
 #pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-W#warnings" // Silence annoying warnings about #warnings in PDELab headers
+#pragma GCC diagnostic ignored "-Wcpp" // Silence annoying warnings about #warnings in PDELab headers
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/indexset.hh>
 #include <dune/common/parallel/interface.hh>
@@ -386,11 +386,7 @@ public:
     // Create the (at this point still empty) overlapping subdomain matrix
     A_dir = std::make_shared<NativeMat>(extids.create_overlapping_matrix(native(*As)));
 
-    // Simple assembly without Neumann corrections - just assemble locally
-    std::map<int, std::vector<bool>> empty_boundary_map;
-    std::vector<bool> empty_mask(As->N(), false);
-    wrapper->set_masks(native(*As), &empty_boundary_map, &empty_boundary_map, &empty_mask, &empty_mask);
-    go->jacobian(*x, *As);
+    jacobian();
 
     // Assemble the overlapping Dirichlet matrix by adding contributions
     AddMatrixDataHandle amdh(native(*As), *A_dir, extids.get_parallel_index_set());
@@ -412,6 +408,17 @@ public:
     // For POU, we don't need Neumann matrices, so set them to nullptr
     A_neu = nullptr;
     B_neu = nullptr;
+  }
+
+  void jacobian()
+  {
+    using Dune::PDELab::Backend::native;
+    // Simple assembly without Neumann corrections - just assemble locally
+    std::map<int, std::vector<bool>> empty_boundary_map;
+    std::vector<bool> empty_mask(As->N(), false);
+    wrapper->set_masks(native(*As), &empty_boundary_map, &empty_boundary_map, &empty_mask, &empty_mask);
+    go->jacobian(*x, *As);
+    eliminate_dirichlet(native(*As), *dirichlet_mask);
   }
 
   /** @brief Assemble the overlapping Dirichlet and Neumann matrices

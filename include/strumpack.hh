@@ -20,12 +20,16 @@ public:
   using X = BlockVector<FieldVector<double, 1>>;
   using Y = BlockVector<FieldVector<double, 1>>;
 
-  explicit STRUMPACK(const M &A) : solver(false, true)
+  explicit STRUMPACK(const M &A, bool verbose = false) : solver(verbose, true) { setMatrix(A); }
+
+  explicit STRUMPACK(bool verbose = false) : solver(verbose, true) {}
+
+  void setMatrix(const M &A)
   {
     auto &options = solver.options();
-    options.set_Krylov_solver(strumpack::KrylovSolver::DIRECT);
-    options.set_reordering_method(strumpack::ReorderingStrategy::METIS);
-    options.set_verbose(false);
+    // options.set_Krylov_solver(strumpack::KrylovSolver::DIRECT);
+    // options.set_reordering_method(strumpack::ReorderingStrategy::METIS);
+    // options.set_verbose(false);
 
     int nnz = 0;
     const auto [fr, fc] = flatMatrixForEach(A, [&](auto &&, auto &&, auto &&) { ++nnz; });
@@ -78,6 +82,8 @@ public:
     res.converged = true;
   }
   void apply(X &x, Y &b, [[maybe_unused]] double reduction, InverseOperatorResult &res) override { apply(x, b, res); }
+
+  strumpack::SPOptions<double> &get_options() { return solver.options(); }
 
 private:
   strumpack::SparseSolver<double> solver;
