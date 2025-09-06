@@ -1,18 +1,18 @@
 #pragma once
 
-#include <algorithm>
-#include <cstddef>
-#include <spdlog/spdlog.h>
-
 #include <dune/common/parallel/mpitraits.hh>
 #include <dune/istl/bcrsmatrix.hh>
+#include <dune/istl/scalarproducts.hh>
 
+#include <algorithm>
+#include <cstddef>
+#include <iostream>
 #include <memory>
 #include <mpi.h>
 #include <utility>
 #include <vector>
 
-#include <iostream>
+#include "logger.hh"
 
 #define MPI_CHECK(call)                                                                                                                                                                                \
   do {                                                                                                                                                                                                 \
@@ -102,10 +102,11 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   }
 
   // Check that all rows on all ranks have the same size
-  int min_columns = 0;
-  int max_columns = 0;
-  MPI_CHECK(MPI_Allreduce(&columns, &min_columns, 1, MPI_INT, MPI_MIN, comm));
-  MPI_CHECK(MPI_Allreduce(&columns, &max_columns, 1, MPI_INT, MPI_MAX, comm));
+  std::size_t min_columns = 0;
+  std::size_t max_columns = 0;
+  MPI_Datatype size_t_type = Dune::MPITraits<std::size_t>::getType();
+  MPI_CHECK(MPI_Allreduce(&columns, &min_columns, 1, size_t_type, MPI_MIN, comm));
+  MPI_CHECK(MPI_Allreduce(&columns, &max_columns, 1, size_t_type, MPI_MAX, comm));
   if (min_columns != max_columns) {
     DUNE_THROW(Dune::Exception, "Rows have different sizes");
   }
@@ -351,3 +352,36 @@ inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<doubl
 
   return Dune::BCRSMatrix<double>{};
 }
+
+template <class Vec, class Communication>
+class MaskedScalarProduct : public Dune::ScalarProduct<Vec> {
+  using Base = Dune::ScalarProduct<Vec>;
+
+public:
+  MaskedScalarProduct(const std::vector<unsigned> &mask, Communication comm) : mask(&mask), comm(comm) { dot_event = Logger::get().registerEvent("MaskedScalarProduct", "dot"); }
+
+  typename Base::field_type dot(const Vec &x, const Vec &y) const override
+  {
+    Logger::ScopedLog se(dot_event);
+
+    typename Base::field_type res{0.0};
+    for (typename Vec::size_type i = 0; i < x.size(); i++) {
+      res += x[i] * y[i] * (*mask)[i];
+    }
+    return comm.sum(res);
+  }
+
+  typename Base::real_type norm(const Vec &x) const override
+  {
+    auto res = dot(x, x);
+    return std::sqrt(res);
+  }
+
+  typename Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
+
+private:
+  const std::vector<unsigned> *mask;
+  Communication comm;
+
+  Logger::Event *dot_event;
+};

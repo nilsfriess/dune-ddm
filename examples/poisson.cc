@@ -25,6 +25,7 @@
 #include <dune/common/fvector.hh>
 #include <dune/common/iteratorfacades.hh>
 #include <dune/common/parallel/communicator.hh>
+#include <dune/common/parallel/indexset.hh>
 #include <dune/common/parallel/mpicommunication.hh>
 #include <dune/common/parallel/plocalindex.hh>
 #include <dune/common/parallel/remoteindices.hh>
@@ -38,6 +39,7 @@
 #include <dune/grid/io/file/vtk/function.hh>
 #include <dune/grid/io/file/vtk/subsamplingvtkwriter.hh>
 #include <dune/grid/utility/parmetisgridpartitioner.hh>
+#include <dune/grid/utility/structuredgridfactory.hh>
 #if USE_UGGRID
 #include <dune/grid/io/file/gmshreader.hh>
 #include <dune/grid/uggrid.hh>
@@ -70,43 +72,12 @@
 #include "galerkin_preconditioner.hh"
 #include "helpers.hh"
 #include "logger.hh"
+#include "nonoverlapping_operator.hh"
 #include "overlap_extension.hh"
+#include "pdelab_helper.hh"
 #include "poisson.hh"
 #include "pou.hh"
 #include "schwarz.hh"
-
-template <class Vec, class Communication>
-class MaskedScalarProduct : public Dune::ScalarProduct<Vec> {
-  using Base = Dune::ScalarProduct<Vec>;
-
-public:
-  MaskedScalarProduct(const std::vector<unsigned> &mask, Communication comm) : mask(&mask), comm(comm) { dot_event = Logger::get().registerEvent("MaskedScalarProduct", "dot"); }
-
-  typename Base::field_type dot(const Vec &x, const Vec &y) const override
-  {
-    Logger::ScopedLog se(dot_event);
-
-    typename Base::field_type res{0.0};
-    for (typename Vec::size_type i = 0; i < x.size(); i++) {
-      res += x[i] * y[i] * (*mask)[i];
-    }
-    return comm.sum(res);
-  }
-
-  typename Base::real_type norm(const Vec &x) const override
-  {
-    auto res = dot(x, x);
-    return std::sqrt(res);
-  }
-
-  typename Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
-
-private:
-  const std::vector<unsigned> *mask;
-  Communication comm;
-
-  Logger::Event *dot_event;
-};
 
 namespace {
 auto make_grid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPIHelper &helper)
@@ -115,11 +86,23 @@ auto make_grid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MP
   Logger::ScopedLog sl(event);
 
 #if USE_UGGRID
-  const auto meshfile = ptree.get("meshfile", "../data/unitsquare.msh");
-  const auto verbose = ptree.get("verbose", 0);
-
   using Grid = Dune::UGGrid<GRID_DIM>;
-  auto grid = Dune::GmshReader<Grid>::read(meshfile, verbose > 2, false);
+  std::unique_ptr<Grid> grid;
+  if (ptree.hasKey("meshfile")) {
+    spdlog::info("Loading mesh from file");
+    const auto meshfile = ptree.get("meshfile", "../data/unitsquare.msh");
+    const auto verbose = ptree.get("verbose", 0);
+
+    grid = Dune::GmshReader<Grid>::read(meshfile, verbose > 2, false);
+  }
+  else {
+    auto gridsize = static_cast<unsigned int>(ptree.get("gridsize", 32));
+    if (ptree.hasKey("gridsize_per_rank")) {
+      auto grid_sqrt = static_cast<int>(std::pow(helper.size(), 1. / GRID_DIM)); // This is okay because Yaspgrid will complain if the gridsize is not a power of GRID_DIM
+      gridsize = ptree.get<int>("gridsize_per_rank") * grid_sqrt;
+    }
+    grid = Dune::StructuredGridFactory<Grid>::createSimplexGrid({0, 0}, {1, 1}, {gridsize, gridsize});
+  }
 #else
   using Grid = Dune::YaspGrid<GRID_DIM>;
   auto gridsize = ptree.get("gridsize", 32);
@@ -150,65 +133,6 @@ auto make_grid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MP
   grid->globalRefine(ptree.get("refine", 0));
 
   return grid;
-}
-
-template <class GFS>
-auto make_remote_indices(const GFS &gfs, const Dune::MPIHelper &helper)
-{
-  using Dune::PDELab::Backend::native;
-
-  // Using the grid function space, we can generate a globally unique numbering
-  // of the dofs. This is done by taking the local index, shifting it to the
-  // upper 32 bits of a 64 bit number and taking our MPI rank as the lower 32
-  // bits.
-  using GlobalIndexVec = Dune::PDELab::Backend::Vector<GFS, std::uint64_t>;
-  GlobalIndexVec giv(gfs);
-  for (std::size_t i = 0; i < giv.N(); ++i) {
-    native(giv)[i] = (static_cast<std::uint64_t>(i + 1) << 32ULL) + helper.rank();
-  }
-
-  // Now we have a unique global indexing scheme in the interior of each process
-  // subdomain; at the process boundary we take the smallest among all
-  // processes.
-  GlobalIndexVec giv_before(gfs);
-  giv_before = giv; // Copy the vector so that we can find out if we are the
-                    // owner of a border index after communication
-  Dune::PDELab::MinDataHandle mindh(gfs, giv);
-  gfs.gridView().communicate(mindh, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
-
-  using BooleanVec = Dune::PDELab::Backend::Vector<GFS, bool>;
-  BooleanVec isPublic(gfs);
-  isPublic = false;
-  Dune::PDELab::SharedDOFDataHandle shareddh(gfs, isPublic);
-  gfs.gridView().communicate(shareddh, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
-
-  using AttributeLocalIndex = Dune::ParallelLocalIndex<Attribute>;
-  using GlobalIndex = std::uint64_t;
-  using ParallelIndexSet = Dune::ParallelIndexSet<GlobalIndex, AttributeLocalIndex>;
-  using RemoteIndices = Dune::RemoteIndices<ParallelIndexSet>;
-
-  ParallelIndexSet paridxs;
-  paridxs.beginResize();
-  for (std::size_t i = 0; i < giv.N(); ++i) {
-    paridxs.add(native(giv)[i],
-                {i,                                                                            // Local index is just i
-                 native(giv)[i] == native(giv_before)[i] ? Attribute::owner : Attribute::copy, // If the index didn't change above, we own it
-                 native(isPublic)[i]}                                                          // SharedDOFDataHandle determines if an index is public
-    );
-  }
-  paridxs.endResize();
-
-  const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
-  const AttributeSet ownerAttribute{Attribute::owner};
-  const AttributeSet copyAttribute{Attribute::copy};
-
-  std::set<int> neighboursset;
-  Dune::PDELab::GFSNeighborDataHandle nbdh(gfs, helper.rank(), neighboursset);
-  gfs.gridView().communicate(nbdh, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
-  std::vector<int> neighbours(neighboursset.begin(), neighboursset.end());
-
-  auto remoteindices = std::make_shared<RemoteIndices>(paridxs, paridxs, helper.getCommunicator(), neighbours);
-  return makeRemoteParallelIndices(remoteindices);
 }
 
 template <class Vec, class RemoteIndices>
@@ -264,8 +188,8 @@ int main(int argc, char *argv[])
     const int overlap = ptree.get("overlap", 1);
 
     // Using the sparsity pattern of the matrix, create the overlapping subdomains by extending this index set
-    auto remoteparidxs = make_remote_indices(problem.getGFS(), helper);
-    ExtendedRemoteIndices ext_indices(*remoteparidxs.first, problem.getA(), overlap);
+    auto remoteids = make_remote_indices(problem.getGFS(), helper);
+    ExtendedRemoteIndices ext_indices(*remoteids, native(problem.getA()), overlap);
 
     // The nonzero pattern of the non-overlapping matrix is now set up, and we have a parallel index set
     // on the overlapping subdomains. Now we can assemble the overlapping matrices.
@@ -297,7 +221,6 @@ int main(int argc, char *argv[])
 
     MPI_Barrier(MPI_COMM_WORLD);
     Logger::get().endEvent(matrix_setup);
-    Logger::get().startEvent(prec_setup);
 
     // Next, create a partition of unity
     auto pou = std::make_shared<PartitionOfUnity>(*A_dir, ext_indices, ptree);
@@ -312,7 +235,7 @@ int main(int argc, char *argv[])
     spdlog::info("Setting up tasks");
     auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(A_dir, ext_indices, pou, ptree, taskflow);
 
-    using CoarseLevel = GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(*remoteparidxs.first)>>;
+    using CoarseLevel = GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(*remoteids)>>;
     std::shared_ptr<CoarseLevel> coarse;
 
     const auto zero_at_dirichlet = [&](auto &&x) {
@@ -365,88 +288,7 @@ int main(int argc, char *argv[])
       prec_setup_task.succeed(coarse_space->get_setup_task());
     }
 
-    // Build the parallel operator
-    const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
-    Dune::Interface all_all_interface;
-    all_all_interface.build(*remoteparidxs.first, allAttributes, allAttributes);
-    auto communicator = std::make_shared<Dune::BufferedCommunicator>();
-    communicator->build<Native<Vec>>(all_all_interface);
-    auto op = std::make_shared<NonoverlappingOperator<Native<Mat>, Native<Vec>, Native<Vec>>>(problem.getA(), communicator);
-
-    CombinedPreconditioner<Native<Vec>> prec(ptree);
-    auto combine_preconditioners_task = taskflow
-                                            .emplace([&]() {
-                                              // Lastly, build the full preconditioner
-                                              ApplyMode applymode = ApplyMode::Additive;
-                                              auto applymode_param = ptree.get("applymode", "additive");
-                                              if (applymode_param == "multiplicative") {
-                                                applymode = ApplyMode::Multiplicative;
-                                              }
-
-                                              prec.set_op(op);
-                                              prec.add(schwarz);
-                                              if (coarse) {
-                                                prec.add(coarse);
-                                              }
-
-                                              MPI_Barrier(MPI_COMM_WORLD);
-                                              Logger::get().endEvent(prec_setup);
-                                            })
-                                            .name("Setup combined preconditioner")
-                                            .succeed(prec_setup_task, schwarz->get_setup_task());
-
-    auto setup_solver_task = taskflow
-                                 .emplace([&]() {
-                                   // Create a mask for the owned indices for the scalar product
-                                   std::vector<unsigned> mask(problem.getD().N(), 1);
-                                   for (const auto &idx : *remoteparidxs.second) {
-                                     if (idx.local().attribute() != Attribute::owner) {
-                                       mask[idx.local()] = 0;
-                                     }
-                                   }
-
-                                   auto my_dofs = std::count_if(mask.begin(), mask.end(), [](auto e) { return e > 0; });
-                                   auto sum = helper.getCommunication().sum(my_dofs);
-                                   spdlog::info("Total dofs: {}", sum);
-
-                                   MaskedScalarProduct<Native<Vec>, decltype(helper.getCommunication())> sp(mask, helper.getCommunication());
-
-                                   Logger::get().startEvent(solve);
-                                   using SolverVec = Native<Vec>;
-                                   std::unique_ptr<Dune::IterativeSolver<SolverVec, SolverVec>> solver;
-                                   auto maxit = ptree.get("maxit", 1000);
-                                   auto tol = ptree.get("tolerance", 1e-8);
-                                   auto solvertype = ptree.get("solver", "gmres");
-                                   if (solvertype == "cg") {
-                                     solver = std::make_unique<Dune::CGSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0, helper.rank() == 0 ? verbose > 0 : false);
-                                   }
-                                   else if (solvertype == "none") {
-                                     solver = std::make_unique<Dune::LoopSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
-                                   }
-                                   else if (solvertype == "bicgstab") {
-                                     solver = std::make_unique<Dune::BiCGSTABSolver<SolverVec>>(*op, sp, prec, tol, maxit, helper.rank() == 0 ? verbose : 0);
-                                   }
-                                   else {
-                                     solver = std::make_unique<Dune::RestartedGMResSolver<SolverVec>>(*op, sp, prec, tol, 50, maxit, helper.rank() == 0 ? verbose : 0);
-                                     if (solvertype != "gmres") {
-                                       if (helper.rank() == 0) {
-                                         std::cout << "WARNING: Unknown solver type '" << solvertype << "', using GMRES instead\n";
-                                       }
-                                     }
-                                   }
-
-                                   Dune::InverseOperatorResult res;
-                                   Native<Vec> v(native(problem.getX()));
-                                   Native<Vec> b = problem.getD();
-
-                                   v = 0;
-                                   solver->apply(v, b, res);
-                                   problem.getX() -= v;
-                                   Logger::get().endEvent(solve);
-                                 })
-                                 .name("Solve linear system")
-                                 .succeed(combine_preconditioners_task);
-
+    Logger::get().startEvent(prec_setup);
     spdlog::info("Starting taskflow execution");
     tf::Executor executor(ptree.get("taskflow_executor_threads", 2));
     std::shared_ptr<tf::TFProfObserver> observer;
@@ -462,6 +304,43 @@ int main(int argc, char *argv[])
       std::ofstream json_file("poisson.json");
       observer->dump(json_file);
     }
+    MPI_Barrier(MPI_COMM_WORLD);
+    Logger::get().endEvent(prec_setup);
+
+    // Build the parallel operator
+    using Op = NonOverlappingOperator<Native<Mat>, Native<Vec>>;
+    Dune::initSolverFactories<Op>(); // register all DUNE solvers so we can choose them via the command line
+
+    auto prec = std::make_shared<CombinedPreconditioner<Native<Vec>>>(ptree);
+    auto op = std::make_shared<Op>(problem.getA().storage(), *remoteids);
+
+    // Lastly, build the full preconditioner
+    ApplyMode applymode = ApplyMode::Additive;
+    auto applymode_param = ptree.get("applymode", "additive");
+    if (applymode_param == "multiplicative") {
+      applymode = ApplyMode::Multiplicative;
+    }
+
+    prec->set_op(op);
+    prec->add(schwarz);
+    if (coarse) {
+      prec->add(coarse);
+    }
+
+    auto solver_subtree = ptree.sub("solver");
+    solver_subtree["verbose"] = helper.rank() == 0 ? solver_subtree["verbose"] : "0";
+
+    auto solver = Dune::getSolverFromFactory(op, solver_subtree, prec);
+
+    Logger::get().startEvent(solve);
+    Dune::InverseOperatorResult res;
+    Native<Vec> v(native(problem.getX()));
+    Native<Vec> b = problem.getD();
+
+    v = 0;
+    solver->apply(v, b, res);
+    problem.getX() -= v;
+    Logger::get().endEvent(solve);
 
     // Visualisation
     if (ptree.get("visualise", true)) {

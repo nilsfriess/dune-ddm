@@ -806,7 +806,7 @@ public:
   /** @brief Get the system matrix (native ISTL)
    *  @return Reference to the native ISTL system matrix
    */
-  NativeMat &getA() { return Dune::PDELab::Backend::native(*As); }
+  const Mat &getA() const { return *As; }
   ///@}
 
   ///@{

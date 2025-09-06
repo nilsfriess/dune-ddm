@@ -14,6 +14,9 @@ message(STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
 set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ON)
 
 find_package(MPI REQUIRED)
+find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK CHOLMOD)
+# optionally find STRUMPACK
+find_package(STRUMPACK CONFIG)
 
 add_subdirectory(extern/dune-common SYSTEM)
 add_subdirectory(extern/dune-geometry SYSTEM)
@@ -93,6 +96,9 @@ add_dune_mpi_flags(eigensolvers)
 add_library(dune-ddm INTERFACE)
 target_include_directories(dune-ddm PUBLIC INTERFACE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog eigensolvers)
+if (${STRUMPACK_FOUND})
+  target_link_libraries(dune-ddm PUBLIC INTERFACE STRUMPACK::strumpack)
+endif()
 
 add_subdirectory(examples)
 add_subdirectory(tests)
