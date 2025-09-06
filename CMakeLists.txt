@@ -92,6 +92,7 @@ add_library(dune-ddm INTERFACE)
 target_include_directories(dune-ddm PUBLIC INTERFACE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog eigensolvers)
 if (${STRUMPACK_FOUND})
+  target_compile_definitions(dune-ddm PUBLIC DUNE_DDM_HAVE_STRUMPACK)
   target_link_libraries(dune-ddm PUBLIC INTERFACE STRUMPACK::strumpack)
 endif()
 
