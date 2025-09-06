@@ -71,11 +71,6 @@ if(${DUNE_DDM_WITH_BLOPEX})
   set(BLOPEX_LIB BLOPEX)
 endif()
 
-find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK)
-
-# optionally find STRUMPACK
-find_package(STRUMPACK CONFIG REQUIRED)
-
 add_library(eigensolvers src/eigensolvers.cc)
 target_include_directories(eigensolvers PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(eigensolvers PRIVATE Dune::ISTL spdlog::spdlog Spectra ${BLOPEX_LIB} MPI::MPI_C)
