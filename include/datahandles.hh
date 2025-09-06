@@ -76,9 +76,9 @@ private:
 template <class Vec>
 class CopyVectorDataHandleWithRank {
 public:
-  using DataType = typename Vec::block_type;
+  using DataType = std::pair<int, typename Vec::block_type>;
 
-  explicit CopyVectorDataHandleWithRank(const Vec &v) : sourcevec(&v) {}
+  explicit CopyVectorDataHandleWithRank(const Vec &v, int rank) : sourcevec(&v), rank(rank) {}
 
   bool fixedSize() { return true; }
   std::size_t size(int) { return 1; }
@@ -86,25 +86,28 @@ public:
   template <class Buffer>
   void gather(Buffer &buffer, int i)
   {
-    buffer.write((*sourcevec)[i]);
+    buffer.write(std::make_pair(rank, (*sourcevec)[i]));
   }
 
   template <class Buffer>
-  void scatter(Buffer &buffer, int i, int, int from_rank)
+  void scatter(Buffer &buffer, int i, int)
   {
     DataType data;
     buffer.read(data);
+    const auto &[from_rank, vec] = data;
+
     if (not copied_vecs.contains(from_rank)) {
       copied_vecs.emplace(from_rank, *sourcevec);
       copied_vecs[from_rank] = 0;
     }
-    copied_vecs[from_rank][i] = data;
+    copied_vecs[from_rank][i] = vec;
   }
 
   std::map<int, Vec> copied_vecs;
 
 private:
   const Vec *sourcevec;
+  int rank;
 };
 
 template <class Mat, class ParallelIndexSet>
@@ -431,7 +434,7 @@ template <class Mat, class ParallelIndexSet>
 class CreateMatrixDataHandle {
 public:
   CreateMatrixDataHandle(const Mat &A, const ParallelIndexSet &paridxs, const std::vector<std::size_t> &ltg, const std::unordered_set<std::size_t> &gis)
-    : A(A), paridxs(paridxs), ltg(ltg), gis(gis), Aovlp(paridxs.size(), paridxs.size(), static_cast<double>(A.nonzeroes()) / A.N(), 0.6, Mat::implicit)
+      : A(A), paridxs(paridxs), ltg(ltg), gis(gis), Aovlp(paridxs.size(), paridxs.size(), static_cast<double>(A.nonzeroes()) / A.N(), 0.6, Mat::implicit)
   {
     for (auto rIt = A.begin(); rIt != A.end(); ++rIt) {
       for (auto cIt = rIt->begin(); cIt != rIt->end(); ++cIt) {

@@ -503,7 +503,9 @@ public:
       }
     }
 
-    CopyVectorDataHandleWithRank<NativeVec> cvdh(boundary_indicator);
+    int rank{};
+    MPI_Comm_rank(extids.get_remote_indices().communicator(), &rank);
+    CopyVectorDataHandleWithRank<NativeVec> cvdh(boundary_indicator, rank);
     varcomm_ext.forward(cvdh);
 
     // Next, we turn this vector into two boolean masks for each rank.

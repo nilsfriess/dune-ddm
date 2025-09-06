@@ -24,13 +24,13 @@
 /** @brief A Galerkin-type preconditioner that implements R^T (R A R^T)^-1 R.
 
     This preconditioner constructs a coarse space correction using multiple template vectors
-    provided by each MPI rank. The restriction matrix R has dimensions 'total_template_vectors' 
+    provided by each MPI rank. The restriction matrix R has dimensions 'total_template_vectors'
     x 'matrix_size', where each column corresponds to one template vector from one rank.
 
     <b>Algorithm Overview:</b>
     1. Each MPI rank provides one or more template vectors defined on the overlapping subdomain
     2. The restriction matrix R^T is formed by collecting all template vectors from all ranks
-    3. The coarse matrix A_c = R A R^T is assembled by computing all pairwise products 
+    3. The coarse matrix A_c = R A R^T is assembled by computing all pairwise products
        between template vectors: (R_i, A R_j) for all i,j
     4. The coarse system A_c x_c = R d is solved centrally on rank 0
     5. The correction is prolongated: x += R^T x_c
@@ -41,7 +41,7 @@
     - Template vectors should be suitable for the problem (e.g., zero on Dirichlet boundaries)
 
     <b>Typical Use Case:</b>
-    This preconditioner is commonly used as the coarse space component in two-level domain 
+    This preconditioner is commonly used as the coarse space component in two-level domain
     decomposition methods, combined with a local preconditioner via `CombinedPreconditioner`.
 
     <b>Scalability:</b>
@@ -68,14 +68,14 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
 
   /** @brief Helper class for distributing vectors across MPI ranks during communication */
   struct VecDistributor {
-    using value_type = double;
+    using value_type = std::pair<int, double>;
 
     /**
      * @brief Constructor that initializes vector distributor.
      * @param temp Template vector used for creating neighbor vectors
      * @param neighbours List of neighbor rank IDs
      */
-    VecDistributor(const Vec &temp, const std::vector<int> &neighbours) : temp{temp}
+    VecDistributor(const Vec &temp, const std::vector<int> &neighbours, int rank) : temp{temp}, rank{rank}
     {
       for (const auto &nb : neighbours) {
         others.emplace(nb, temp);
@@ -97,18 +97,21 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
     VecDistributor &operator=(const VecDistributor &&) = delete;
     ~VecDistributor() = default;
 
-    Vec *own = nullptr;                /**< Pointer to our own vector */
-    std::map<int, Vec> others;        /**< Vectors from other ranks */
-    Vec temp;                         /**< Template vector for initialization */
+    Vec *own = nullptr;        /**< Pointer to our own vector */
+    std::map<int, Vec> others; /**< Vectors from other ranks */
+    Vec temp;                  /**< Template vector for initialization */
+    int rank;
   };
 
   /** @brief Gather-scatter helper with rank information for VecDistributor */
   struct CopyGatherScatterWithRank {
-    using DataType = double;
+    using DataType = std::pair<int, double>;
 
-    static DataType gather(const VecDistributor &vd, std::size_t i) { return (*vd.own)[i]; }
-    static void scatter(VecDistributor &vd, DataType v, std::size_t i, int rank)
+    static DataType gather(const VecDistributor &vd, std::size_t i) { return std::make_pair(vd.rank, (*vd.own)[i]); }
+    static void scatter(VecDistributor &vd, const DataType &data, std::size_t i)
     {
+      const auto &[rank, v] = data;
+
       if (not vd.others.contains(rank)) {
         spdlog::get("all_ranks")->error("Rank {} is no neighbour", rank);
         MPI_Abort(MPI_COMM_WORLD, 17);
@@ -120,14 +123,14 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
 public:
   /**
    * @brief Constructor for the Galerkin preconditioner.
-   * 
+   *
    * Sets up a Galerkin-type preconditioner that computes R^T (R A R^T)^-1 R,
    * where R is the restriction matrix built from template vectors.
-   * 
+   *
    * @param A The overlapping matrix (must match the overlapping index set in ris)
    * @param ts Vector of template vectors (must be overlapping, size must match A.N())
    * @param ris Remote parallel indices describing the overlapping index set
-   * 
+   *
    * @throws Dune::Exception if no template vectors are provided or if template vector size doesn't match matrix size
    */
   GalerkinPreconditioner(const Mat &A, const std::vector<Vec> &ts, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), n(ris.second->size()), d_ovlp(n), x_ovlp(n), num_t(ts.size())
@@ -232,7 +235,7 @@ private:
     build_solver_event = Logger::get().registerEvent(family, "build Matrix");
   }
 
-  /** 
+  /**
    * @brief Build communication interfaces for parallel operations
    * @param ris Remote parallel indices describing the overlapping index set and communication patterns
    */
@@ -249,7 +252,7 @@ private:
     owner_copy_comm.build<Vec>(owner_copy_interface);
   }
 
-  /** 
+  /**
    * @brief Get the maximum number of template vectors across all MPI ranks
    * @param num_restr_vecs Number of template vectors on this rank
    * @return Maximum number of template vectors on any rank
@@ -261,13 +264,13 @@ private:
     return max_num_t;
   }
 
-  /** 
+  /**
    * @brief Build the coarse space solver by assembling R A R^T and factorizing it
    * @param A The overlapping matrix used to compute the Galerkin product
-   * 
+   *
    * This method performs the main computational work:
    * 1. Distributes template vectors across all ranks
-   * 2. Computes all pairwise products R_i^T A R_j  
+   * 2. Computes all pairwise products R_i^T A R_j
    * 3. Assembles the global coarse matrix A0 = R A R^T
    * 4. Factorizes A0 on rank 0 for solving coarse problems
    */
@@ -278,7 +281,7 @@ private:
     Logger::ScopedLog se(build_solver_event);
 
     auto *comm_begin_event = Logger::get().registerEvent("GalerkinPrec", "begin comm");
-    auto *comm_end_event = Logger::get().registerEvent("GalerkinPrec", "end comm");
+    // auto *comm_end_event = Logger::get().registerEvent("GalerkinPrec", "end comm");
     auto *local_local_sp_event = Logger::get().registerEvent("GalerkinPrec", "dot (local<>local)");
     auto *local_remote_sp_event = Logger::get().registerEvent("GalerkinPrec", "dot (local<>remote)");
     auto *gather_A0 = Logger::get().registerEvent("GalerkinPrec", "gather A0");
@@ -322,7 +325,7 @@ private:
     Vec zerovec(s);
     zerovec = 0;
     std::vector<int> neighbour_vec(ris.first->getNeighbours().begin(), ris.first->getNeighbours().end());
-    VecDistributor vd(zerovec, neighbour_vec);
+    VecDistributor vd(zerovec, neighbour_vec, rank);
 
     Dune::BufferedCommunicator bcomm;
     bcomm.build<VecDistributor>(all_all_interface);
@@ -338,7 +341,7 @@ private:
       }
 
       Logger::get().startEvent(comm_begin_event);
-      bcomm.forwardBegin<CopyGatherScatterWithRank>(vd);
+      bcomm.forward<CopyGatherScatterWithRank>(vd);
       Logger::get().endEvent(comm_begin_event);
 
       if (idx > 0) {
@@ -376,9 +379,9 @@ private:
 
       vd.clear();
       // Wait for communication to finish
-      Logger::get().startEvent(comm_end_event);
-      bcomm.forwardEnd<CopyGatherScatterWithRank>(vd);
-      Logger::get().endEvent(comm_end_event);
+      // Logger::get().startEvent(comm_end_event);
+      // bcomm.forwardEnd<CopyGatherScatterWithRank>(vd);
+      // Logger::get().endEvent(comm_end_event);
     }
 
     // Compute scalar products for local * A * remote vectors for the last basis vectors
@@ -466,7 +469,7 @@ private:
 
   /** @brief Direct solver for the coarse problem (UMFPack by default) */
   std::unique_ptr<Solver> solver;
-  
+
   /** @brief Remote parallel indices describing the overlapping index set */
   RemoteParallelIndices<RemoteIndices> ris;
 
@@ -475,34 +478,34 @@ private:
 
   /** @brief Size of the overlapping index set */
   std::size_t n;
-  
+
   /** @brief Overlapping defect vector for temporary storage */
   Vec d_ovlp;
-  
+
   /** @brief Overlapping solution vector for temporary storage */
   Vec x_ovlp;
 
   /** @brief Number of template vectors owned by this rank */
   int num_t;
-  
+
   /** @brief Total number of template vectors across all ranks */
   int total_num_t{};
-  
+
   /** @brief Number of template vectors per rank */
   std::vector<int> num_t_per_rank;
-  
+
   /** @brief Offset for each rank's template vectors in global numbering */
   std::vector<int> offset_per_rank;
 
   /** @brief Communication interface for all-to-all communication */
   Dune::Interface all_all_interface;
-  
+
   /** @brief Buffered communicator for all-to-all communication */
   Dune::BufferedCommunicator all_all_comm;
 
   /** @brief Communication interface for owner-to-copy communication */
   Dune::Interface owner_copy_interface;
-  
+
   /** @brief Buffered communicator for owner-to-copy communication */
   Dune::BufferedCommunicator owner_copy_comm;
 
@@ -511,7 +514,7 @@ private:
 
   /** @brief Logging event for timing the apply method */
   Logger::Event *apply_event{};
-  
+
   /** @brief Logging event for timing the solver building process */
   Logger::Event *build_solver_event{};
 };

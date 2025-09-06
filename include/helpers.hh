@@ -267,7 +267,7 @@ inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<doubl
   }
 
   // Wait for the Gather to finish
-  MPI_Status status;
+  MPI_Status status{};
   MPI_CHECK(MPI_Wait(&req, &status));
   if (status.MPI_ERROR != MPI_SUCCESS) {
     char err_string[MPI_MAX_ERROR_STRING];
