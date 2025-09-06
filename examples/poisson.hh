@@ -33,7 +33,7 @@
 #include <dune/pdelab/localoperator/convectiondiffusiondg.hh>
 #include <dune/pdelab/localoperator/convectiondiffusionfem.hh>
 #include <dune/pdelab/localoperator/convectiondiffusionparameter.hh>
-#pragma pop diagnostic
+#pragma GCC diagnostic pop
 
 #include <limits>
 #include <map>
@@ -572,7 +572,6 @@ public:
     }
 
     std::map<int, std::vector<TripleWithRank>> remote_triples;
-    std::size_t num_triples = 0;
     for (const auto &[rank, triples] : triples_for_rank) {
       if (rank < 0) {
         // rank < 0 corresponds to corrections that we have to apply locally, so we can skip them here
@@ -584,7 +583,6 @@ public:
 
       MPI_Probe(rank, 0, extids.get_remote_indices().communicator(), &status);
       MPI_Get_count(&status, triple_type, &count);
-      num_triples += count;
 
       remote_triples[rank].resize(count);
       MPI_Recv(remote_triples[rank].data(), count, triple_type, rank, 0, extids.get_remote_indices().communicator(), MPI_STATUS_IGNORE);

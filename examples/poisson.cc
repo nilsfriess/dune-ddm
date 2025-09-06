@@ -2,7 +2,6 @@
 #include "config.h"
 #endif
 
-#include <cstdint>
 #define EIGEN_DEFAULT_DENSE_INDEX_TYPE std::int64_t
 
 #include <dune-pdelab-config.hh>
@@ -15,9 +14,7 @@
 #include <cmath>
 #include <cstddef>
 #include <iostream>
-#include <set>
 #include <string>
-#include <utility>
 
 #include <dune/common/densevector.hh>
 #include <dune/common/exceptions.hh>
@@ -173,7 +170,6 @@ int main(int argc, char *argv[])
     Dune::ParameterTreeParser ptreeparser;
     ptreeparser.readINITree("poisson.ini", ptree);
     ptreeparser.readOptions(argc, argv, ptree);
-    const auto verbose = ptree.get("verbose", 0);
 
     // Create the grid view
     auto grid = make_grid(ptree, helper);
@@ -313,13 +309,6 @@ int main(int argc, char *argv[])
 
     auto prec = std::make_shared<CombinedPreconditioner<Native<Vec>>>(ptree);
     auto op = std::make_shared<Op>(problem.getA().storage(), *remoteids);
-
-    // Lastly, build the full preconditioner
-    ApplyMode applymode = ApplyMode::Additive;
-    auto applymode_param = ptree.get("applymode", "additive");
-    if (applymode_param == "multiplicative") {
-      applymode = ApplyMode::Multiplicative;
-    }
 
     prec->set_op(op);
     prec->add(schwarz);

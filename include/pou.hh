@@ -3,7 +3,7 @@
 /** @file pou.hh
  *
  *  Provides functions to compute partitions of unity on overlapping domains.
- *  
+ *
  *  Partition of unity functions are essential for overlapping domain decomposition
  *  methods, ensuring that the sum of all partition functions equals 1 across the
  *  entire computational domain while providing smooth transitions between subdomains.
@@ -36,10 +36,10 @@ enum class PartitionOfUnityType : std::uint8_t {
 class PartitionOfUnity {
 private:
   using Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>;
-  
-  Vec pou_vector_;        ///< The actual partition of unity vector
-  unsigned int shrink_;   ///< Shrink factor used in construction
-  PartitionOfUnityType type_;  ///< Type of partition of unity
+
+  Vec pou_vector_;            ///< The actual partition of unity vector
+  int shrink_;                ///< Shrink factor used in construction
+  PartitionOfUnityType type_; ///< Type of partition of unity
 
 public:
   /** @brief Constructor that creates a partition of unity vector on an overlapping subdomain
@@ -48,14 +48,13 @@ public:
       The partition ensures that the sum across all subdomains equals 1 at each DOF.
 
       @param A           Matrix defined on the overlapping index set (used for connectivity)
-      @param extids      Extended remote indices defining the overlapping subdomain structure  
+      @param extids      Extended remote indices defining the overlapping subdomain structure
       @param pou_type    Type of partition of unity to create
       @param shrink      Shrink factor for oversampling simulation (only affects Distance type).
                          A shrink of n means the partition stops n layers from the boundary.
    */
   template <class Mat, class ExtendedRemoteIndices>
-  PartitionOfUnity(const Mat &A, const ExtendedRemoteIndices &extids, PartitionOfUnityType pou_type, unsigned int shrink = 0)
-    : shrink_(shrink), type_(pou_type)
+  PartitionOfUnity(const Mat &A, const ExtendedRemoteIndices &extids, PartitionOfUnityType pou_type, int shrink = 0) : shrink_(shrink), type_(pou_type)
   {
     // Helper struct for MPI communication: adds values from different processors
     struct AddGatherScatter {
@@ -110,7 +109,7 @@ public:
 
     case PartitionOfUnityType::Distance: {
       // Distance-based partition: weight by distance from subdomain boundary
-      
+
       // Initialize distance array - boundary DOFs have distance 0
       std::vector<int> boundary_dst(extids.size(), std::numeric_limits<int>::max() - 1);
       for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
@@ -178,11 +177,11 @@ public:
       Convenience constructor that creates a partition of unity from configuration parameters.
       This allows runtime selection of partition type and parameters.
 
-      @param A             Matrix defined on the overlapping index set  
+      @param A             Matrix defined on the overlapping index set
       @param extids        Extended remote indices defining the overlapping subdomain structure
       @param ptree         Parameter tree containing configuration
       @param subtree_name  Name of subtree containing POU parameters (default: "pou")
-      
+
       Configuration parameters in subtree:
       - `type`: Partition type - "trivial", "standard", or "distance" (default: "distance")
       - `shrink`: Shrinkage factor for oversampling, must be < overlap (default: 0)
@@ -191,7 +190,7 @@ public:
    */
   template <class Mat, class ExtendedRemoteIndices>
   PartitionOfUnity(const Mat &A, const ExtendedRemoteIndices &extids, const Dune::ParameterTree &ptree, const std::string &subtree_name = "pou")
-    : PartitionOfUnity(A, extids, parse_type(ptree, subtree_name), parse_shrink(ptree, subtree_name, extids.get_overlap()))
+      : PartitionOfUnity(A, extids, parse_type(ptree, subtree_name), parse_shrink(ptree, subtree_name, extids.get_overlap()))
   {
   }
 
@@ -201,7 +200,7 @@ private:
   {
     const auto &subtree = ptree.sub(subtree_name);
     const auto &type_string = subtree.get("type", "distance");
-    
+
     if (type_string == "trivial") {
       return PartitionOfUnityType::Trivial;
     }
@@ -222,16 +221,14 @@ private:
     const auto &subtree = ptree.sub(subtree_name);
     auto shrink = subtree.get("shrink", 0);
     if (shrink < 0 or shrink >= overlap) {
-      DUNE_THROW(Dune::Exception, "Invalid value for shrink: " + std::to_string(shrink) + 
-                 " (must be >= 0 and < overlap size " + std::to_string(overlap) + ")");
+      DUNE_THROW(Dune::Exception, "Invalid value for shrink: " + std::to_string(shrink) + " (must be >= 0 and < overlap size " + std::to_string(overlap) + ")");
     }
     return shrink;
   }
 
 public:
-
   /** @brief Get the shrink parameter used in construction */
-  unsigned int get_shrink() const { return shrink_; }
+  int get_shrink() const { return shrink_; }
 
   /** @brief Get the type of partition of unity */
   PartitionOfUnityType get_type() const { return type_; }
@@ -240,14 +237,14 @@ public:
   std::size_t size() const { return pou_vector_.size(); }
 
   /** @brief Access vector element (const version) */
-  const Dune::FieldVector<double, 1>& operator[](std::size_t i) const { return pou_vector_[i]; }
+  const Dune::FieldVector<double, 1> &operator[](std::size_t i) const { return pou_vector_[i]; }
 
   /** @brief Access vector element (non-const version) */
-  Dune::FieldVector<double, 1>& operator[](std::size_t i) { return pou_vector_[i]; }
+  Dune::FieldVector<double, 1> &operator[](std::size_t i) { return pou_vector_[i]; }
 
   /** @brief Get reference to underlying vector */
-  const Vec& vector() const { return pou_vector_; }
+  const Vec &vector() const { return pou_vector_; }
 
   /** @brief Get reference to underlying vector (non-const) */
-  Vec& vector() { return pou_vector_; }
+  Vec &vector() { return pou_vector_; }
 };

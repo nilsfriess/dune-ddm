@@ -184,7 +184,7 @@ public:
    */
   SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree &ptree, tf::Taskflow &taskflow,
                         const std::string &subtree_name = "schwarz")
-      : Aovlp(std::move(Aovlp)), ext_indices(ext_indices), pou(std::move(pou))
+      : Aovlp(std::move(Aovlp)), pou(std::move(pou)), ext_indices(ext_indices)
   {
     const auto &subtree = ptree.sub(subtree_name);
     factorise_at_first_iteration = subtree.get("factorise_at_first_iteration", false);

@@ -267,7 +267,7 @@ inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<doubl
   }
 
   // Wait for the Gather to finish
-  MPI_Status status = {0};
+  MPI_Status status;
   MPI_CHECK(MPI_Wait(&req, &status));
   if (status.MPI_ERROR != MPI_SUCCESS) {
     char err_string[MPI_MAX_ERROR_STRING];
@@ -328,7 +328,7 @@ inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<doubl
 
     // Now we have to adjust the row offsets to be relative to the global rows by adding the accumulated offsets.
     for (int s = 0; s < size; ++s) {
-      for (std::size_t i = 0; i < row_offsets_counts[s]; ++i) {
+      for (int i = 0; i < row_offsets_counts[s]; ++i) {
         global_row_offsets[row_offsets_displacements[s] + i] += row_offsets_accumulated[s];
       }
     }

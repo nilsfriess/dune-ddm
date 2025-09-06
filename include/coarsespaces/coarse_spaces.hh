@@ -857,7 +857,7 @@ public:
 
 private:
   std::vector<int> boundary_distance;
-  std::size_t ring_width;
+  int ring_width;
   std::vector<std::size_t> extension_interior_to_subdomain;
   std::vector<std::size_t> extension_boundary_to_subdomain;
   std::vector<Vec> eigenvectors_ring;
