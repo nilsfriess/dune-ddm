@@ -320,6 +320,9 @@ private:
 
     Logger::get().endEvent(prepare_event);
 #if 1
+    // TODO: Here we previously used a custom implementation of BufferedCommunicator that supports forwardBegin/forwardEnd to overlap computation and communication. This is currently disabled again to
+    // make it work with a standard DUNE installation.
+
     auto max_num_t = *std::max_element(num_t_per_rank.begin(), num_t_per_rank.end());
 
     Vec zerovec(s);
@@ -341,6 +344,7 @@ private:
       }
 
       Logger::get().startEvent(comm_begin_event);
+      // bcomm.forwardBegin<CopyGatherScatterWithRank>(vd);
       Logger::get().endEvent(comm_begin_event);
 
       if (idx > 0) {
