@@ -158,7 +158,7 @@ public:
 
     Dune::initSolverFactories<Op>();
     auto op = std::make_shared<Op>(this->Aovlp);
-    solver = Dune::getSolverFromFactory(op, ptree.sub(solver_subtree_name));
+    solver = Dune::getSolverFromFactory(op, subtree.sub(solver_subtree_name));
     init();
   }
 
