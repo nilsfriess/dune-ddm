@@ -48,6 +48,8 @@
     <b>Scalability:</b>
     The coarse problem size equals the total number of template vectors across all ranks.
     For good scalability, this should grow slowly with the number of MPI processes.
+
+    TODO: It's not necessary that this whole class depends on RemoteIndices.
  */
 template <class Vec, class RemoteIndices>
 class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
