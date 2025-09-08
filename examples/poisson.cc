@@ -231,7 +231,7 @@ int main(int argc, char *argv[])
     spdlog::info("Setting up tasks");
     auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>>>(A_dir, *remoteids, pou, ptree);
 
-    using CoarseLevel = GalerkinPreconditioner<Native<Vec>, std::remove_reference_t<decltype(*remoteids)>>;
+    using CoarseLevel = GalerkinPreconditioner<Native<Vec>>;
     std::shared_ptr<CoarseLevel> coarse;
 
     const auto zero_at_dirichlet = [&](auto &&x) {
@@ -277,7 +277,7 @@ int main(int argc, char *argv[])
       prec_setup_task = taskflow.emplace([&]() {
         basis = coarse_space->get_basis();
         std::ranges::for_each(basis, zero_at_dirichlet);
-        coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices(), ptree, "coarse_solver");
+        coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_indices(), ptree, "coarse_solver");
       });
 
       prec_setup_task.name("Build coarse preconditioner");

@@ -37,7 +37,7 @@
     5. The correction is prolongated: x += R^T x_c
 
     <b>Requirements:</b>
-    - Template vectors must be defined on the overlapping subdomain matching the index set in 'ris'
+    - Template vectors must be defined on the overlapping subdomain matching the index set in 'remoteids'
     - The matrix A must be extended to the same overlapping subdomain
     - Template vectors should be suitable for the problem (e.g., zero on Dirichlet boundaries)
 
@@ -48,10 +48,8 @@
     <b>Scalability:</b>
     The coarse problem size equals the total number of template vectors across all ranks.
     For good scalability, this should grow slowly with the number of MPI processes.
-
-    TODO: It's not necessary that this whole class depends on RemoteIndices.
  */
-template <class Vec, class RemoteIndices>
+template <class Vec>
 class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   using Solver = Dune::InverseOperator<Vec, Vec>;
 
@@ -132,18 +130,18 @@ public:
    * Sets up a Galerkin-type preconditioner that computes R^T (R A R^T)^-1 R,
    * where R is the restriction matrix built from template vectors.
    *
-   * @param A The overlapping matrix (must match the overlapping index set in ris)
+   * @param A The overlapping matrix (must match the overlapping index set in remoteids)
    * @param ts Vector of template vectors (must be overlapping, size must match A.N())
-   * @param ris Remote parallel indices describing the overlapping index set
+   * @param remoteids Remote indices describing the overlapping index set
    *
    * @throws Dune::Exception if no template vectors are provided or if template vector size doesn't match matrix size
    */
-  template <class Mat>
-  GalerkinPreconditioner(const Mat &A, const std::vector<Vec> &ts, RemoteParallelIndices<RemoteIndices> ris, const Dune::ParameterTree &ptree, const std::string &subtree_name = "galerkin")
-      : ris(ris), n(ris.second->size()), d_ovlp(n), x_ovlp(n), num_t(ts.size())
+  template <class Mat, class RemoteIndices>
+  GalerkinPreconditioner(const Mat &A, const std::vector<Vec> &ts, const RemoteIndices &remoteids, const Dune::ParameterTree &ptree, const std::string &subtree_name = "galerkin")
+      : n(A.N()), d_ovlp(n), x_ovlp(n), num_t(ts.size())
   {
     register_log_events();
-    build_communication_interfaces(ris);
+    build_communication_interfaces(remoteids);
 
     const auto &subtree = ptree.sub(subtree_name);
 
@@ -155,7 +153,9 @@ public:
       DUNE_THROW(Dune::Exception, "Template vectors must match size of matrix");
     }
 
-    auto max_num_t = get_max_template_vecs(ts.size());
+    std::size_t max_num_t = ts.size();
+    MPI_Allreduce(MPI_IN_PLACE, &max_num_t, 1, MPI_UNSIGNED_LONG, MPI_MAX, comm);
+
     Vec zero(ts[0].N());
     zero = 0;
     restr_vecs.resize(max_num_t, Vec(ts[0].N()));
@@ -165,7 +165,7 @@ public:
 
     spdlog::info("Setting up GalerkinPreconditioner with {} template vector{} (max. one rank has is {})", num_t, (num_t == 1 ? "" : "s"), max_num_t);
 
-    build_solver(A, subtree);
+    build_solver(A, remoteids, subtree);
   }
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
@@ -176,12 +176,6 @@ public:
   void apply(Vec &x, const Vec &d) override
   {
     Logger::ScopedLog se(apply_event);
-
-    MPI_Comm comm = ris.first->communicator();
-    int rank = 0;
-    int size = 0;
-    MPI_Comm_rank(comm, &rank);
-    MPI_Comm_size(comm, &size);
 
     // 1. Copy local values from non-overlapping to overlapping defect
     for (std::size_t i = 0; i < d.N(); ++i) {
@@ -248,29 +242,22 @@ private:
    * @brief Build communication interfaces for parallel operations
    * @param ris Remote parallel indices describing the overlapping index set and communication patterns
    */
-  void build_communication_interfaces(const RemoteParallelIndices<RemoteIndices> &ris)
+  template <class RemoteIndices>
+  void build_communication_interfaces(const RemoteIndices &remoteids)
   {
+    MPI_Comm_dup(remoteids.communicator(), &comm);
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+
     const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
     const AttributeSet ownerAttribute{Attribute::owner};
     const AttributeSet copyAttribute{Attribute::copy};
 
-    all_all_interface.build(*ris.first, allAttributes, allAttributes);
+    all_all_interface.build(remoteids, allAttributes, allAttributes);
     all_all_comm.build<Vec>(all_all_interface);
 
-    owner_copy_interface.build(*ris.first, ownerAttribute, copyAttribute);
+    owner_copy_interface.build(remoteids, ownerAttribute, copyAttribute);
     owner_copy_comm.build<Vec>(owner_copy_interface);
-  }
-
-  /**
-   * @brief Get the maximum number of template vectors across all MPI ranks
-   * @param num_restr_vecs Number of template vectors on this rank
-   * @return Maximum number of template vectors on any rank
-   */
-  std::size_t get_max_template_vecs(std::size_t num_restr_vecs) const
-  {
-    std::size_t max_num_t = 0;
-    MPI_Allreduce(&num_restr_vecs, &max_num_t, 1, MPI_UNSIGNED_LONG, MPI_MAX, ris.first->communicator());
-    return max_num_t;
   }
 
   /**
@@ -285,8 +272,8 @@ private:
    */
   // TODO: Remove some of the logging, this was just added to find out where the most time is spent,
   //       because this function can become the bottleneck for large simulations.
-  template <class Mat>
-  void build_solver(const Mat &A, const Dune::ParameterTree &subtree)
+  template <class Mat, class RemoteIndices>
+  void build_solver(const Mat &A, const RemoteIndices &remoteids, const Dune::ParameterTree &subtree)
   {
     Logger::ScopedLog se(build_solver_event);
 
@@ -299,15 +286,10 @@ private:
     auto *prepare_event = Logger::get().registerEvent("GalerkinPrec", "prepare");
 
     Logger::get().startEvent(prepare_event);
-    Dune::GlobalLookupIndexSet glis(*ris.second);
-
-    int rank = 0;
-    int size = 0;
-    MPI_Comm_rank(ris.first->communicator(), &rank);
-    MPI_Comm_size(ris.first->communicator(), &size);
+    Dune::GlobalLookupIndexSet glis(remoteids.sourceIndexSet());
 
     std::vector<bool> neighbours(size, false);
-    for (auto nid : ris.first->getNeighbours()) {
+    for (auto nid : remoteids.getNeighbours()) {
       neighbours[nid] = true;
     }
 
@@ -318,7 +300,7 @@ private:
 
     // Find out how many template vectors each rank has and how large coarse matrix will be
     num_t_per_rank.resize(size);
-    MPI_Allgather(&num_t, 1, MPI_INT, num_t_per_rank.data(), 1, MPI_INT, ris.first->communicator());
+    MPI_Allgather(&num_t, 1, MPI_INT, num_t_per_rank.data(), 1, MPI_INT, comm);
     total_num_t = std::accumulate(num_t_per_rank.begin(), num_t_per_rank.end(), 0UL);
 
     std::vector<double> my_rows_flat(static_cast<std::size_t>(num_t) * total_num_t);
@@ -337,7 +319,7 @@ private:
 
     Vec zerovec(s);
     zerovec = 0;
-    std::vector<int> neighbour_vec(ris.first->getNeighbours().begin(), ris.first->getNeighbours().end());
+    std::vector<int> neighbour_vec(remoteids.getNeighbours().begin(), remoteids.getNeighbours().end());
     VecDistributor vd(zerovec, neighbour_vec, rank);
 
     Dune::BufferedCommunicator bcomm;
@@ -469,7 +451,7 @@ private:
 #endif
 
     Logger::get().startEvent(gather_A0);
-    auto a0 = std::make_shared<Mat>(gatherMatrixFromRowsFlat(my_rows_flat, total_num_t, ris.first->communicator()));
+    auto a0 = std::make_shared<Mat>(gatherMatrixFromRowsFlat(my_rows_flat, total_num_t, comm));
     Logger::get().endEvent(gather_A0);
 
     Logger::get().startEvent(factor_A0);
@@ -484,51 +466,22 @@ private:
     Logger::get().endEvent(factor_A0);
   }
 
-  /** @brief Direct solver for the coarse problem (UMFPack by default) */
-  std::shared_ptr<Solver> solver;
-
-  /** @brief Remote parallel indices describing the overlapping index set */
-  RemoteParallelIndices<RemoteIndices> ris;
-
-  /** @brief Template vectors used to build the restriction matrix */
-  std::vector<Vec> restr_vecs;
-
-  /** @brief Size of the overlapping index set */
-  std::size_t n;
-
-  /** @brief Overlapping defect vector for temporary storage */
-  Vec d_ovlp;
-
-  /** @brief Overlapping solution vector for temporary storage */
-  Vec x_ovlp;
-
-  /** @brief Number of template vectors owned by this rank */
-  int num_t;
-
-  /** @brief Total number of template vectors across all ranks */
-  int total_num_t{};
-
-  /** @brief Number of template vectors per rank */
-  std::vector<int> num_t_per_rank;
-
-  /** @brief Offset for each rank's template vectors in global numbering */
-  std::vector<int> offset_per_rank;
-
-  /** @brief Communication interface for all-to-all communication */
-  Dune::Interface all_all_interface;
-
-  /** @brief Buffered communicator for all-to-all communication */
-  Dune::BufferedCommunicator all_all_comm;
-
-  /** @brief Communication interface for owner-to-copy communication */
-  Dune::Interface owner_copy_interface;
-
-  /** @brief Buffered communicator for owner-to-copy communication */
-  Dune::BufferedCommunicator owner_copy_comm;
-
-  /** @brief Logging event for timing the apply method */
-  Logger::Event *apply_event{};
-
-  /** @brief Logging event for timing the solver building process */
-  Logger::Event *build_solver_event{};
+  std::shared_ptr<Solver> solver;             ///  Direct solver for the coarse problem (UMFPack by default)
+  std::vector<Vec> restr_vecs;                ///  Template vectors used to build the restriction matrix
+  std::size_t n;                              ///  Size of the overlapping index set
+  MPI_Comm comm{};                            ///  The MPI communicator
+  int rank{};                                 ///  The MPI rank
+  int size{};                                 ///  The MPI size
+  Vec d_ovlp;                                 ///  Overlapping defect vector for temporary storage
+  Vec x_ovlp;                                 ///  Overlapping solution vector for temporary storage
+  int num_t;                                  ///  Number of template vectors owned by this rank
+  int total_num_t{};                          ///  Total number of template vectors across all ranks
+  std::vector<int> num_t_per_rank;            ///  Number of template vectors per rank
+  std::vector<int> offset_per_rank;           ///  Offset for each rank's template vectors in global numbering
+  Dune::Interface all_all_interface;          ///  Communication interface for all-to-all communication
+  Dune::BufferedCommunicator all_all_comm;    ///  Buffered communicator for all-to-all communication
+  Dune::Interface owner_copy_interface;       ///  Communication interface for owner-to-copy communication
+  Dune::BufferedCommunicator owner_copy_comm; ///  Buffered communicator for owner-to-copy communication
+  Logger::Event *apply_event{};               ///  Logging event for timing the apply method
+  Logger::Event *build_solver_event{};        ///  Logging event for timing the solver building process
 };

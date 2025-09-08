@@ -25,7 +25,7 @@ class TwoLevelSchwarz : public Dune::Preconditioner<X, Y> {
 
 public:
   using FineLevel = SchwarzPreconditioner<X, Mat>;
-  using CoarseLevel = GalerkinPreconditioner<X, RemoteIndices>;
+  using CoarseLevel = GalerkinPreconditioner<X>;
 
   template <class Vec>
   TwoLevelSchwarz(std::shared_ptr<Mat> A_novlp, const RemoteIndices &remote_ids, const std::vector<Vec> &template_vecs, const Dune::ParameterTree &ptree,
@@ -59,7 +59,7 @@ public:
 
     POUCoarseSpace coarse_space(extended_template_vecs, *pou);
     auto fine = std::make_shared<FineLevel>(A, ext_indices.get_remote_indices(), pou, subtree, "fine");
-    auto coarse = std::make_shared<CoarseLevel>(*A, coarse_space.get_basis(), ext_indices.get_remote_par_indices(), subtree, "coarse");
+    auto coarse = std::make_shared<CoarseLevel>(*A, coarse_space.get_basis(), ext_indices.get_remote_indices(), subtree, "coarse");
 
     auto op = std::make_shared<NonOverlappingOperator<Mat, Vec>>(A_novlp, remote_ids);
     prec.set_op(op);
