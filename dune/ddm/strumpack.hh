@@ -2,9 +2,12 @@
 
 #if DUNE_DDM_HAVE_STRUMPACK
 
+#include <dune/common/typetraits.hh>
 #include <dune/istl/bvector.hh>
 #include <dune/istl/foreach.hh>
 #include <dune/istl/solver.hh>
+#include <dune/istl/solverfactory.hh>
+#include <dune/istl/solverregistry.hh>
 
 #include <StrumpackOptions.hpp>
 #include <StrumpackSparseSolver.hpp>
@@ -88,6 +91,35 @@ public:
 private:
   strumpack::SparseSolver<double> solver;
 };
+
+struct StrumpackCreator {
+
+  template <class TL, class M, class = void>
+  struct isValidBlock : std::false_type {};
+
+  template <class TL, class M>
+  struct isValidBlock<TL, M, std::enable_if_t<std::is_same_v<typename M::field_type, double> || std::is_same_v<typename M::field_type, float>>> : std::true_type {};
+
+  template <typename TL, typename M>
+  std::shared_ptr<Dune::InverseOperator<typename Dune::TypeListElement<1, TL>::type, typename Dune::TypeListElement<2, TL>::type>>
+  operator()(TL /*tl*/, const M &mat, const Dune::ParameterTree &config, std::enable_if_t<isValidBlock<TL, M>::value, int> = 0) const
+  {
+    int verbose = config.get("verbose", 0);
+    return std::make_shared<Dune::STRUMPACK<M>>(mat, verbose);
+  }
+
+  // second version with SFINAE to validate the template parameters of STRUMPACK
+  template <typename TL, typename M>
+  std::shared_ptr<Dune::InverseOperator<typename Dune::TypeListElement<1, TL>::type, typename Dune::TypeListElement<2, TL>::type>>
+  operator()(TL /*tl*/, const M & /*mat*/, const Dune::ParameterTree & /*config*/, std::enable_if_t<!isValidBlock<TL, M>::value, int> = 0) const
+  {
+    DUNE_THROW(UnsupportedType, "Unsupported Type in STRUMPACK (only double and float supported):\n"
+                                "Matrix: "
+                                    << className<M>());
+  }
+};
+
+DUNE_REGISTER_DIRECT_SOLVER("strumpack", Dune::StrumpackCreator());
 } // namespace Dune
 
 #endif
