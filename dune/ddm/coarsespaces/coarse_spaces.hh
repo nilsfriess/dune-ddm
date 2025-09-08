@@ -19,9 +19,9 @@
 #include <spdlog/spdlog.h>
 #include <taskflow/taskflow.hpp>
 
-#include "energy_minimal_extension.hh"
 #include "../eigensolvers/eigensolvers.hh"
 #include "../pou.hh"
+#include "energy_minimal_extension.hh"
 
 namespace detail {
 
@@ -237,135 +237,134 @@ public:
     const auto &subtree = ptree.sub(ptree_prefix);
     Dune::ParameterTree eig_ptree = detail::parse_eigensolver_params(subtree);
 
-    this->setup_task =
-        taskflow
-            .emplace([A_dir, A, pou, ring_to_subdomain, eig_ptree, this](tf::Subflow &subflow) {
-              spdlog::info("Setting up GenEO ring coarse space");
+    this->setup_task = taskflow
+                           .emplace([A_dir, A, pou, ring_to_subdomain, eig_ptree, this](tf::Subflow &subflow) {
+                             spdlog::info("Setting up GenEO ring coarse space");
 
-              auto setup_ring_data_task = subflow
-                                              .emplace([&]() {
-                                                // We first create a modified partition of unity that vanishes in the interior (i.e. the region outside the "ring")
-                                                // and on the inner boundary of the ring. We also create a interior-to-subdomain mapping.
+                             auto setup_ring_data_task = subflow
+                                                             .emplace([&]() {
+                                                               // We first create a modified partition of unity that vanishes in the interior (i.e. the region outside the "ring")
+                                                               // and on the inner boundary of the ring. We also create a interior-to-subdomain mapping.
 
-                                                subdomain_to_ring.clear();
-                                                for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-                                                  subdomain_to_ring[ring_to_subdomain[i]] = i;
-                                                }
+                                                               subdomain_to_ring.clear();
+                                                               for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
+                                                                 subdomain_to_ring[ring_to_subdomain[i]] = i;
+                                                               }
 
-                                                interior_to_subdomain.resize(A_dir->N() - ring_to_subdomain.size());
-                                                inner_ring_boundary_to_subdomain.clear();
-                                                inner_ring_boundary_dofs.clear(); // For fast lookup
-                                                inner_ring_boundary_to_subdomain.reserve(ring_to_subdomain.size());
+                                                               interior_to_subdomain.resize(A_dir->N() - ring_to_subdomain.size());
+                                                               inner_ring_boundary_to_subdomain.clear();
+                                                               inner_ring_boundary_dofs.clear(); // For fast lookup
+                                                               inner_ring_boundary_to_subdomain.reserve(ring_to_subdomain.size());
 
-                                                mod_pou = std::make_unique<PartitionOfUnity>(*pou);
-                                                std::size_t cnt = 0;
-                                                for (std::size_t i = 0; i < mod_pou->size(); ++i) {
-                                                  if (not subdomain_to_ring.contains(i)) { // Zero in the interior
-                                                    interior_to_subdomain[cnt++] = i;
-                                                    (*mod_pou)[i] = 0;
-                                                  }
-                                                  else {
-                                                    for (auto ci = (*A_dir)[i].begin(); ci != (*A_dir)[i].end(); ++ci) {
-                                                      if (not subdomain_to_ring.contains(ci.index())) {
-                                                        // A neighbouring dof of dof i is outside the ring => dof i is on the ring boundary
-                                                        inner_ring_boundary_dofs.insert(i);
-                                                        inner_ring_boundary_to_subdomain.push_back(i);
-                                                        (*mod_pou)[i] = 0;
-                                                        break;
-                                                      }
-                                                    }
-                                                  }
-                                                }
-                                                assert(cnt == interior_to_subdomain.size());
-                                              })
-                                              .name("Setup ring data structures");
+                                                               mod_pou = std::make_unique<PartitionOfUnity>(*pou);
+                                                               std::size_t cnt = 0;
+                                                               for (std::size_t i = 0; i < mod_pou->size(); ++i) {
+                                                                 if (not subdomain_to_ring.contains(i)) { // Zero in the interior
+                                                                   interior_to_subdomain[cnt++] = i;
+                                                                   (*mod_pou)[i] = 0;
+                                                                 }
+                                                                 else {
+                                                                   for (auto ci = (*A_dir)[i].begin(); ci != (*A_dir)[i].end(); ++ci) {
+                                                                     if (not subdomain_to_ring.contains(ci.index())) {
+                                                                       // A neighbouring dof of dof i is outside the ring => dof i is on the ring boundary
+                                                                       inner_ring_boundary_dofs.insert(i);
+                                                                       inner_ring_boundary_to_subdomain.push_back(i);
+                                                                       (*mod_pou)[i] = 0;
+                                                                       break;
+                                                                     }
+                                                                   }
+                                                                 }
+                                                               }
+                                                               assert(cnt == interior_to_subdomain.size());
+                                                             })
+                                                             .name("Setup ring data structures");
 
-              auto solve_eigenproblem_task =
-                  subflow
-                      .emplace([&]() {
-                        Mat C = *A; // The rhs of the eigenproblem
-                        detail::scale_matrix_with_pou(C, *mod_pou, ring_to_subdomain);
+                             auto solve_eigenproblem_task = subflow
+                                                                .emplace([&]() {
+                                                                  Mat C = *A; // The rhs of the eigenproblem
+                                                                  detail::scale_matrix_with_pou(C, *mod_pou, ring_to_subdomain);
 
-                        // Now we can solve the eigenproblem
-                        eigenvectors_ring = solveGEVP(*A, C, Eigensolver::Spectra, eig_ptree);
-                      })
-                      .name("Solve ring eigenproblem");
+                                                                  // Now we can solve the eigenproblem
+                                                                  eigenvectors_ring = solveGEVP(*A, C, Eigensolver::Spectra, eig_ptree);
+                                                                })
+                                                                .name("Solve ring eigenproblem");
 
-              auto setup_harmonic_extension_task = subflow
-                                                       .emplace([&]() {
-                                                         // Now we have computed a set of eigenvectors on the ring. To obtain basis vectors on the full
-                                                         // subdomain, we extend those eigenvectors energy-minimally to the interior. However, we don't
-                                                         // extend from the inner ring boundary but from one layer within the ring, as required by the
-                                                         // theory.
-                                                         // TODO: Allow to extend from the inner ring boundary to compare the effect in the numerical results.
-                                                         inside_ring_boundary_to_subdomain.clear();
-                                                         inside_ring_boundary_to_subdomain.reserve(ring_to_subdomain.size());
-                                                         for (auto i : ring_to_subdomain) {
-                                                           for (auto ci = (*A_dir)[i].begin(); ci != (*A_dir)[i].end(); ++ci) {
-                                                             // Check if a neighbouring dof of dof i lies on the inner ring boundary but i itself does not
-                                                             if (inner_ring_boundary_dofs.contains(ci.index()) and not inner_ring_boundary_dofs.contains(i)) {
-                                                               inside_ring_boundary_to_subdomain.push_back(i);
-                                                             }
-                                                           }
-                                                         }
+                             auto setup_harmonic_extension_task =
+                                 subflow
+                                     .emplace([&]() {
+                                       // Now we have computed a set of eigenvectors on the ring. To obtain basis vectors on the full
+                                       // subdomain, we extend those eigenvectors energy-minimally to the interior. However, we don't
+                                       // extend from the inner ring boundary but from one layer within the ring, as required by the
+                                       // theory.
+                                       // TODO: Allow to extend from the inner ring boundary to compare the effect in the numerical results.
+                                       inside_ring_boundary_to_subdomain.clear();
+                                       inside_ring_boundary_to_subdomain.reserve(ring_to_subdomain.size());
+                                       for (auto i : ring_to_subdomain) {
+                                         for (auto ci = (*A_dir)[i].begin(); ci != (*A_dir)[i].end(); ++ci) {
+                                           // Check if a neighbouring dof of dof i lies on the inner ring boundary but i itself does not
+                                           if (inner_ring_boundary_dofs.contains(ci.index()) and not inner_ring_boundary_dofs.contains(i)) {
+                                             inside_ring_boundary_to_subdomain.push_back(i);
+                                           }
+                                         }
+                                       }
 
-                                                         // Of course we then also have to extend the "interior" to also include the inner ring boundary
-                                                         extended_interior_to_subdomain.resize(interior_to_subdomain.size() + inner_ring_boundary_to_subdomain.size());
-                                                         std::size_t cnt = 0;
-                                                         for (auto i : interior_to_subdomain) {
-                                                           extended_interior_to_subdomain[cnt++] = i;
-                                                         }
-                                                         for (auto i : inner_ring_boundary_to_subdomain) {
-                                                           extended_interior_to_subdomain[cnt++] = i;
-                                                         }
+                                       // Of course we then also have to extend the "interior" to also include the inner ring boundary
+                                       extended_interior_to_subdomain.resize(interior_to_subdomain.size() + inner_ring_boundary_to_subdomain.size());
+                                       std::size_t cnt = 0;
+                                       for (auto i : interior_to_subdomain) {
+                                         extended_interior_to_subdomain[cnt++] = i;
+                                       }
+                                       for (auto i : inner_ring_boundary_to_subdomain) {
+                                         extended_interior_to_subdomain[cnt++] = i;
+                                       }
 
-                                                         // Set up energy-minimal extension
-                                                         ext = std::make_unique<EnergyMinimalExtension<Mat, Vec>>(*A_dir, extended_interior_to_subdomain, inside_ring_boundary_to_subdomain);
-                                                       })
-                                                       .name("Setup harmonic extension");
+                                       // Set up energy-minimal extension
+                                       ext = std::make_unique<EnergyMinimalExtension<Mat, Vec>>(*A_dir, extended_interior_to_subdomain, inside_ring_boundary_to_subdomain);
+                                     })
+                                     .name("Setup harmonic extension");
 
-              auto compute_harmonic_extension_task = subflow
-                                                         .emplace([&]() {
-                                                           // Here we create another map from 'inside ring boundary' to 'ring' to avoid too many hash map lookups below
-                                                           std::vector<std::size_t> inside_boundary_to_ring(inside_ring_boundary_to_subdomain.size());
-                                                           for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) {
-                                                             inside_boundary_to_ring[i] = subdomain_to_ring[inside_ring_boundary_to_subdomain[i]];
-                                                           }
+                             auto compute_harmonic_extension_task = subflow
+                                                                        .emplace([&]() {
+                                                                          // Here we create another map from 'inside ring boundary' to 'ring' to avoid too many hash map lookups below
+                                                                          std::vector<std::size_t> inside_boundary_to_ring(inside_ring_boundary_to_subdomain.size());
+                                                                          for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) {
+                                                                            inside_boundary_to_ring[i] = subdomain_to_ring[inside_ring_boundary_to_subdomain[i]];
+                                                                          }
 
-                                                           Vec zero(A_dir->N());
-                                                           zero = 0;
-                                                           std::vector<Vec> combined_vectors(eigenvectors_ring.size(), zero);
+                                                                          Vec zero(A_dir->N());
+                                                                          zero = 0;
+                                                                          std::vector<Vec> combined_vectors(eigenvectors_ring.size(), zero);
 
-                                                           Vec dirichlet_data(inside_ring_boundary_to_subdomain.size()); // Will be set each iteration
-                                                           for (std::size_t k = 0; k < eigenvectors_ring.size(); ++k) {
-                                                             const auto &evec = eigenvectors_ring[k];
+                                                                          Vec dirichlet_data(inside_ring_boundary_to_subdomain.size()); // Will be set each iteration
+                                                                          for (std::size_t k = 0; k < eigenvectors_ring.size(); ++k) {
+                                                                            const auto &evec = eigenvectors_ring[k];
 
-                                                             for (std::size_t i = 0; i < inside_boundary_to_ring.size(); ++i) {
-                                                               dirichlet_data[i] = evec[inside_boundary_to_ring[i]];
-                                                             }
+                                                                            for (std::size_t i = 0; i < inside_boundary_to_ring.size(); ++i) {
+                                                                              dirichlet_data[i] = evec[inside_boundary_to_ring[i]];
+                                                                            }
 
-                                                             auto interior_vec = ext->extend(dirichlet_data);
+                                                                            auto interior_vec = ext->extend(dirichlet_data);
 
-                                                             // First set the values in the ring
-                                                             for (std::size_t i = 0; i < evec.N(); ++i) {
-                                                               combined_vectors[k][ring_to_subdomain[i]] = evec[i];
-                                                             }
+                                                                            // First set the values in the ring
+                                                                            for (std::size_t i = 0; i < evec.N(); ++i) {
+                                                                              combined_vectors[k][ring_to_subdomain[i]] = evec[i];
+                                                                            }
 
-                                                             // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
-                                                             for (std::size_t i = 0; i < interior_vec.N(); ++i) {
-                                                               combined_vectors[k][extended_interior_to_subdomain[i]] = interior_vec[i];
-                                                             }
-                                                           }
+                                                                            // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
+                                                                            for (std::size_t i = 0; i < interior_vec.N(); ++i) {
+                                                                              combined_vectors[k][extended_interior_to_subdomain[i]] = interior_vec[i];
+                                                                            }
+                                                                          }
 
-                                                           this->basis_ = std::move(combined_vectors);
-                                                           detail::finalize_eigenvectors(this->basis_, *pou);
-                                                         })
-                                                         .name("Compute harmonic extension");
+                                                                          this->basis_ = std::move(combined_vectors);
+                                                                          detail::finalize_eigenvectors(this->basis_, *pou);
+                                                                        })
+                                                                        .name("Compute harmonic extension");
 
-              setup_ring_data_task.precede(solve_eigenproblem_task, setup_harmonic_extension_task);
-              compute_harmonic_extension_task.succeed(solve_eigenproblem_task, setup_harmonic_extension_task);
-            })
-            .name("GenEO ring coarse space setup");
+                             setup_ring_data_task.precede(solve_eigenproblem_task, setup_harmonic_extension_task);
+                             compute_harmonic_extension_task.succeed(solve_eigenproblem_task, setup_harmonic_extension_task);
+                           })
+                           .name("GenEO ring coarse space setup");
   }
 
 private:
@@ -902,6 +901,34 @@ public:
                              detail::finalize_eigenvectors(this->basis_, *pou);
                            })
                            .name("POU coarse space setup");
+  }
+
+  /**
+   * @brief Construct POU coarse space.
+   *
+   * @param pou Partition of unity vector for scaling.
+   */
+  explicit POUCoarseSpace(const PartitionOfUnity &pou)
+  {
+    spdlog::info("Setting up POU coarse space");
+
+    // Create a single basis vector that is constant 1, scaled by partition of unity
+    this->basis_.resize(1);
+    this->basis_[0].resize(pou.size());
+
+    // Initialize with constant 1
+    for (std::size_t i = 0; i < pou.size(); ++i) {
+      this->basis_[0][i] = 1.0;
+    }
+
+    // Apply partition of unity scaling and normalization
+    detail::finalize_eigenvectors(this->basis_, pou);
+  }
+
+  POUCoarseSpace(const std::vector<Vec> &template_vecs, const PartitionOfUnity &pou)
+  {
+    this->basis_ = template_vecs;
+    detail::finalize_eigenvectors(this->basis_, pou);
   }
 };
 
