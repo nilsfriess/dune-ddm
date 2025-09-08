@@ -229,7 +229,7 @@ int main(int argc, char *argv[])
 
     // Now we can create the preconditioner. First the fine level overlapping Schwarz method
     spdlog::info("Setting up tasks");
-    auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(A_dir, ext_indices, pou, ptree);
+    auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>>>(A_dir, *remoteids, pou, ptree);
 
     using CoarseLevel = GalerkinPreconditioner<Native<Vec>, std::remove_reference_t<decltype(*remoteids)>>;
     std::shared_ptr<CoarseLevel> coarse;

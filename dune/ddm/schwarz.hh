@@ -52,7 +52,7 @@ enum class SchwarzType : std::uint8_t {
  * @tparam Mat Matrix type for the linear system
  * @tparam ExtendedRemoteIndices Index set type for communication
  */
-template <class Vec, class Mat, class ExtendedRemoteIndices>
+template <class Vec, class Mat>
 class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   using Op = Dune::MatrixAdapter<Mat, Vec, Vec>;
   using Solver = Dune::InverseOperator<Vec, Vec>;
@@ -96,7 +96,6 @@ public:
    * @brief Construct Schwarz preconditioner from parameter tree.
    *
    * Reads configuration from a parameter tree, supporting the following options:
-   * - factorise_at_first_iteration: boolean, default false
    * - type: "standard" or "restricted", default "restricted"
    *
    * @param Aovlp Shared pointer to the overlapping subdomain matrix
@@ -106,12 +105,12 @@ public:
    * @param ptree Parameter tree containing configuration
    * @param subtree_name Name of the subtree containing Schwarz parameters
    */
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree &ptree, tf::Taskflow &taskflow,
+  template <class RemoteIndices>
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, std::shared_ptr<RemoteIndices> remoteids, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree &ptree, tf::Taskflow &taskflow,
                         const std::string &subtree_name = "schwarz")
-      : Aovlp(std::move(Aovlp)), pou(std::move(pou)), ext_indices(ext_indices)
+      : Aovlp(std::move(Aovlp)), pou(std::move(pou))
   {
     const auto &subtree = ptree.sub(subtree_name);
-    factorise_at_first_iteration = subtree.get("factorise_at_first_iteration", false);
     auto type_string = subtree.get("type", "restricted");
     if (type_string == "restricted") {
       type = SchwarzType::Restricted;
@@ -123,7 +122,7 @@ public:
       DUNE_THROW(Dune::NotImplemented, "Unknown Schwarz type '" + type_string + "'");
     }
 
-    setup_task = taskflow.emplace([&]() { init(); }).name("Init overlapping Schwarz preconditioner");
+    setup_task = taskflow.emplace([&, remoteids]() { init(*remoteids); }).name("Init overlapping Schwarz preconditioner");
   }
 
   /**
@@ -139,12 +138,12 @@ public:
    * @param ptree Parameter tree containing configuration
    * @param subtree_name Name of the subtree containing Schwarz parameters
    */
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree &ptree,
+  template <class RemoteIndices>
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const RemoteIndices &remoteids, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree &ptree,
                         const std::string &subtree_name = "schwarz", const std::string &solver_subtree_name = "subdomain_solver")
-      : Aovlp(std::move(Aovlp)), pou(std::move(pou)), ext_indices(ext_indices), ptree(ptree), solver_subtree_name(solver_subtree_name)
+      : Aovlp(std::move(Aovlp)), pou(std::move(pou))
   {
     const auto &subtree = ptree.sub(subtree_name);
-    factorise_at_first_iteration = subtree.get("factorise_at_first_iteration", false);
     auto type_string = subtree.get("type", "restricted");
     if (type_string == "restricted") {
       type = SchwarzType::Restricted;
@@ -159,7 +158,7 @@ public:
     Dune::initSolverFactories<Op>();
     auto op = std::make_shared<Op>(this->Aovlp);
     solver = Dune::getSolverFromFactory(op, subtree.sub(solver_subtree_name));
-    init();
+    init(remoteids);
   }
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
@@ -184,12 +183,6 @@ public:
   void apply(Vec &x, const Vec &d) override
   {
     Logger::ScopedLog sl(apply_event);
-
-    if (!solver) {
-      Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Schwarz", "init")};
-      auto op = std::make_shared<Op>(Aovlp);
-      solver = Dune::getSolverFromFactory(op, ptree.sub(solver_subtree_name));
-    }
 
     // 1. Copy local values from non-overlapping to overlapping defect
     Logger::get().startEvent(get_defect_event);
@@ -249,7 +242,8 @@ private:
    * Sets up communication interfaces, creates solver instance (if not delayed),
    * and allocates working vectors.
    */
-  void init()
+  template <class RemoteIndices>
+  void init(const RemoteIndices &remoteids)
   {
     spdlog::info("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
 
@@ -261,10 +255,10 @@ private:
 
     Logger::ScopedLog sl(init_event);
 
-    all_all_interface.build(ext_indices.get_remote_indices(), allAttributes, allAttributes);
+    all_all_interface.build(remoteids, allAttributes, allAttributes);
     all_all_comm.build<Vec>(all_all_interface);
 
-    owner_copy_interface.build(ext_indices.get_remote_indices(), ownerAttribute, copyAttribute);
+    owner_copy_interface.build(remoteids, ownerAttribute, copyAttribute);
     owner_copy_comm.build<Vec>(owner_copy_interface);
 
     d_ovlp = std::make_unique<Vec>(Aovlp->N());
@@ -285,14 +279,7 @@ private:
   Dune::Interface owner_copy_interface;       ///< Interface for owner-to-copy communication
   Dune::BufferedCommunicator owner_copy_comm; ///< Communicator for owner-to-copy exchange
 
-  const ExtendedRemoteIndices &ext_indices; ///< Extended remote indices for communication setup
-
   SchwarzType type; ///< Type of Schwarz method (standard or restricted)
-
-  const Dune::ParameterTree &ptree;
-  const std::string &solver_subtree_name;
-
-  bool factorise_at_first_iteration; ///< Whether to delay factorization until first apply
 
   // Task-related
   tf::Task setup_task;
