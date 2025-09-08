@@ -341,7 +341,6 @@ private:
       }
 
       Logger::get().startEvent(comm_begin_event);
-      bcomm.forward<CopyGatherScatterWithRank>(vd);
       Logger::get().endEvent(comm_begin_event);
 
       if (idx > 0) {
@@ -378,6 +377,7 @@ private:
       }
 
       vd.clear();
+      bcomm.forward<CopyGatherScatterWithRank>(vd);
       // Wait for communication to finish
       // Logger::get().startEvent(comm_end_event);
       // bcomm.forwardEnd<CopyGatherScatterWithRank>(vd);
