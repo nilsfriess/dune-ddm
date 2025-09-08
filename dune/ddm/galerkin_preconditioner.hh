@@ -3,12 +3,13 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
-#include <dune/common/parallel/interface.hh>
 #include <numeric>
 
 #include <mpi.h>
 
 #include <dune/common/parallel/communicator.hh>
+#include <dune/common/parallel/interface.hh>
+#include <dune/common/parametertree.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/io.hh>
 #include <dune/istl/preconditioner.hh>
@@ -48,8 +49,10 @@
     The coarse problem size equals the total number of template vectors across all ranks.
     For good scalability, this should grow slowly with the number of MPI processes.
  */
-template <class Vec, class Mat, class RemoteIndices, class Solver = Dune::UMFPack<Dune::BCRSMatrix<double>>>
+template <class Vec, class RemoteIndices>
 class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
+  using Solver = Dune::InverseOperator<Vec, Vec>;
+
   /** @brief Gather-scatter helper for adding values during communication */
   struct AddGatherScatter {
     using DataType = double;
@@ -133,10 +136,14 @@ public:
    *
    * @throws Dune::Exception if no template vectors are provided or if template vector size doesn't match matrix size
    */
-  GalerkinPreconditioner(const Mat &A, const std::vector<Vec> &ts, RemoteParallelIndices<RemoteIndices> ris) : ris(ris), n(ris.second->size()), d_ovlp(n), x_ovlp(n), num_t(ts.size())
+  template <class Mat>
+  GalerkinPreconditioner(const Mat &A, const std::vector<Vec> &ts, RemoteParallelIndices<RemoteIndices> ris, const Dune::ParameterTree &ptree, const std::string &subtree_name = "galerkin")
+      : ris(ris), n(ris.second->size()), d_ovlp(n), x_ovlp(n), num_t(ts.size())
   {
     register_log_events();
     build_communication_interfaces(ris);
+
+    const auto &subtree = ptree.sub(subtree_name);
 
     if (ts.size() == 0) {
       DUNE_THROW(Dune::Exception, "Must at least pass one template vector");
@@ -156,7 +163,7 @@ public:
 
     spdlog::info("Setting up GalerkinPreconditioner with {} template vector{} (max. one rank has is {})", num_t, (num_t == 1 ? "" : "s"), max_num_t);
 
-    build_solver(A);
+    build_solver(A, subtree);
   }
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
@@ -191,11 +198,11 @@ public:
     }
 
     // 3. Gather defect values on rank 0
-    Dune::BlockVector<double> d0(total_num_t);
+    Vec d0(total_num_t);
     MPI_Gatherv(d_local.data(), static_cast<int>(d_local.size()), MPI_DOUBLE, d0.data(), num_t_per_rank.data(), offset_per_rank.data(), MPI_DOUBLE, 0, comm);
 
     // 4. Solve on rank 0
-    Dune::BlockVector<double> x0(total_num_t);
+    Vec x0(total_num_t);
     if (rank == 0) {
       x0 = 0;
       Dune::InverseOperatorResult res;
@@ -223,8 +230,8 @@ public:
     }
   }
 
-  /** @brief Get the assembled coarse matrix R A R^T for inspection or debugging */
-  const Dune::BCRSMatrix<double> &get_coarse_matrix() const { return a0; }
+  // /** @brief Get the assembled coarse matrix R A R^T for inspection or debugging */
+  // const Dune::BCRSMatrix<double> &get_coarse_matrix() const { return a0; }
 
 private:
   /** @brief Register logging events for performance monitoring */
@@ -276,7 +283,8 @@ private:
    */
   // TODO: Remove some of the logging, this was just added to find out where the most time is spent,
   //       because this function can become the bottleneck for large simulations.
-  void build_solver(const Mat &A)
+  template <class Mat>
+  void build_solver(const Mat &A, const Dune::ParameterTree &subtree)
   {
     Logger::ScopedLog se(build_solver_event);
 
@@ -459,20 +467,23 @@ private:
 #endif
 
     Logger::get().startEvent(gather_A0);
-    a0 = gatherMatrixFromRowsFlat(my_rows_flat, total_num_t, ris.first->communicator());
+    auto a0 = std::make_shared<Mat>(gatherMatrixFromRowsFlat(my_rows_flat, total_num_t, ris.first->communicator()));
     Logger::get().endEvent(gather_A0);
 
     Logger::get().startEvent(factor_A0);
     if (rank == 0) {
-      spdlog::info("Size of coarse space matrix: {}x{}, nonzeros: {}", a0.N(), a0.M(), a0.nonzeroes());
-      solver = std::make_unique<Solver>(a0);
-      solver->setOption(UMFPACK_IRSTEP, 0);
+      spdlog::info("Size of coarse space matrix: {}x{}, nonzeros: {}", a0->N(), a0->M(), a0->nonzeroes());
+
+      using Op = Dune::MatrixAdapter<Mat, Vec, Vec>;
+      Dune::initSolverFactories<Op>();
+      auto op = std::make_shared<Op>(a0);
+      solver = Dune::getSolverFromFactory(op, subtree);
     }
     Logger::get().endEvent(factor_A0);
   }
 
   /** @brief Direct solver for the coarse problem (UMFPack by default) */
-  std::unique_ptr<Solver> solver;
+  std::shared_ptr<Solver> solver;
 
   /** @brief Remote parallel indices describing the overlapping index set */
   RemoteParallelIndices<RemoteIndices> ris;
@@ -512,9 +523,6 @@ private:
 
   /** @brief Buffered communicator for owner-to-copy communication */
   Dune::BufferedCommunicator owner_copy_comm;
-
-  /** @brief Assembled coarse matrix R A R^T */
-  Dune::BCRSMatrix<double> a0;
 
   /** @brief Logging event for timing the apply method */
   Logger::Event *apply_event{};

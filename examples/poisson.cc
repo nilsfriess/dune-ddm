@@ -14,7 +14,6 @@
 #include <iostream>
 #include <string>
 
-
 #include <dune/common/densevector.hh>
 #include <dune/common/exceptions.hh>
 #include <dune/common/fmatrix.hh>
@@ -63,13 +62,13 @@
 #include <spdlog/spdlog.h>
 #include <taskflow/taskflow.hpp>
 
-#include <dune/ddm/nonoverlapping_operator.hh>
 #include <dune/ddm/coarsespaces/coarse_spaces.hh>
 #include <dune/ddm/combined_preconditioner.hh>
 #include <dune/ddm/datahandles.hh>
 #include <dune/ddm/galerkin_preconditioner.hh>
 #include <dune/ddm/helpers.hh>
 #include <dune/ddm/logger.hh>
+#include <dune/ddm/nonoverlapping_operator.hh>
 #include <dune/ddm/overlap_extension.hh>
 #include <dune/ddm/pou.hh>
 #include <dune/ddm/schwarz.hh>
@@ -230,9 +229,9 @@ int main(int argc, char *argv[])
 
     // Now we can create the preconditioner. First the fine level overlapping Schwarz method
     spdlog::info("Setting up tasks");
-    auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(A_dir, ext_indices, pou, ptree, taskflow);
+    auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(ext_indices)>>>(A_dir, ext_indices, pou, ptree);
 
-    using CoarseLevel = GalerkinPreconditioner<Native<Vec>, Native<Mat>, std::remove_reference_t<decltype(*remoteids)>>;
+    using CoarseLevel = GalerkinPreconditioner<Native<Vec>, std::remove_reference_t<decltype(*remoteids)>>;
     std::shared_ptr<CoarseLevel> coarse;
 
     const auto zero_at_dirichlet = [&](auto &&x) {
@@ -278,7 +277,7 @@ int main(int argc, char *argv[])
       prec_setup_task = taskflow.emplace([&]() {
         basis = coarse_space->get_basis();
         std::ranges::for_each(basis, zero_at_dirichlet);
-        coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices());
+        coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_par_indices(), ptree, "coarse_solver");
       });
 
       prec_setup_task.name("Build coarse preconditioner");
@@ -292,7 +291,7 @@ int main(int argc, char *argv[])
     if (helper.rank() == 0) {
       observer = executor.make_observer<tf::TFProfObserver>();
     }
-    executor.run(taskflow).wait();
+    executor.run(taskflow).get();
 
     if (helper.rank() == 0) {
       std::ofstream dot_file("poisson.dot");
@@ -519,14 +518,17 @@ int main(int argc, char *argv[])
   }
   catch (const Dune::Exception &e) {
     std::cerr << "Caught Dune exception: " << e << '\n';
+    MPI_Abort(MPI_COMM_WORLD, 1);
     return 1;
   }
   catch (const std::exception &e) {
     std::cerr << "Caught std exception: " << e.what() << '\n';
+    MPI_Abort(MPI_COMM_WORLD, 2);
     return 1;
   }
   catch (...) {
     std::cerr << "Caught unknown exception" << '\n';
+    MPI_Abort(MPI_COMM_WORLD, 3);
     return 1;
   }
 

@@ -206,8 +206,10 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const Vec &row, MPI_Comm comm, dou
 
     The parameter \p n_cols is the length of the individual rows, the number of rows is inferred from the \p rows array.
 */
-inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<double> &rows, std::size_t n_cols, MPI_Comm comm, double clip_tolerance = 0)
+inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFlat(const std::vector<double> &rows, std::size_t n_cols, MPI_Comm comm, double clip_tolerance = 0)
 {
+  using Mat = Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>;
+
   int rank = 0;
   int size = 0;
   MPI_CHECK(MPI_Comm_size(comm, &size));
@@ -334,8 +336,8 @@ inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<doubl
     }
 
     // Now we can build the matrix
-    Dune::BCRSMatrix<double> A0;
-    A0.setBuildMode(Dune::BCRSMatrix<double>::implicit);
+    Mat A0;
+    A0.setBuildMode(Mat::implicit);
     A0.setImplicitBuildModeParameters(total_nnz / size, 1); // TODO: Make this robust
     A0.setSize(total_n_rows, n_cols);
 
@@ -350,7 +352,7 @@ inline Dune::BCRSMatrix<double> gatherMatrixFromRowsFlat(const std::vector<doubl
     return A0;
   }
 
-  return Dune::BCRSMatrix<double>{};
+  return Mat{};
 }
 
 template <class Vec, class Communication>
