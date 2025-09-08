@@ -1,0 +1,12 @@
+################################
+# Dune module information file #
+################################
+
+# Name of the module
+Module: dune-ddm
+Version: 0.0.1
+Maintainer: nils.friess@iwr.uni-heidelberg.de
+# Required build dependencies
+Depends: dune-common dune-istl
+# Optional build dependencies
+Suggests: dune-pdelab
