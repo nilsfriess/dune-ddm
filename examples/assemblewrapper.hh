@@ -1,6 +1,6 @@
 #pragma once
 
-#include "helpers.hh"
+#include "dune/ddm/helpers.hh"
 #include "spdlog/spdlog.h"
 
 #include <cstdlib>

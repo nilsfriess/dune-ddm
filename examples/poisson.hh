@@ -42,8 +42,8 @@
 #include <vector>
 
 #include "assemblewrapper.hh"
-#include "datahandles.hh"
-#include "helpers.hh"
+#include "dune/ddm/datahandles.hh"
+#include "dune/ddm/helpers.hh"
 #include "spdlog/spdlog.h"
 
 /** @brief Determines the region where the "restricted Neumann" matrix is defined (to be used with the function PoissonProblem#assemble_overlapping_matrices()).

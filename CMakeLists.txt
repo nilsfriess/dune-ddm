@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(dune-ddm 
+project(dune-ddm
         VERSION 0.0.1
         LANGUAGES CXX C)
 
@@ -9,34 +9,59 @@ set(CMAKE_COLOR_DIAGNOSTICS ON)
 list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_BINARY_DIR}/extern)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/extern/dune-common/cmake/modules)
 
-message(STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
+option(DUNE_DDM_SUPERBUILD "Use this project as a superbuild" OFF)
+if (${DUNE_DDM_SUPERBUILD})
+  list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_BINARY_DIR}/extern)
+  list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/extern/dune-common/cmake/modules)
 
-set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ON)
+  message(STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
+
+  set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ON)
+
+  add_subdirectory(extern/dune-common SYSTEM)
+  add_subdirectory(extern/dune-geometry SYSTEM)
+  add_subdirectory(extern/dune-uggrid SYSTEM)
+  add_subdirectory(extern/dune-grid SYSTEM)
+  add_subdirectory(extern/dune-istl SYSTEM)
+  add_subdirectory(extern/dune-localfunctions SYSTEM)
+  add_subdirectory(extern/dune-typetree SYSTEM)
+  add_subdirectory(extern/dune-functions SYSTEM)
+  add_subdirectory(extern/dune-pdelab SYSTEM)
+else()
+  if(NOT (dune-common_DIR OR dune-common_ROOT OR
+      "${CMAKE_PREFIX_PATH}" MATCHES ".*dune-common.*"))
+    string(REPLACE  ${PROJECT_NAME} dune-common dune-common_DIR
+      ${PROJECT_BINARY_DIR})
+  endif()
+
+  #find dune-common and set the module path
+  find_package(dune-common REQUIRED)
+  list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/modules"
+    ${dune-common_MODULE_PATH})
+
+  #include the dune macros
+  include(DuneMacros)
+
+  # start a dune project with information from dune.module
+  dune_project()
+  dune_add_library(duneddm EXPORT_NAME DDM)
+  target_link_libraries(duneddm PUBLIC ${DUNE_LIBS})
+endif()
 
 find_package(MPI REQUIRED)
 find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK CHOLMOD)
 # optionally find STRUMPACK
 find_package(STRUMPACK CONFIG)
 
-add_subdirectory(extern/dune-common SYSTEM)
-add_subdirectory(extern/dune-geometry SYSTEM)
-add_subdirectory(extern/dune-uggrid SYSTEM)
-add_subdirectory(extern/dune-grid SYSTEM)
-add_subdirectory(extern/dune-istl SYSTEM)
-add_subdirectory(extern/dune-localfunctions SYSTEM)
-add_subdirectory(extern/dune-typetree SYSTEM)
-add_subdirectory(extern/dune-functions SYSTEM)
-add_subdirectory(extern/dune-pdelab SYSTEM)
-
-include(CTest)
+find_package(spdlog REQUIRED)
 
 include(FetchContent)
-FetchContent_Declare(
-  spdlog
-  GIT_REPOSITORY https://github.com/gabime/spdlog.git
-  GIT_TAG        v1.15.1
-)
-FetchContent_MakeAvailable(spdlog)
+# FetchContent_Declare(
+#   spdlog
+#   GIT_REPOSITORY https://github.com/gabime/spdlog.git
+#   GIT_TAG        v1.15.1
+# )
+# FetchContent_MakeAvailable(spdlog)
 
 message(STATUS "Trying to download Spectra (C++ ARPACK implementation based on Eigen)")
 find_package(Eigen3 REQUIRED)
@@ -71,31 +96,42 @@ if(${DUNE_DDM_WITH_BLOPEX})
   set(BLOPEX_LIB BLOPEX)
 endif()
 
-add_library(eigensolvers src/eigensolvers.cc)
-target_include_directories(eigensolvers PUBLIC ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(eigensolvers PRIVATE Dune::ISTL spdlog::spdlog Spectra ${BLOPEX_LIB} MPI::MPI_C)
-if (${DUNE_DDM_WITH_BLOPEX})
-  target_compile_definitions(eigensolvers PUBLIC DUNE_DDM_HAVE_BLOPEX)
-endif()
-if (${STRUMPACK_FOUND})
-  target_link_libraries(eigensolvers PUBLIC STRUMPACK::strumpack)
-  target_compile_definitions(eigensolvers PUBLIC DUNE_DDM_HAVE_STRUMPACK)
-  message(STATUS "Found STRUMPACK: ${STRUMPACK_DIR}")
-else()
-  message(STATUS "Could not find STRUMPACK")
-endif()
-add_dune_eigen_flags(eigensolvers)
-add_dune_suitesparse_flags(eigensolvers)
-add_dune_mpi_flags(eigensolvers)
+target_sources(duneddm PRIVATE dune/ddm/eigensolvers/eigensolvers.cc)
+target_include_directories(duneddm PRIVATE ${Spectra_SOURCE_DIR}/include)
+add_dune_suitesparse_flags(duneddm)
+add_dune_eigen_flags(duneddm)
+add_dune_parmetis_flags(duneddm)
 
-add_library(dune-ddm INTERFACE)
-target_include_directories(dune-ddm PUBLIC INTERFACE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog eigensolvers)
-if (${STRUMPACK_FOUND})
-  target_compile_definitions(dune-ddm PUBLIC DUNE_DDM_HAVE_STRUMPACK)
-  target_link_libraries(dune-ddm PUBLIC INTERFACE STRUMPACK::strumpack)
-endif()
+# add_library(eigensolvers src/eigensolvers.cc)
+# target_include_directories(eigensolvers PUBLIC ${PROJECT_SOURCE_DIR}/include)
+# target_link_libraries(eigensolvers PRIVATE Dune::ISTL spdlog::spdlog Spectra ${BLOPEX_LIB} MPI::MPI_C)
+# if (${DUNE_DDM_WITH_BLOPEX})
+#   target_compile_definitions(eigensolvers PUBLIC DUNE_DDM_HAVE_BLOPEX)
+# endif()
+# if (${STRUMPACK_FOUND})
+#   target_link_libraries(eigensolvers PUBLIC STRUMPACK::strumpack)
+#   target_compile_definitions(eigensolvers PUBLIC DUNE_DDM_HAVE_STRUMPACK)
+#   message(STATUS "Found STRUMPACK: ${STRUMPACK_DIR}")
+# else()
+#   message(STATUS "Could not find STRUMPACK")
+# endif()
+# # add_dune_eigen_flags(eigensolvers)
+# add_dune_suitesparse_flags(eigensolvers)
+# add_dune_mpi_flags(eigensolvers)
 
 add_subdirectory(examples)
-add_subdirectory(tests)
+add_subdirectory(dune)
 
+if(${DUNE_DDM_SUPERBUILD})
+  add_library(dune-ddm INTERFACE)
+  target_include_directories(dune-ddm PUBLIC INTERFACE ${PROJECT_SOURCE_DIR}/include)
+  target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog eigensolvers)
+else()
+  target_link_libraries(duneddm PUBLIC spdlog::spdlog)
+  if (${STRUMPACK_FOUND})
+    target_compile_definitions(Dune::DDM PUBLIC DUNE_DDM_HAVE_STRUMPACK)
+    target_link_libraries(Dune::DDM PUBLIC INTERFACE STRUMPACK::strumpack)
+  endif()
+  # finalize the dune project, e.g. generating config.h etc.
+  finalize_dune_project()
+endif()

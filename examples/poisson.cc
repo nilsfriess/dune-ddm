@@ -4,9 +4,7 @@
 
 #define EIGEN_DEFAULT_DENSE_INDEX_TYPE std::int64_t
 
-#include <dune-pdelab-config.hh>
-
-#define USE_UGGRID 0 // Set to zero to use YASPGrid
+#define USE_UGGRID 1 // Set to zero to use YASPGrid
 #define GRID_DIM 2
 
 #include <algorithm>
@@ -15,6 +13,7 @@
 #include <cstddef>
 #include <iostream>
 #include <string>
+
 
 #include <dune/common/densevector.hh>
 #include <dune/common/exceptions.hh>
@@ -44,6 +43,7 @@
 #include <dune/grid/yaspgrid.hh>
 #include <dune/grid/yaspgrid/coordinates.hh>
 #endif
+
 #include <dune/istl/basearray.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/bvector.hh>
@@ -63,18 +63,19 @@
 #include <spdlog/spdlog.h>
 #include <taskflow/taskflow.hpp>
 
-#include "coarsespaces/coarse_spaces.hh"
-#include "combined_preconditioner.hh"
-#include "datahandles.hh"
-#include "galerkin_preconditioner.hh"
-#include "helpers.hh"
-#include "logger.hh"
-#include "nonoverlapping_operator.hh"
-#include "overlap_extension.hh"
+#include <dune/ddm/nonoverlapping_operator.hh>
+#include <dune/ddm/coarsespaces/coarse_spaces.hh>
+#include <dune/ddm/combined_preconditioner.hh>
+#include <dune/ddm/datahandles.hh>
+#include <dune/ddm/galerkin_preconditioner.hh>
+#include <dune/ddm/helpers.hh>
+#include <dune/ddm/logger.hh>
+#include <dune/ddm/overlap_extension.hh>
+#include <dune/ddm/pou.hh>
+#include <dune/ddm/schwarz.hh>
+
 #include "pdelab_helper.hh"
 #include "poisson.hh"
-#include "pou.hh"
-#include "schwarz.hh"
 
 namespace {
 auto make_grid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPIHelper &helper)

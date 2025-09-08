@@ -3,7 +3,7 @@
 #include <dune/common/parallel/mpihelper.hh>
 #include <dune/pdelab.hh>
 
-#include "helpers.hh"
+#include "dune/ddm/helpers.hh"
 
 template <class GFS>
 auto make_remote_indices(const GFS &gfs, const Dune::MPIHelper &helper)
