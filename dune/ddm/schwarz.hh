@@ -11,7 +11,9 @@
 #include <dune/common/parallel/communicator.hh>
 #include <dune/common/parallel/variablesizecommunicator.hh>
 #include <dune/common/parametertree.hh>
+#include <dune/istl/cholmod.hh>
 #include <dune/istl/io.hh>
+#include <dune/istl/operators.hh>
 #include <dune/istl/preconditioner.hh>
 #include <dune/istl/solver.hh>
 #include <dune/istl/umfpack.hh>
@@ -19,7 +21,6 @@
 #include <cstdint>
 #include <memory>
 #include <mpi.h>
-#include <umfpack.h>
 
 #include "helpers.hh"
 #include "logger.hh"
@@ -28,82 +29,6 @@
 #include "strumpack.hh"
 
 #include <taskflow/taskflow.hpp>
-
-/**
- * @brief Linear operator for non-overlapping domain decomposition.
- *
- * This class implements a linear operator that applies matrix-vector multiplication
- * followed by communication to handle the non-overlapping domain decomposition structure.
- * It ensures proper data exchange between subdomains after local operations.
- *
- * @tparam Mat Matrix type (typically DUNE sparse matrix)
- * @tparam X Domain vector type
- * @tparam Y Range vector type
- */
-template <typename Mat, typename X, typename Y>
-class NonoverlappingOperator : public Dune::AssembledLinearOperator<Mat, X, Y> {
-public:
-  using matrix_type = Mat;
-  using domain_type = X;
-  using range_type = Y;
-  using field_type = typename X::field_type;
-
-private:
-  const Mat &A;
-  std::shared_ptr<Dune::BufferedCommunicator> communicator;
-
-  Logger::Event *apply_event;
-  Logger::Event *applyscaleadd_event;
-
-  struct AddGatherScatter {
-    using DataType = typename Dune::CommPolicy<X>::IndexedType;
-
-    static DataType gather(const X &x, std::size_t i) { return x[i]; }
-    static void scatter(X &x, DataType v, std::size_t i) { x[i] += v; }
-  };
-
-public:
-  /**
-   * @brief Construct a non-overlapping operator.
-   *
-   * @param A The matrix to apply
-   * @param communicator Shared pointer to the communicator for inter-subdomain communication
-   */
-  NonoverlappingOperator(const Mat &A, std::shared_ptr<Dune::BufferedCommunicator> communicator) : A(A), communicator(std::move(communicator))
-  {
-    auto *family = Logger::get().registerFamily("NonovlpOperator");
-    apply_event = Logger::get().registerEvent(family, "apply");
-    applyscaleadd_event = Logger::get().registerEvent(family, "applyscaleadd");
-  }
-
-  NonoverlappingOperator(const NonoverlappingOperator &) = delete;
-  NonoverlappingOperator(const NonoverlappingOperator &&) = delete;
-  NonoverlappingOperator &operator=(const NonoverlappingOperator &) = delete;
-  NonoverlappingOperator &operator=(const NonoverlappingOperator &&) = delete;
-  ~NonoverlappingOperator() = default;
-
-  Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
-
-  void apply(const X &x, Y &y) const override
-  {
-    Logger::ScopedLog sl(apply_event);
-    A.mv(x, y);
-    communicator->forward<AddGatherScatter>(y);
-  }
-
-  void applyscaleadd(field_type alpha, const X &x, Y &y) const override
-  {
-    Logger::ScopedLog sl(applyscaleadd_event);
-
-    Y y1(y.N());
-    y1 = 0;
-    A.usmv(alpha, x, y1);
-    communicator->forward<AddGatherScatter>(y1);
-    y += y1;
-  }
-
-  const Mat &getmat() const override { return A; }
-};
 
 /**
  * @brief Type of Schwarz domain decomposition method.
@@ -126,14 +51,12 @@ enum class SchwarzType : std::uint8_t {
  * @tparam Vec Vector type for the linear system
  * @tparam Mat Matrix type for the linear system
  * @tparam ExtendedRemoteIndices Index set type for communication
- * @tparam Solver Local subdomain solver type (UMFPACK by default, STRUMPACK if available)
  */
-#if DUNE_DDM_HAVE_STRUMPACK
-template <class Vec, class Mat, class ExtendedRemoteIndices, class Solver = Dune::STRUMPACK<Mat, Vec>>
-#else
-template <class Vec, class Mat, class ExtendedRemoteIndices, class Solver = Dune::UMFPack<Mat>>
-#endif
+template <class Vec, class Mat, class ExtendedRemoteIndices>
 class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
+  using Op = Dune::MatrixAdapter<Mat, Vec, Vec>;
+  using Solver = Dune::InverseOperator<Vec, Vec>;
+
   AttributeSet allAttributes{Attribute::owner, Attribute::copy};
   AttributeSet ownerAttribute{Attribute::owner};
   AttributeSet copyAttribute{Attribute::copy};
@@ -179,6 +102,7 @@ public:
    * @param Aovlp Shared pointer to the overlapping subdomain matrix
    * @param ext_indices Extended remote indices for communication setup
    * @param pou Shared pointer to partition of unity
+   * @param taskflow Taskflow instance to execute the Schwarz setup asynchronously
    * @param ptree Parameter tree containing configuration
    * @param subtree_name Name of the subtree containing Schwarz parameters
    */
@@ -200,6 +124,42 @@ public:
     }
 
     setup_task = taskflow.emplace([&]() { init(); }).name("Init overlapping Schwarz preconditioner");
+  }
+
+  /**
+   * @brief Construct Schwarz preconditioner from parameter tree.
+   *
+   * Reads configuration from a parameter tree, supporting the following options:
+   * - factorise_at_first_iteration: boolean, default false
+   * - type: "standard" or "restricted", default "restricted"
+   *
+   * @param Aovlp Shared pointer to the overlapping subdomain matrix
+   * @param ext_indices Extended remote indices for communication setup
+   * @param pou Shared pointer to partition of unity
+   * @param ptree Parameter tree containing configuration
+   * @param subtree_name Name of the subtree containing Schwarz parameters
+   */
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree &ptree,
+                        const std::string &subtree_name = "schwarz", const std::string &solver_subtree_name = "subdomain_solver")
+      : Aovlp(std::move(Aovlp)), pou(std::move(pou)), ext_indices(ext_indices), ptree(ptree), solver_subtree_name(solver_subtree_name)
+  {
+    const auto &subtree = ptree.sub(subtree_name);
+    factorise_at_first_iteration = subtree.get("factorise_at_first_iteration", false);
+    auto type_string = subtree.get("type", "restricted");
+    if (type_string == "restricted") {
+      type = SchwarzType::Restricted;
+    }
+    else if (type_string == "standard") {
+      type = SchwarzType::Standard;
+    }
+    else {
+      DUNE_THROW(Dune::NotImplemented, "Unknown Schwarz type '" + type_string + "'");
+    }
+
+    Dune::initSolverFactories<Op>();
+    auto op = std::make_shared<Op>(this->Aovlp);
+    solver = Dune::getSolverFromFactory(op, ptree.sub(solver_subtree_name));
+    init();
   }
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
@@ -227,10 +187,8 @@ public:
 
     if (!solver) {
       Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Schwarz", "init")};
-      solver = std::make_unique<Solver>(*Aovlp);
-#ifndef DUNE_DDM_HAVE_STRUMPACK
-      solver->setOption(UMFPACK_IRSTEP, 0);
-#endif
+      auto op = std::make_shared<Op>(Aovlp);
+      solver = Dune::getSolverFromFactory(op, ptree.sub(solver_subtree_name));
     }
 
     // 1. Copy local values from non-overlapping to overlapping defect
@@ -248,7 +206,7 @@ public:
     Logger::get().startEvent(subdomain_solve_event);
     Dune::InverseOperatorResult res;
     *x_ovlp = 0.0;
-    solver->apply(reinterpret_cast<double *>(x_ovlp->data()), reinterpret_cast<double *>(d_ovlp->data()));
+    solver->apply(*x_ovlp, *d_ovlp, res);
     Logger::get().endEvent(subdomain_solve_event);
 
     // 4. Make the solution consistent according to the type of the Schwarz method
@@ -309,23 +267,13 @@ private:
     owner_copy_interface.build(ext_indices.get_remote_indices(), ownerAttribute, copyAttribute);
     owner_copy_comm.build<Vec>(owner_copy_interface);
 
-    if (not factorise_at_first_iteration) {
-      solver = std::make_unique<Solver>(*Aovlp);
-#ifndef DUNE_DDM_HAVE_STRUMPACK
-      solver->setOption(UMFPACK_IRSTEP, 0);
-#endif
-    }
-    else {
-      solver = nullptr;
-    }
-
     d_ovlp = std::make_unique<Vec>(Aovlp->N());
     x_ovlp = std::make_unique<Vec>(Aovlp->N());
   }
 
   std::shared_ptr<Mat> Aovlp; ///< Overlapping subdomain matrix
 
-  std::unique_ptr<Solver> solver; ///< Local subdomain solver
+  std::shared_ptr<Solver> solver; ///< Local subdomain solver
   std::unique_ptr<Vec> d_ovlp;    ///< Defect on overlapping index set
   std::unique_ptr<Vec> x_ovlp;    ///< Solution on overlapping index set
 
@@ -340,6 +288,9 @@ private:
   const ExtendedRemoteIndices &ext_indices; ///< Extended remote indices for communication setup
 
   SchwarzType type; ///< Type of Schwarz method (standard or restricted)
+
+  const Dune::ParameterTree &ptree;
+  const std::string &solver_subtree_name;
 
   bool factorise_at_first_iteration; ///< Whether to delay factorization until first apply
 
