@@ -9,11 +9,19 @@
 #include <memory>
 
 class NonOverlappingCommunicator {
+  template <class X>
+  struct AddGatherScatter {
+    using DataType = typename Dune::CommPolicy<X>::IndexedType;
+
+    static DataType gather(const X &x, std::size_t i) { return x[i]; }
+    static void scatter(X &x, DataType v, std::size_t i) { x[i] += v; }
+  };
+
 public:
   template <class RemoteIndices>
   explicit NonOverlappingCommunicator(const RemoteIndices &ri) : cc(ri.communicator())
   {
-    mask.resize(ri.sourceIndexSet().size(), 1);
+    mask.resize(ri.sourceIndexSet().size(), 0);
     for (const auto &idx : ri.sourceIndexSet()) {
       mask[idx.local()] = (unsigned)(idx.local().attribute() == Attribute::owner);
     }
@@ -52,8 +60,8 @@ public:
   }
 
 private:
-  Dune::Communication<MPI_Comm> cc;
   std::vector<unsigned> mask;
+  Dune::Communication<MPI_Comm> cc;
 };
 
 template <class Mat, class X, class Y = X>
@@ -100,11 +108,11 @@ public:
   void applyscaleadd(field_type alpha, const X &x, Y &y) const override
   {
     // Logger::ScopedLog sl(applyscaleadd_event);
-
-    Y y1(y.N());
-    y1 = 0;
-    A->usmv(alpha, x, y1);
-    communicator->forward<AddGatherScatter>(y1);
+    // Since y is already consistent, we only communicate the result of alpha*A*x.
+    auto y1 = y;
+    y = 0;
+    A->usmv(alpha, x, y);
+    communicator->forward<AddGatherScatter>(y);
     y += y1;
   }
 

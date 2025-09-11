@@ -143,7 +143,7 @@ public:
     register_log_events();
     build_communication_interfaces(remoteids);
 
-    const auto &subtree = ptree.sub(subtree_name);
+    const auto &subtree = subtree_name.size() == 0 ? ptree : ptree.sub(subtree_name);
 
     if (ts.size() == 0) {
       DUNE_THROW(Dune::Exception, "Must at least pass one template vector");
@@ -163,7 +163,7 @@ public:
       restr_vecs[i] = ts[i];
     }
 
-    spdlog::info("Setting up GalerkinPreconditioner with {} template vector{} (max. one rank has is {})", num_t, (num_t == 1 ? "" : "s"), max_num_t);
+    spdlog::debug("Setting up GalerkinPreconditioner with {} template vector{} (max. one rank has is {})", num_t, (num_t == 1 ? "" : "s"), max_num_t);
 
     build_solver(A, remoteids, subtree);
   }
@@ -456,7 +456,7 @@ private:
 
     Logger::get().startEvent(factor_A0);
     if (rank == 0) {
-      spdlog::info("Size of coarse space matrix: {}x{}, nonzeros: {}", a0->N(), a0->M(), a0->nonzeroes());
+      spdlog::debug("Size of coarse space matrix: {}x{}, nonzeros: {}", a0->N(), a0->M(), a0->nonzeroes());
 
       using Op = Dune::MatrixAdapter<Mat, Vec, Vec>;
       Dune::initSolverFactories<Op>();

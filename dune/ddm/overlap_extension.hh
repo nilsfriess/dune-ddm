@@ -91,15 +91,39 @@ public:
 
   Mat create_overlapping_matrix(const Mat &A) const
   {
-    auto *matrix_event = Logger::get().registerOrGetEvent("OverlapExtension", "create Matrix");
-    Logger::ScopedLog sl(matrix_event);
+    auto *create_matrix_event = Logger::get().registerOrGetEvent("OverlapExtension", "create Matrix");
+    auto *add_matrix_event = Logger::get().registerOrGetEvent("OverlapExtension", "add Matrix");
 
+    Logger::get().startEvent(create_matrix_event);
     CreateMatrixDataHandle cmdh(A, get_parallel_index_set(), ltg, gis);
     varcomm->forward(cmdh);
     auto Aovlp = cmdh.getOverlappingMatrix();
+    Logger::get().endEvent(create_matrix_event);
 
+    Logger::get().startEvent(add_matrix_event);
     AddMatrixDataHandle amdh(A, Aovlp, get_parallel_index_set());
     varcomm->forward(amdh);
+    Logger::get().endEvent(add_matrix_event);
+
+    return Aovlp;
+  }
+
+  /** @brief Updates an overlapping matrix using a given non-overlapping matrix.
+   *
+   *  This function takes a non-overlapping matrix \p A and scatters its values
+   *  into the overlapping matrix \p Aovlp (which would usually be obtained by
+   *  create_overlapping_matrix(). This can be used in nonlinear problems, for
+   *  instance, to avoid re-creating the matrix from scratch everytime.
+   */
+  Mat update_overlapping_matrix(const Mat &A, Mat &Aovlp) const
+  {
+    auto *add_matrix_event = Logger::get().registerOrGetEvent("OverlapExtension", "add Matrix");
+
+    Logger::get().startEvent(add_matrix_event);
+    Aovlp = 0;
+    AddMatrixDataHandle amdh(A, Aovlp, get_parallel_index_set());
+    varcomm->forward(amdh);
+    Logger::get().endEvent(add_matrix_event);
 
     return Aovlp;
   }
@@ -154,7 +178,7 @@ private:
     // Rebuild the communication data structures
     comm_if.free();
     comm_if.build(*ext_rids, all_att, all_att);
-    varcomm = std::make_unique<Dune::VariableSizeCommunicator<>>(comm_if, 1024 * 1024);
+    varcomm = std::make_unique<Dune::VariableSizeCommunicator<>>(comm_if, 10 * 1024 * 1024); // This will reserve 10*1024*1024*64 bits \approx 80megabytes per rank
 
     IndexsetExtensionMatrixGraphDataHandle extdh(rank, A, gis);
     UpdateRankInfoDataHandle uprdh(rank);

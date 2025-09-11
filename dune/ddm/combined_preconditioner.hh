@@ -59,11 +59,11 @@ public:
 
     if (mode_string == "additive") {
       mode = ApplyMode::Additive;
-      spdlog::info("Setting up CombinedPreconditioner in 'additive' mode (currently has {} preconditioners)", precs.size());
+      spdlog::debug("Setting up CombinedPreconditioner in 'additive' mode (currently has {} preconditioners)", precs.size());
     }
     else if (mode_string == "multiplicative") {
       mode = ApplyMode::Multiplicative;
-      spdlog::info("Setting up CombinedPreconditioner in 'multiplicative' mode (currently has {} preconditioners)", precs.size());
+      spdlog::debug("Setting up CombinedPreconditioner in 'multiplicative' mode (currently has {} preconditioners)", precs.size());
     }
     else {
       DUNE_THROW(Dune::NotImplemented, "Unknown apply mode in CombinedPreconditioner, use either additive or multiplicative");
@@ -97,7 +97,7 @@ public:
     }
     precs.push_back(prec);
 
-    spdlog::info("Adding new preconditioner to CombinedPreconditioner, now has {}", precs.size());
+    spdlog::debug("Adding new preconditioner to CombinedPreconditioner, now has {}", precs.size());
   }
 
   /**
