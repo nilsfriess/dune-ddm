@@ -51,6 +51,7 @@ else()
   endif()
 
   target_link_libraries(duneddm PUBLIC ${DUNE_LIBS})
+  dune_enable_all_packages()
 endif()
 
 find_package(MPI REQUIRED)
@@ -61,12 +62,6 @@ find_package(STRUMPACK CONFIG)
 find_package(spdlog REQUIRED)
 
 include(FetchContent)
-# FetchContent_Declare(
-#   spdlog
-#   GIT_REPOSITORY https://github.com/gabime/spdlog.git
-#   GIT_TAG        v1.15.1
-# )
-# FetchContent_MakeAvailable(spdlog)
 
 message(STATUS "Trying to download Spectra (C++ ARPACK implementation based on Eigen)")
 find_package(Eigen3 REQUIRED)
@@ -77,15 +72,20 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Spectra)
 
-message(STATUS "Trying to download Taskflow (C++ Parallel Programming Library)")
-set(TF_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(TF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-  Taskflow
-  GIT_REPOSITORY https://github.com/taskflow/taskflow.git
-  GIT_TAG        v3.8.0
-)
-FetchContent_MakeAvailable(Taskflow)
+option(DUNE_DDM_WITH_TASKFLOW "Download the taskflow library for asynchronous execution" OFF)
+if (${DUNE_DDM_WITH_TASKFLOW})
+   message(STATUS "Trying to download Taskflow (C++ Parallel Programming Library)")
+   set(TF_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+   set(TF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+   FetchContent_Declare(
+     Taskflow
+     GIT_REPOSITORY https://github.com/taskflow/taskflow.git
+     GIT_TAG        v3.8.0
+   )
+   FetchContent_MakeAvailable(Taskflow)
+   target_link_libraries(duneddm PUBLIC Taskflow)
+   target_compile_definitions(duneddm PUBLIC DUNE_DDM_HAVE_TASKFLOW=1)
+endif()
 
 option(DUNE_DDM_WITH_BLOPEX "Download and enable BLOPEX" OFF)
 if(${DUNE_DDM_WITH_BLOPEX})
@@ -104,8 +104,10 @@ endif()
 target_sources(duneddm PRIVATE dune/ddm/eigensolvers/eigensolvers.cc)
 target_include_directories(duneddm PRIVATE ${Spectra_SOURCE_DIR}/include)
 add_dune_suitesparse_flags(duneddm)
+add_dune_arpackpp_flags(duneddm)
 add_dune_eigen_flags(duneddm)
 add_dune_superlu_flags(duneddm)
+add_dune_mpi_flags(duneddm)
 add_dune_parmetis_flags(duneddm)
 
 # add_library(eigensolvers src/eigensolvers.cc)
@@ -133,11 +135,11 @@ if(${DUNE_DDM_SUPERBUILD})
   target_include_directories(dune-ddm PUBLIC INTERFACE ${PROJECT_SOURCE_DIR}/include)
   target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog eigensolvers)
 else()
-  target_link_libraries(duneddm PUBLIC spdlog::spdlog)
-  if (${STRUMPACK_FOUND})
-    target_compile_definitions(duneddm PUBLIC DUNE_DDM_HAVE_STRUMPACK=1)
-    target_link_libraries(duneddm PUBLIC STRUMPACK::strumpack)
-  endif()
+target_link_libraries(duneddm PUBLIC spdlog::spdlog)
+  # if (${STRUMPACK_FOUND})
+  #   target_compile_definitions(duneddm PUBLIC DUNE_DDM_HAVE_STRUMPACK=1)
+  #   target_link_libraries(duneddm PUBLIC STRUMPACK::strumpack)
+  # endif()
   # finalize the dune project, e.g. generating config.h etc.
-  finalize_dune_project()
+  finalize_dune_project(GENERATE_CONFIG_H_CMAKE)
 endif()

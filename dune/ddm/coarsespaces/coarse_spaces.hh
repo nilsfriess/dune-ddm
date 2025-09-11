@@ -17,7 +17,10 @@
 #include <dune/istl/bvector.hh>
 
 #include <spdlog/spdlog.h>
+
+#if DUNE_DDM_HAVE_TASKFLOW
 #include <taskflow/taskflow.hpp>
+#endif
 
 #include "../eigensolvers/eigensolvers.hh"
 #include "../pou.hh"
@@ -147,7 +150,9 @@ public:
    */
   virtual std::size_t size() const { return basis_.size(); }
 
+#if DUNE_DDM_HAVE_TASKFLOW
   virtual tf::Task &get_setup_task() { return setup_task; }
+#endif
 
 protected:
   CoarseSpaceBuilder() = default;
@@ -155,8 +160,10 @@ protected:
   /// Storage for computed basis vectors
   std::vector<Vec> basis_;
 
+#if DUNE_DDM_HAVE_TASKFLOW
   /// Setup taskflow task
   tf::Task setup_task;
+#endif
 };
 
 /**
@@ -172,6 +179,7 @@ protected:
 template <class Mat, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
 class GenEOCoarseSpace : public CoarseSpaceBuilder<Vec> {
 public:
+#if DUNE_DDM_HAVE_TASKFLOW
   /**
    * @brief Construct GenEO coarse space.
    *
@@ -206,6 +214,7 @@ public:
                            })
                            .name("GenEO coarse space setup");
   }
+#endif
 };
 
 /**
@@ -221,6 +230,7 @@ public:
 template <class Mat, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
 class GenEORingCoarseSpace : public CoarseSpaceBuilder<Vec> {
 public:
+#if DUNE_DDM_HAVE_TASKFLOW
   /**
    * @brief Construct GenEO ring coarse space.
    *
@@ -366,6 +376,7 @@ public:
                            })
                            .name("GenEO ring coarse space setup");
   }
+#endif
 
 private:
   std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
@@ -394,6 +405,7 @@ private:
 template <class Mat, class MaskVec1, class MaskVec2, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
 class MsGFEMCoarseSpace : public CoarseSpaceBuilder<Vec> {
 public:
+#if DUNE_DDM_HAVE_TASKFLOW
   /**
    * @brief Construct MsGFEM coarse space.
    *
@@ -553,6 +565,7 @@ public:
                            })
                            .name("MsGFEM coarse space setup");
   }
+#endif
 };
 
 /**
@@ -570,6 +583,7 @@ public:
 template <class Mat, class MaskVec1, class MaskVec2, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
 class MsGFEMRingCoarseSpace : public CoarseSpaceBuilder<Vec> {
 public:
+#if DUNE_DDM_HAVE_TASKFLOW
   /**
    * @brief Construct MsGFEM ring coarse space.
    *
@@ -853,7 +867,7 @@ public:
             })
             .name("MsGFEM ring coarse space setup");
   }
-
+#endif
 private:
   std::vector<int> boundary_distance;
   int ring_width;
@@ -875,6 +889,7 @@ private:
 template <class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
 class POUCoarseSpace : public CoarseSpaceBuilder<Vec> {
 public:
+#if DUNE_DDM_HAVE_TASKFLOW
   /**
    * @brief Construct POU coarse space.
    *
@@ -902,6 +917,7 @@ public:
                            })
                            .name("POU coarse space setup");
   }
+#endif
 
   /**
    * @brief Construct POU coarse space.

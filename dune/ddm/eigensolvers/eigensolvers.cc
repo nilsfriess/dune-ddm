@@ -1,4 +1,6 @@
-#include <dune-istl-config.hh>
+#if HAVE_CONFIG_H
+#include "config.h"
+#endif
 
 #include <dune/istl/preconditioner.hh>
 #include <dune/istl/solver.hh>

@@ -28,7 +28,9 @@
 #include "spdlog/spdlog.h"
 #include "strumpack.hh"
 
+#if DUNE_DDM_HAVE_TASKFLOW
 #include <taskflow/taskflow.hpp>
+#endif
 
 /**
  * @brief Type of Schwarz domain decomposition method.
@@ -92,6 +94,7 @@ public:
   //   init();
   // }
 
+#if DUNE_DDM_HAVE_TASKFLOW
   /**
    * @brief Construct Schwarz preconditioner from parameter tree.
    *
@@ -124,6 +127,7 @@ public:
 
     setup_task = taskflow.emplace([&, remoteids]() { init(*remoteids); }).name("Init overlapping Schwarz preconditioner");
   }
+#endif
 
   /**
    * @brief Construct Schwarz preconditioner from parameter tree.
@@ -229,11 +233,13 @@ public:
    */
   Solver &getSolver() { return *solver; }
 
+#if DUNE_DDM_HAVE_TASKFLOW
   /**
    * @brief Return the setup task.
    * @return Reference to the setup task
    */
   tf::Task &get_setup_task() { return setup_task; }
+#endif
 
 private:
   /**
@@ -281,8 +287,10 @@ private:
 
   SchwarzType type; ///< Type of Schwarz method (standard or restricted)
 
+#if DUNE_DDM_HAVE_TASKFLOW
   // Task-related
   tf::Task setup_task;
+#endif
 
   // Performance monitoring events
   Logger::Event *apply_event{nullptr};           ///< Event for timing the apply method
