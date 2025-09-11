@@ -44,7 +44,12 @@ else()
 
   # start a dune project with information from dune.module
   dune_project()
-  dune_add_library(duneddm EXPORT_NAME DDM)
+  if (dune-common_VERSION VERSION_GREATER_EQUAL 2.10)
+    dune_add_library(duneddm EXPORT_NAME DDM)
+  else()
+    dune_add_library(duneddm EXPORT_NAME Dune::DDM)
+  endif()
+
   target_link_libraries(duneddm PUBLIC ${DUNE_LIBS})
 endif()
 
