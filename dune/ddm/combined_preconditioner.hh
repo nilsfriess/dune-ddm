@@ -54,7 +54,7 @@ public:
    */
   explicit CombinedPreconditioner(const Dune::ParameterTree &ptree, const std::string &subtree_name = "combined_preconditioner")
   {
-    const auto &subtree = ptree.sub(subtree_name);
+    const auto &subtree = subtree_name.size() == 0 ? ptree : ptree.sub(subtree_name);
     const auto mode_string = subtree.get("mode", "additive");
 
     if (mode_string == "additive") {
