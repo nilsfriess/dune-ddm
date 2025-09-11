@@ -100,6 +100,7 @@ target_sources(duneddm PRIVATE dune/ddm/eigensolvers/eigensolvers.cc)
 target_include_directories(duneddm PRIVATE ${Spectra_SOURCE_DIR}/include)
 add_dune_suitesparse_flags(duneddm)
 add_dune_eigen_flags(duneddm)
+add_dune_superlu_flags(duneddm)
 add_dune_parmetis_flags(duneddm)
 
 # add_library(eigensolvers src/eigensolvers.cc)
