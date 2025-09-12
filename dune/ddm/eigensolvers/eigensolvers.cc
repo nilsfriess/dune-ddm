@@ -28,8 +28,6 @@
 #include "../logger.hh"
 #include "../strumpack.hh"
 
-#include <spdlog/spdlog.h>
-
 #if DUNE_DDM_HAVE_BLOPEX
 #include <lobpcg.h>
 
@@ -154,7 +152,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
   const double tolerance = ptree.get("eigensolver_tolerance", 1e-5);
 
   if (eigensolver == Eigensolver::Spectra) {
-    spdlog::get("all_ranks")->debug("Solving eigenproblem Ax=lBx of size {} with nnz(A) = {}, nnz(B) = {}", A.N(), A.nonzeroes(), B.nonzeroes());
+    logger::debug_all("Solving eigenproblem Ax=lBx of size {} with nnz(A) = {}, nnz(B) = {}", A.N(), A.nonzeroes(), B.nonzeroes());
 
 #if 1
     using OpType = SymShiftInvert;
@@ -191,7 +189,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
     auto nev_max = nev;
     double threshold = -1;
     if (ptree.hasKey("eigensolver_nev_target") and not ptree.hasKey("eigensolver_threshold")) {
-      spdlog::warn("Parameter 'eigensolver_nev_target' is set but no 'eigensolver_threshold' is provided, using a default threshold of 0.5");
+      logger::warn("Parameter 'eigensolver_nev_target' is set but no 'eigensolver_threshold' is provided, using a default threshold of 0.5");
       threshold = 0.5;
       nev = ptree.get<int>("eigensolver_nev_target");
     }
@@ -202,7 +200,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
 
     if (ptree.hasKey("eigensolver_nev_target") and not ptree.hasKey("eigensolver_nev_max")) {
       nev_max = 2 * nev;
-      spdlog::warn("Parameter 'eigensolver_nev_target' is set but no 'eigensolver_nev_max' is provided, using a maximum number of computed eigenvectors of 2*nev = {}", nev_max);
+      logger::warn("Parameter 'eigensolver_nev_target' is set but no 'eigensolver_nev_max' is provided, using a maximum number of computed eigenvectors of 2*nev = {}", nev_max);
     }
     else if (ptree.hasKey("eigensolver_nev_target") and ptree.hasKey("eigensolver_nev_max")) {
       nev_max = ptree.get<int>("eigensolver_nev_max");
@@ -218,7 +216,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
         ncv = 2 * nev;
       }
 
-      spdlog::get("all_ranks")->trace("Computing eigenvalues using Spectra, iteration {}", it++);
+      logger::trace_all("Computing eigenvalues using Spectra, iteration {}", it++);
       Spectra::SymGEigsShiftSolver<OpType, BOpType, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, ncv, ptree.get("eigensolver_shift", 0.0001));
       geigs.init();
 
@@ -230,7 +228,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
         nconv = geigs.compute(Spectra::SortRule::LargestMagn, maxit, tolerance, Spectra::SortRule::SmallestAlge);
       }
       catch (const std::runtime_error &e) {
-        spdlog::get("all_ranks")->error("ERROR: Computation of eigenvalues failed, reason: {}, tries left {}", e.what(), tries);
+        logger::error_all("ERROR: Computation of eigenvalues failed, reason: {}, tries left {}", e.what(), tries);
         if (tries != 0) {
           tries--;
           ncv *= 2;
@@ -256,18 +254,18 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
             nconv = std::max(cnt, 1L); // Make sure that nconv is at least 1 (might be zero if the first eigenvalue is already larger than the threshold)
           }
 
-          if (spdlog::get("all_ranks")->level() <= spdlog::level::debug) {
+          if (logger::get_level() <= logger::Level::debug) {
             auto eigstring =
                 std::accumulate(evalues.begin() + 1, evalues.begin() + nconv, to_string_with_precision(evalues[0]), [](const std::string &a, double b) { return a + ", " + std::to_string(b); });
 
-            spdlog::get("all_ranks")->debug("Computed {} eigenvalues: {}", nconv, eigstring);
+            logger::debug_all("Computed {} eigenvalues: {}", nconv, eigstring);
           }
           else {
-            spdlog::get("all_ranks")->info("Computed {} eigenvalues: smallest {}, largest {}", nconv, evalues[0], evalues[nconv - 1]);
+            logger::info_all("Computed {} eigenvalues: smallest {}, largest {}", nconv, evalues[0], evalues[nconv - 1]);
           }
 
           if (std::any_of(evalues.begin(), evalues.end(), [](auto x) { return x < -1e-5; })) {
-            spdlog::get("all_ranks")->warn("Computed a negative eigenvalue");
+            logger::warn_all("Computed a negative eigenvalue");
           }
 
           Vec vec(evecs.rows());
@@ -284,29 +282,29 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solveGEVP(const Dun
         }
         if (!done) {
           nev *= 2;
-          spdlog::get("all_ranks")->debug("Eigensolver did not compute enough eigenvalues, largest is {}, now trying with nev = {}", evalues[nconv - 1], nev);
+          logger::debug_all("Eigensolver did not compute enough eigenvalues, largest is {}, now trying with nev = {}", evalues[nconv - 1], nev);
         }
       }
       else {
         if (geigs.info() == Spectra::CompInfo::NotConverging) {
           if (tries != 0) {
-            spdlog::get("all_ranks")->warn("Computation of eigenvalues failed, not yet converged, trying again with more Lanzcos vectors. Tries left {}", tries);
+            logger::warn_all("Computation of eigenvalues failed, not yet converged, trying again with more Lanzcos vectors. Tries left {}", tries);
             tries--;
             ncv *= 2;
             done = false;
             continue;
           }
           else {
-            spdlog::get("all_ranks")->warn("Computation of eigenvalues failed, not yet converged, no more tries left");
+            logger::warn_all("Computation of eigenvalues failed, not yet converged, no more tries left");
             MPI_Abort(MPI_COMM_WORLD, 12);
           }
         }
         else if (geigs.info() == Spectra::CompInfo::NumericalIssue) {
-          spdlog::get("all_ranks")->error("Computation of eigenvalues failed, reason 'NumericalIssue'");
+          logger::error_all("Computation of eigenvalues failed, reason 'NumericalIssue'");
           MPI_Abort(MPI_COMM_WORLD, 13);
         }
         else {
-          spdlog::get("all_ranks")->error("Computation of eigenvalues failed, unknown reason");
+          logger::error_all("Computation of eigenvalues failed, unknown reason");
           MPI_Abort(MPI_COMM_WORLD, 14);
         }
       }

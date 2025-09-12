@@ -1,7 +1,6 @@
 #pragma once
 
 #include "logger.hh"
-#include "spdlog/spdlog.h"
 
 #include <dune/common/exceptions.hh>
 #include <dune/common/parametertree.hh>
@@ -59,11 +58,11 @@ public:
 
     if (mode_string == "additive") {
       mode = ApplyMode::Additive;
-      spdlog::debug("Setting up CombinedPreconditioner in 'additive' mode (currently has {} preconditioners)", precs.size());
+      logger::debug("Setting up CombinedPreconditioner in 'additive' mode (currently has {} preconditioners)", precs.size());
     }
     else if (mode_string == "multiplicative") {
       mode = ApplyMode::Multiplicative;
-      spdlog::debug("Setting up CombinedPreconditioner in 'multiplicative' mode (currently has {} preconditioners)", precs.size());
+      logger::debug("Setting up CombinedPreconditioner in 'multiplicative' mode (currently has {} preconditioners)", precs.size());
     }
     else {
       DUNE_THROW(Dune::NotImplemented, "Unknown apply mode in CombinedPreconditioner, use either additive or multiplicative");
@@ -97,7 +96,7 @@ public:
     }
     precs.push_back(prec);
 
-    spdlog::debug("Adding new preconditioner to CombinedPreconditioner, now has {}", precs.size());
+    logger::debug("Adding new preconditioner to CombinedPreconditioner, now has {}", precs.size());
   }
 
   /**

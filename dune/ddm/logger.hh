@@ -4,7 +4,7 @@
     @brief Performance logging utilities for MPI parallel programs.
 
     This file provides a singleton Logger class for timing events across MPI processes
-    and a setup function for configuring spdlog loggers in MPI environments.
+    and a simple logging library for message logging in MPI environments.
 */
 
 /**
@@ -28,13 +28,190 @@
 #include <ratio>
 #include <string>
 #include <vector>
+#include <sstream>
+#include <mutex>
+#include <cstdlib>
 
 #include <dune/common/parallel/mpitraits.hh>
 
-#include <spdlog/cfg/argv.h>
-#include <spdlog/details/registry.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+/**
+ * @brief Simple logging namespace to replace spdlog dependency
+ * 
+ * Provides basic logging functionality with MPI rank awareness.
+ * Supports format strings and different log levels.
+ */
+namespace logger {
+
+enum class Level {
+  trace = 0,
+  debug = 1,
+  info = 2,
+  warn = 3,
+  error = 4,
+  off = 5
+};
+
+namespace detail {
+  // Global logging state
+  static Level current_level = Level::info;
+  static int mpi_rank = 0;
+  static bool initialized = false;
+  static std::mutex log_mutex;
+
+  inline void ensure_initialized() {
+    if (!initialized) {
+      MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+      const char* env_level = std::getenv("LOG_LEVEL");
+      if (env_level) {
+        std::string level_str(env_level);
+        if (level_str == "trace") current_level = Level::trace;
+        else if (level_str == "debug") current_level = Level::debug;
+        else if (level_str == "info") current_level = Level::info;
+        else if (level_str == "warn") current_level = Level::warn;
+        else if (level_str == "error") current_level = Level::error;
+        else if (level_str == "off") current_level = Level::off;
+      }
+      initialized = true;
+    }
+  }
+
+  inline const char* level_name(Level level) {
+    switch (level) {
+      case Level::trace: return "trace";
+      case Level::debug: return "debug";
+      case Level::info: return "info";
+      case Level::warn: return "warn";
+      case Level::error: return "error";
+      case Level::off: return "off";
+    }
+    return "unknown";
+  }
+
+  // Simple format string replacement for {} placeholders
+  template<typename T>
+  std::string format_string(const std::string& fmt, T&& value) {
+    std::ostringstream oss;
+    oss << value;
+    std::string result = fmt;
+    size_t pos = result.find("{}");
+    if (pos != std::string::npos) {
+      result.replace(pos, 2, oss.str());
+    }
+    return result;
+  }
+
+  template<typename T, typename... Args>
+  std::string format_string(const std::string& fmt, T&& first, Args&&... args) {
+    std::ostringstream oss;
+    oss << first;
+    std::string result = fmt;
+    size_t pos = result.find("{}");
+    if (pos != std::string::npos) {
+      result.replace(pos, 2, oss.str());
+      return format_string(result, std::forward<Args>(args)...);
+    }
+    return result;
+  }
+
+  inline std::string format_string(const std::string& fmt) {
+    return fmt;
+  }
+
+  template<typename... Args>
+  void log_impl(Level level, bool all_ranks, const std::string& message, Args&&... args) {
+    ensure_initialized();
+    
+    if (level < current_level) return;
+    if (!all_ranks && mpi_rank != 0) return;
+
+    std::lock_guard<std::mutex> lock(log_mutex);
+    
+    std::string formatted_msg;
+    if (sizeof...(args) > 0) {
+      formatted_msg = format_string(message, std::forward<Args>(args)...);
+    } else {
+      formatted_msg = message;
+    }
+
+    std::cout << "[" << level_name(level) << ":" << mpi_rank << "] " << formatted_msg << std::endl;
+  }
+}
+
+// Set log level
+inline void set_level(Level level) {
+  detail::current_level = level;
+}
+
+// Get current log level
+inline Level get_level() {
+  detail::ensure_initialized();
+  return detail::current_level;
+}
+
+// Initialize with MPI rank (optional, auto-initialized on first use)
+inline void init(int rank) {
+  detail::mpi_rank = rank;
+  detail::initialized = true;
+}
+
+// Logging functions for rank 0 only
+template<typename... Args>
+void trace(const std::string& message, Args&&... args) {
+  detail::log_impl(Level::trace, false, message, std::forward<Args>(args)...);
+}
+
+template<typename... Args>
+void debug(const std::string& message, Args&&... args) {
+  detail::log_impl(Level::debug, false, message, std::forward<Args>(args)...);
+}
+
+template<typename... Args>
+void info(const std::string& message, Args&&... args) {
+  detail::log_impl(Level::info, false, message, std::forward<Args>(args)...);
+}
+
+template<typename... Args>
+void warn(const std::string& message, Args&&... args) {
+  detail::log_impl(Level::warn, false, message, std::forward<Args>(args)...);
+}
+
+template<typename... Args>
+void error(const std::string& message, Args&&... args) {
+  detail::log_impl(Level::error, false, message, std::forward<Args>(args)...);
+}
+
+// Logging functions for all ranks
+template<typename... Args>
+void trace_all(const std::string& message, Args&&... args) {
+  detail::log_impl(Level::trace, true, message, std::forward<Args>(args)...);
+}
+
+template<typename... Args>
+void debug_all(const std::string& message, Args&&... args) {
+  detail::log_impl(Level::debug, true, message, std::forward<Args>(args)...);
+}
+
+template<typename... Args>
+void info_all(const std::string& message, Args&&... args) {
+  detail::log_impl(Level::info, true, message, std::forward<Args>(args)...);
+}
+
+template<typename... Args>
+void warn_all(const std::string& message, Args&&... args) {
+  detail::log_impl(Level::warn, true, message, std::forward<Args>(args)...);
+}
+
+template<typename... Args>
+void error_all(const std::string& message, Args&&... args) {
+  detail::log_impl(Level::error, true, message, std::forward<Args>(args)...);
+}
+
+} // namespace logger
+
+#include <sstream>
+#include <mutex>
+#include <cstdlib>
+#include <regex>
 
 /**
  * @brief A simple logger to log timings for different events in an MPI parallel program.
@@ -221,7 +398,7 @@ public:
   void startEvent(Event *event)
   {
     if (event->is_running) {
-      spdlog::error("Event '{}' was already started", event->name);
+      logger::error("Event '{}' was already started", event->name);
       MPI_Abort(MPI_COMM_WORLD, 4);
     }
     event->last_start = std::chrono::steady_clock::now();
@@ -231,7 +408,7 @@ public:
   void endEvent(Event *event)
   {
     if (not event->is_running) {
-      spdlog::error("Event '{}' was not started yet", event->name);
+      logger::error("Event '{}' was not started yet", event->name);
       MPI_Abort(MPI_COMM_WORLD, 4);
     }
     event->total_time += std::chrono::steady_clock::now() - event->last_start;
@@ -300,10 +477,11 @@ private:
     std::size_t min{};
     std::size_t max{};
 
-    const auto type = Dune::MPITraits<std::size_t>::getType();
-    MPI_Allreduce(&val, &mean, 1, type, MPI_SUM, comm);
-    MPI_Allreduce(&val, &min, 1, type, MPI_MIN, comm);
-    MPI_Allreduce(&val, &max, 1, type, MPI_MAX, comm);
+    // Use the standard MPI types for size_t
+    static_assert(sizeof(std::size_t) == sizeof(unsigned long), "size_t must be unsigned long");
+    MPI_Allreduce(&val, &mean, 1, MPI_UNSIGNED_LONG, MPI_SUM, comm);
+    MPI_Allreduce(&val, &min, 1, MPI_UNSIGNED_LONG, MPI_MIN, comm);
+    MPI_Allreduce(&val, &max, 1, MPI_UNSIGNED_LONG, MPI_MAX, comm);
 
     int size = 0;
     MPI_Comm_size(comm, &size);
@@ -332,18 +510,14 @@ private:
 };
 
 /**
- * @brief Setup spdlog loggers for MPI parallel programs.
+ * @brief Setup loggers for MPI parallel programs.
  *
- * This function configures logging in an MPI environment by setting up two loggers:
- * 1. **Default logger**: Only active on rank 0, uses format "[HH:MM:SS.mmm] [level:0] message"
- * 2. **All ranks logger**: Active on all ranks, uses format "[HH:MM:SS.mmm] [level:rank] message"
- *
- * The function also processes command-line arguments to set log levels dynamically.
- * On ranks other than 0, the default logger is silenced to avoid duplicate output.
+ * This function configures logging in an MPI environment by initializing the logger namespace
+ * with the current MPI rank and processing command-line arguments for log level configuration.
  *
  * @param rank The MPI rank of the current process
- * @param argc Reference to argument count (may be modified by spdlog argument parsing)
- * @param argv Reference to argument array (may be modified by spdlog argument parsing)
+ * @param argc Reference to argument count (may be modified by argument parsing)
+ * @param argv Reference to argument array (may be modified by argument parsing)
  *
  * @note This function should be called early in main() after MPI_Init() but before
  *       any logging operations.
@@ -359,44 +533,47 @@ private:
  *   setup_loggers(rank, argc, argv);
  *
  *   // Now you can use logging
- *   spdlog::info("This only appears on rank 0");
- *   spdlog::get("all_ranks")->info("This appears on all ranks with rank number");
+ *   logger::info("This only appears on rank 0");
+ *   logger::info_all("This appears on all ranks with rank number");
  *
  *   MPI_Finalize();
  * }
  * @endcode
  *
  * ### Command Line Log Level Control:
- * You can control log levels via command line arguments using the SPDLOG_LEVEL format:
+ * You can control log levels via command line arguments:
  * @code{.bash}
- * # Set all loggers to debug level
- * ./myprogram "SPDLOG_LEVEL=debug"
+ * # Set log level via environment variable
+ * LOG_LEVEL=debug ./myprogram
  *
- * # Set all loggers to info level
- * ./myprogram "SPDLOG_LEVEL=info"
- *
- * # Turn off default logger but keep all_ranks logger at debug level
- * ./myprogram "SPDLOG_LEVEL=off,all_ranks=debug"
+ * # Or via command line argument
+ * ./myprogram --log-level=debug
  * @endcode
  */
 inline void setup_loggers(int rank, int &argc, char **&argv)
 {
-  // Default logger (only active on rank 0)
-  if (rank == 0) {
-    spdlog::set_pattern("[%H:%M:%S.%e] [%^%l%$:0] %v"); // Default format
-  }
-
-  // Logger for all ranks
-  auto all_ranks_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-  auto all_ranks_logger = std::make_shared<spdlog::logger>("all_ranks", all_ranks_sink);
-
-  all_ranks_logger->set_level(spdlog::level::debug);
-  all_ranks_logger->set_pattern("[%H:%M:%S.%e] [%^%l:%$" + std::to_string(rank) + "] %v");
-  spdlog::register_logger(all_ranks_logger);
-
-  spdlog::cfg::load_argv_levels(argc, argv);
-  if (rank != 0) {
-    spdlog::default_logger()->set_level(spdlog::level::off); // Silence logs on all ranks except zero for the default logger
+  // Initialize the logger with the MPI rank
+  logger::init(rank);
+  
+  // Process command line arguments for log level
+  for (int i = 1; i < argc; ++i) {
+    std::string arg(argv[i]);
+    if (arg.find("--log-level=") == 0) {
+      std::string level_str = arg.substr(12);
+      if (level_str == "trace") logger::set_level(logger::Level::trace);
+      else if (level_str == "debug") logger::set_level(logger::Level::debug);
+      else if (level_str == "info") logger::set_level(logger::Level::info);
+      else if (level_str == "warn") logger::set_level(logger::Level::warn);
+      else if (level_str == "error") logger::set_level(logger::Level::error);
+      else if (level_str == "off") logger::set_level(logger::Level::off);
+      
+      // Remove this argument from argv
+      for (int j = i; j < argc - 1; ++j) {
+        argv[j] = argv[j + 1];
+      }
+      argc--;
+      i--; // Check this position again
+    }
   }
 }
 

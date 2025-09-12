@@ -10,7 +10,7 @@
 #include <dune/istl/solver.hh>
 #include <dune/istl/umfpack.hh>
 
-#include <spdlog/spdlog.h>
+#include "../logger.hh"
 
 #if DUNE_DDM_HAVE_UMFPACK_SIMD
 #include <experimental/simd>

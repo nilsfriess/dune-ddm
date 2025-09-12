@@ -16,11 +16,9 @@
 #include <dune/istl/solver.hh>
 #include <dune/istl/umfpack.hh>
 
-#include <spdlog/fmt/ranges.h>
-#include <spdlog/spdlog.h>
+#include "logger.hh"
 
 #include "helpers.hh"
-#include "logger.hh"
 
 /** @brief A Galerkin-type preconditioner that implements R^T (R A R^T)^-1 R.
 
@@ -116,7 +114,7 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
       const auto &[rank, v] = data;
 
       if (not vd.others.contains(rank)) {
-        spdlog::get("all_ranks")->error("Rank {} is no neighbour", rank);
+        logger::error_all("Rank {} is no neighbour", rank);
         MPI_Abort(MPI_COMM_WORLD, 17);
       }
       vd.others[rank][i] = v;
@@ -163,7 +161,7 @@ public:
       restr_vecs[i] = ts[i];
     }
 
-    spdlog::debug("Setting up GalerkinPreconditioner with {} template vector{} (max. one rank has is {})", num_t, (num_t == 1 ? "" : "s"), max_num_t);
+    logger::debug("Setting up GalerkinPreconditioner with {} template vector{} (max. one rank has is {})", num_t, (num_t == 1 ? "" : "s"), max_num_t);
 
     build_solver(A, remoteids, subtree);
   }
@@ -456,7 +454,7 @@ private:
 
     Logger::get().startEvent(factor_A0);
     if (rank == 0) {
-      spdlog::debug("Size of coarse space matrix: {}x{}, nonzeros: {}", a0->N(), a0->M(), a0->nonzeroes());
+      logger::debug("Size of coarse space matrix: {}x{}, nonzeros: {}", a0->N(), a0->M(), a0->nonzeroes());
 
       using Op = Dune::MatrixAdapter<Mat, Vec, Vec>;
       Dune::initSolverFactories<Op>();

@@ -59,8 +59,6 @@ find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK CHOLMOD)
 # optionally find STRUMPACK
 find_package(STRUMPACK CONFIG)
 
-find_package(spdlog REQUIRED)
-
 include(FetchContent)
 
 message(STATUS "Trying to download Spectra (C++ ARPACK implementation based on Eigen)")
@@ -133,9 +131,8 @@ add_subdirectory(dune)
 if(${DUNE_DDM_SUPERBUILD})
   add_library(dune-ddm INTERFACE)
   target_include_directories(dune-ddm PUBLIC INTERFACE ${PROJECT_SOURCE_DIR}/include)
-  target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL spdlog::spdlog eigensolvers)
+  target_link_libraries(dune-ddm PUBLIC INTERFACE Dune::ISTL eigensolvers)
 else()
-target_link_libraries(duneddm PUBLIC spdlog::spdlog)
   # if (${STRUMPACK_FOUND})
   #   target_compile_definitions(duneddm PUBLIC DUNE_DDM_HAVE_STRUMPACK=1)
   #   target_link_libraries(duneddm PUBLIC STRUMPACK::strumpack)

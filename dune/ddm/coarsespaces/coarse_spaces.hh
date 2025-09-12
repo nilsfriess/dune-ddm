@@ -8,6 +8,7 @@
     class that computes the basis vectors in its constructor and provides access via get_basis().
 */
 
+#include "../logger.hh"
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -15,8 +16,6 @@
 #include <dune/common/exceptions.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/istl/bvector.hh>
-
-#include <spdlog/spdlog.h>
 
 #if DUNE_DDM_HAVE_TASKFLOW
 #include <taskflow/taskflow.hpp>
@@ -199,7 +198,7 @@ public:
 
     this->setup_task = taskflow
                            .emplace([A, B, pou, eig_ptree, this] {
-                             spdlog::info("Setting up GenEO coarse space");
+                             logger::info("Setting up GenEO coarse space");
 
                              if (pou->size() != A->N()) {
                                DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
@@ -249,7 +248,7 @@ public:
 
     this->setup_task = taskflow
                            .emplace([A_dir, A, pou, ring_to_subdomain, eig_ptree, this](tf::Subflow &subflow) {
-                             spdlog::info("Setting up GenEO ring coarse space");
+                             logger::info("Setting up GenEO ring coarse space");
 
                              auto setup_ring_data_task = subflow
                                                              .emplace([&]() {
@@ -426,7 +425,7 @@ public:
 
     this->setup_task = taskflow
                            .emplace([A, pou, &dirichlet_mask, &subdomain_boundary_mask, eig_ptree, this] {
-                             spdlog::info("Setting up MsGFEM coarse space");
+                             logger::info("Setting up MsGFEM coarse space");
 
                              if (dirichlet_mask.N() != A->N()) {
                                DUNE_THROW(Dune::Exception, "The matrix and the Dirichlet mask must have the same size");
@@ -456,7 +455,7 @@ public:
                                  num_interior++;
                                }
                              }
-                             spdlog::get("all_ranks")->debug("Partitioned dofs, have {} in interior, {} on subdomain boundary, {} on Dirichlet boundary", num_interior, num_boundary, num_dirichlet);
+                             logger::debug_all("Partitioned dofs, have {} in interior, {} on subdomain boundary, {} on Dirichlet boundary", num_interior, num_boundary, num_dirichlet);
 
                              // Create a reordered index set: first interior dofs, then boundary dofs, then Dirichlet dofs
                              std::vector<std::size_t> reordering(A->N());
@@ -609,7 +608,7 @@ public:
     this->setup_task =
         taskflow
             .emplace([A_dir, A, overlap, pou, &dirichlet_mask, &subdomain_boundary_mask, ring_to_subdomain, eig_ptree, this](tf::Subflow &subflow) {
-              spdlog::info("Setting up MsGFEM ring coarse space");
+              logger::info("Setting up MsGFEM ring coarse space");
 
               auto setup_boundary_distance_task = subflow
                                                       .emplace([&]() {
@@ -685,7 +684,7 @@ public:
                           }
                         }
 
-                        spdlog::get("all_ranks")->debug("Partitioned ring dofs, have {} in interior, {} on boundary, {} on Dirichlet boundary", num_interior, num_boundary, num_dirichlet);
+                        logger::debug_all("Partitioned ring dofs, have {} in interior, {} on boundary, {} on Dirichlet boundary", num_interior, num_boundary, num_dirichlet);
 
                         // Create reordered index set: interior, then boundary, then Dirichlet
                         std::vector<std::size_t> reordering(ring_to_subdomain.size());
@@ -901,7 +900,7 @@ public:
   {
     this->setup_task = taskflow
                            .emplace([pou, this] {
-                             spdlog::info("Setting up POU coarse space");
+                             logger::info("Setting up POU coarse space");
 
                              // Create a single basis vector that is constant 1, scaled by partition of unity
                              this->basis_.resize(1);
@@ -926,7 +925,7 @@ public:
    */
   explicit POUCoarseSpace(const PartitionOfUnity &pou)
   {
-    spdlog::info("Setting up POU coarse space");
+    logger::info("Setting up POU coarse space");
 
     // Create a single basis vector that is constant 1, scaled by partition of unity
     this->basis_.resize(1);

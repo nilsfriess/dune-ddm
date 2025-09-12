@@ -1,5 +1,6 @@
 #pragma once
 
+#include "logger.hh"
 #include <dune/common/parallel/mpitraits.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/scalarproducts.hh>
@@ -11,8 +12,6 @@
 #include <mpi.h>
 #include <utility>
 #include <vector>
-
-#include "logger.hh"
 
 #define MPI_CHECK(call)                                                                                                                                                                                \
   do {                                                                                                                                                                                                 \
@@ -104,7 +103,9 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   // Check that all rows on all ranks have the same size
   std::size_t min_columns = 0;
   std::size_t max_columns = 0;
-  MPI_Datatype size_t_type = Dune::MPITraits<std::size_t>::getType();
+  // Use the standard MPI type for size_t
+  static_assert(sizeof(std::size_t) == sizeof(unsigned long), "size_t must be unsigned long");
+  MPI_Datatype size_t_type = MPI_UNSIGNED_LONG;
   MPI_CHECK(MPI_Allreduce(&columns, &min_columns, 1, size_t_type, MPI_MIN, comm));
   MPI_CHECK(MPI_Allreduce(&columns, &max_columns, 1, size_t_type, MPI_MAX, comm));
   if (min_columns != max_columns) {
@@ -150,7 +151,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
     std::transform(displacements_sizet.begin(), displacements_sizet.end(), displacements.begin(), [](auto &&v) { return static_cast<int>(v); });
 
     for (std::size_t i = 0; i < num_triples.size(); ++i) {
-      spdlog::trace("In gatherMatrixFromRows: From rank {} got {} triples", i, num_triples[i]);
+      logger::trace("In gatherMatrixFromRows: From rank {} got {} triples", i, num_triples[i]);
     }
   }
 
@@ -159,7 +160,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
     auto sum = std::reduce(num_triples.begin(), num_triples.end());
     all_triples.resize(sum);
 
-    spdlog::debug("Total {} nonzeros in matrix built on rank 0", sum);
+    logger::debug("Total {} nonzeros in matrix built on rank 0", sum);
   }
   std::vector<int> num_triples_int(num_triples.size());
   std::transform(num_triples.begin(), num_triples.end(), num_triples_int.begin(), [](auto &&v) { return static_cast<int>(v); });
@@ -227,7 +228,9 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
   // Check that all rows on all ranks have the same size
   std::size_t min_columns = 0;
   std::size_t max_columns = 0;
-  MPI_Datatype size_t_type = Dune::MPITraits<std::size_t>::getType();
+  // Use the standard MPI type for size_t
+  static_assert(sizeof(std::size_t) == sizeof(unsigned long), "size_t must be unsigned long");
+  MPI_Datatype size_t_type = MPI_UNSIGNED_LONG;
   MPI_CHECK(MPI_Allreduce(&n_cols, &min_columns, 1, size_t_type, MPI_MIN, comm));
   MPI_CHECK(MPI_Allreduce(&n_cols, &max_columns, 1, size_t_type, MPI_MAX, comm));
   if (min_columns != max_columns) {

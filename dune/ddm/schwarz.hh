@@ -25,7 +25,6 @@
 #include "helpers.hh"
 #include "logger.hh"
 #include "pou.hh"
-#include "spdlog/spdlog.h"
 #include "strumpack.hh"
 
 #if DUNE_DDM_HAVE_TASKFLOW
@@ -251,7 +250,7 @@ private:
   template <class RemoteIndices>
   void init(const RemoteIndices &remoteids)
   {
-    spdlog::info("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
+    logger::debug("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
 
     apply_event = Logger::get().registerEvent("Schwarz", "apply");
     subdomain_solve_event = Logger::get().registerEvent("Schwarz", "local solve");
