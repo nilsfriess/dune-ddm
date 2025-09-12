@@ -68,7 +68,7 @@ public:
     interior_matrix->setSize(N, N);
     for (auto ri = A.begin(); ri != A.end(); ++ri) {
       for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-        if (subdomain_to_interior.contains(ri.index()) and subdomain_to_interior.contains(ci.index())) {
+        if (subdomain_to_interior.count(ri.index()) and subdomain_to_interior.count(ci.index())) {
           interior_matrix->entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = *ci;
         }
       }

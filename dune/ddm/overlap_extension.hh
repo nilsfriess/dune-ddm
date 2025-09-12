@@ -205,7 +205,7 @@ private:
       for (const auto &ranks : extdh.updated_rankmap) {
         for (const auto &p : ranks) {
           for (const auto &q : ranks) {
-            if (p != q and nbs_set.contains(p)) {
+            if (p != q and nbs_set.count(p)) {
               new_nbs[p].insert(q);
             }
           }
@@ -213,7 +213,7 @@ private:
       }
 
       for (const auto &p : nbs_set) {
-        if (not new_nbs.contains(p)) {
+        if (not new_nbs.count(p)) {
           new_nbs[p].insert(p);
         }
       }

@@ -113,7 +113,7 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
     {
       const auto &[rank, v] = data;
 
-      if (not vd.others.contains(rank)) {
+      if (vd.others.count(rank) == 0) {
         logger::error_all("Rank {} is no neighbour", rank);
         MPI_Abort(MPI_COMM_WORLD, 17);
       }

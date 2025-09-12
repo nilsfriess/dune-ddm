@@ -263,7 +263,7 @@ public:
     b.read(gi);
     for (std::size_t k = 1; k < size; ++k) {
       b.read(gi);
-      if (not gis.contains(gi)) {
+      if (not gis.count(gi)) {
         ltg->push_back(gi);
         gis.insert(gi);
       }
@@ -356,12 +356,12 @@ public:
     std::size_t count = 0;
     count += 1; // The number of global indices and connected ranks we send for this local index
 
-    if (connected_indices.contains(i)) {
+    if (connected_indices.count(i)) {
       for (const auto &idx : connected_indices.at(i)) {
         count += 1; // The actual global index
 
         count += 1; // The number of ranks that also know this index
-        if (connected_ranks.contains(idx)) {
+        if (connected_ranks.count(idx)) {
           count += connected_ranks.at(idx).size(); // The ranks
         }
       }
@@ -373,12 +373,12 @@ public:
   template <class Buffer>
   void gather(Buffer &buffer, int i)
   {
-    if (connected_indices.contains(i)) {
+    if (connected_indices.count(i)) {
       buffer.write(connected_indices.at(i).size());
       for (const auto &li : connected_indices.at(i)) {
         buffer.write(glis.pair(li)->global());
 
-        if (connected_ranks.contains(li)) {
+        if (connected_ranks.count(li)) {
           buffer.write(connected_ranks.at(li).size());
           for (const auto &r : connected_ranks.at(li)) {
             buffer.write(r);
@@ -480,7 +480,7 @@ public:
     buffer.read(gi); // read dummy data
     for (int k = 0; k < size - 1; k++) {
       buffer.read(gi); // read global index
-      if (gis.contains(gi)) {
+      if (gis.count(gi)) {
         Aovlp.entry(i, paridxs[gi].local()) = 0.0;
       }
     }
@@ -602,7 +602,7 @@ public:
     DataType d;
     buffer.read(d);
 
-    if (not mask_from_rank.contains(d.first)) {
+    if (not mask_from_rank.count(d.first)) {
       mask_from_rank[d.first].resize(paridxs.size(), false); // Initialise masks with false
     }
 
