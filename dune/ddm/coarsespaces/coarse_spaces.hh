@@ -9,13 +9,13 @@
 */
 
 #include "../logger.hh"
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
 
 #include <dune/common/exceptions.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/istl/bvector.hh>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #if DUNE_DDM_HAVE_TASKFLOW
 #include <taskflow/taskflow.hpp>
@@ -26,37 +26,6 @@
 #include "energy_minimal_extension.hh"
 
 namespace detail {
-
-/**
- * @brief Parse eigensolver parameters from ParameterTree.
- *
- * Converts coarse space selection parameters into eigensolver-specific parameters.
- * Supports both fixed and adaptive eigenvector selection modes.
- *
- * @param subtree ParameterTree subtree containing eigensolver configuration.
- * @return ParameterTree configured for the eigensolver.
- */
-inline Dune::ParameterTree parse_eigensolver_params(const Dune::ParameterTree &subtree)
-{
-  Dune::ParameterTree eig_ptree;
-  const auto &mode_string = subtree.get("mode", "fixed");
-
-  if (mode_string == "fixed") {
-    eig_ptree["eigensolver_nev"] = std::to_string(subtree.get("n", 10));
-  }
-  else if (mode_string == "adaptive") {
-    eig_ptree["eigensolver_nev_target"] = std::to_string(subtree.get("n_target", 10));
-    eig_ptree["eigensolver_nev_max"] = std::to_string(subtree.get("n_max", 100));
-    eig_ptree["eigensolver_threshold"] = std::to_string(subtree.get("threshold", 0.5));
-    eig_ptree["eigensolver_keep_strict"] = "true";
-  }
-  else {
-    DUNE_THROW(Dune::NotImplemented, "Unknown coarse space mode '" + mode_string + "', use either 'fixed' or 'adaptive'");
-  }
-
-  return eig_ptree;
-}
-
 /**
  * @brief Apply partition of unity scaling and normalize eigenvectors.
  *
@@ -68,13 +37,11 @@ inline Dune::ParameterTree parse_eigensolver_params(const Dune::ParameterTree &s
  * @param pou Partition of unity.
  */
 template <class Vec>
-inline void finalize_eigenvectors(std::vector<Vec> &eigenvectors, const PartitionOfUnity &pou)
+inline void finalize_eigenvectors(std::vector<Vec>& eigenvectors, const PartitionOfUnity& pou)
 {
-  for (auto &vec : eigenvectors) {
+  for (auto& vec : eigenvectors) {
     // Apply partition of unity scaling
-    for (std::size_t i = 0; i < vec.size(); ++i) {
-      vec[i] *= pou[i];
-    }
+    for (std::size_t i = 0; i < vec.size(); ++i) vec[i] *= pou[i];
     // Normalize to unit length
     vec *= 1. / vec.two_norm();
   }
@@ -92,7 +59,7 @@ inline void finalize_eigenvectors(std::vector<Vec> &eigenvectors, const Partitio
  *                      If empty, direct indexing is used.
  */
 template <class Mat, class Vec>
-void scale_matrix_with_pou(Mat &C, const Vec &pou, const std::vector<std::size_t> &index_mapping = {})
+void scale_matrix_with_pou(Mat& C, const Vec& pou, const std::vector<std::size_t>& index_mapping = {})
 {
   for (auto ri = C.begin(); ri != C.end(); ++ri) {
     for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
@@ -104,7 +71,7 @@ void scale_matrix_with_pou(Mat &C, const Vec &pou, const std::vector<std::size_t
 }
 
 template <class Mat>
-inline void scale_matrix_with_pou(Mat &C, const PartitionOfUnity &pou, const std::vector<std::size_t> &index_mapping = {})
+inline void scale_matrix_with_pou(Mat& C, const PartitionOfUnity& pou, const std::vector<std::size_t>& index_mapping = {})
 {
   for (auto ri = C.begin(); ri != C.end(); ++ri) {
     for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
@@ -132,16 +99,16 @@ public:
   virtual ~CoarseSpaceBuilder() = default;
 
   // Disable copy/move operations for base class
-  CoarseSpaceBuilder(const CoarseSpaceBuilder &) = delete;
-  CoarseSpaceBuilder &operator=(const CoarseSpaceBuilder &) = delete;
-  CoarseSpaceBuilder(CoarseSpaceBuilder &&) = delete;
-  CoarseSpaceBuilder &operator=(CoarseSpaceBuilder &&) = delete;
+  CoarseSpaceBuilder(const CoarseSpaceBuilder&) = delete;
+  CoarseSpaceBuilder& operator=(const CoarseSpaceBuilder&) = delete;
+  CoarseSpaceBuilder(CoarseSpaceBuilder&&) = delete;
+  CoarseSpaceBuilder& operator=(CoarseSpaceBuilder&&) = delete;
 
   /**
    * @brief Get the computed coarse space basis vectors.
    * @return Const reference to vector of basis vectors.
    */
-  virtual const std::vector<Vec> &get_basis() const { return basis_; }
+  virtual const std::vector<Vec>& get_basis() const { return basis_; }
 
   /**
    * @brief Get the number of basis vectors.
@@ -150,7 +117,7 @@ public:
   virtual std::size_t size() const { return basis_.size(); }
 
 #if DUNE_DDM_HAVE_TASKFLOW
-  virtual tf::Task &get_setup_task() { return setup_task; }
+  virtual tf::Task& get_setup_task() { return setup_task; }
 #endif
 
 protected:
@@ -190,24 +157,22 @@ public:
    * @param ptree_prefix Prefix for parameter subtree (default: "geneo").
    */
   // Note: We intentionally pass shared_ptrs by value to capture them safely in the taskflow lambda
-  GenEOCoarseSpace(std::shared_ptr<const Mat> A, std::shared_ptr<const Mat> B, std::shared_ptr<const PartitionOfUnity> pou, const Dune::ParameterTree &ptree, tf::Taskflow &taskflow,
-                   const std::string &ptree_prefix = "geneo")
+  GenEOCoarseSpace(std::shared_ptr<const Mat> A, std::shared_ptr<const Mat> B, std::shared_ptr<const PartitionOfUnity> pou, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow,
+                   const std::string& ptree_prefix = "geneo")
   {
-    const auto &subtree = ptree.sub(ptree_prefix);
-    Dune::ParameterTree eig_ptree = detail::parse_eigensolver_params(subtree);
+    const auto& subtree = ptree.sub(ptree_prefix);
+    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
 
     this->setup_task = taskflow
                            .emplace([A, B, pou, eig_ptree, this] {
                              logger::info("Setting up GenEO coarse space");
 
-                             if (pou->size() != A->N()) {
-                               DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
-                             }
+                             if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
 
                              Mat C = *B; // The rhs of the eigenproblem
                              detail::scale_matrix_with_pou(C, *pou);
 
-                             this->basis_ = solveGEVP(*A, C, Eigensolver::Spectra, eig_ptree);
+                             this->basis_ = solve_gevp(*A, C, eig_ptree);
 
                              detail::finalize_eigenvectors(this->basis_, *pou);
                            })
@@ -240,14 +205,14 @@ public:
    * @param ptree ParameterTree containing solver and selection parameters.
    * @param ptree_prefix Prefix for parameter subtree (default: "geneo_ring").
    */
-  GenEORingCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A, std::shared_ptr<const PartitionOfUnity> pou, const std::vector<std::size_t> &ring_to_subdomain,
-                       const Dune::ParameterTree &ptree, tf::Taskflow &taskflow, const std::string &ptree_prefix = "geneo_ring")
+  GenEORingCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A, std::shared_ptr<const PartitionOfUnity> pou, const std::vector<std::size_t>& ring_to_subdomain,
+                       const Dune::ParameterTree& ptree, tf::Taskflow& taskflow, const std::string& ptree_prefix = "geneo_ring")
   {
-    const auto &subtree = ptree.sub(ptree_prefix);
-    Dune::ParameterTree eig_ptree = detail::parse_eigensolver_params(subtree);
+    const auto& subtree = ptree.sub(ptree_prefix);
+    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
 
     this->setup_task = taskflow
-                           .emplace([A_dir, A, pou, ring_to_subdomain, eig_ptree, this](tf::Subflow &subflow) {
+                           .emplace([A_dir, A, pou, ring_to_subdomain, eig_ptree, this](tf::Subflow& subflow) {
                              logger::info("Setting up GenEO ring coarse space");
 
                              auto setup_ring_data_task = subflow
@@ -256,9 +221,7 @@ public:
                                                                // and on the inner boundary of the ring. We also create a interior-to-subdomain mapping.
 
                                                                subdomain_to_ring.clear();
-                                                               for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-                                                                 subdomain_to_ring[ring_to_subdomain[i]] = i;
-                                                               }
+                                                               for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) subdomain_to_ring[ring_to_subdomain[i]] = i;
 
                                                                interior_to_subdomain.resize(A_dir->N() - ring_to_subdomain.size());
                                                                inner_ring_boundary_to_subdomain.clear();
@@ -294,7 +257,7 @@ public:
                                                                   detail::scale_matrix_with_pou(C, *mod_pou, ring_to_subdomain);
 
                                                                   // Now we can solve the eigenproblem
-                                                                  eigenvectors_ring = solveGEVP(*A, C, Eigensolver::Spectra, eig_ptree);
+                                                                  eigenvectors_ring = solve_gevp(*A, C, eig_ptree);
                                                                 })
                                                                 .name("Solve ring eigenproblem");
 
@@ -311,21 +274,15 @@ public:
                                        for (auto i : ring_to_subdomain) {
                                          for (auto ci = (*A_dir)[i].begin(); ci != (*A_dir)[i].end(); ++ci) {
                                            // Check if a neighbouring dof of dof i lies on the inner ring boundary but i itself does not
-                                           if (inner_ring_boundary_dofs.contains(ci.index()) and not inner_ring_boundary_dofs.contains(i)) {
-                                             inside_ring_boundary_to_subdomain.push_back(i);
-                                           }
+                                           if (inner_ring_boundary_dofs.contains(ci.index()) and not inner_ring_boundary_dofs.contains(i)) inside_ring_boundary_to_subdomain.push_back(i);
                                          }
                                        }
 
                                        // Of course we then also have to extend the "interior" to also include the inner ring boundary
                                        extended_interior_to_subdomain.resize(interior_to_subdomain.size() + inner_ring_boundary_to_subdomain.size());
                                        std::size_t cnt = 0;
-                                       for (auto i : interior_to_subdomain) {
-                                         extended_interior_to_subdomain[cnt++] = i;
-                                       }
-                                       for (auto i : inner_ring_boundary_to_subdomain) {
-                                         extended_interior_to_subdomain[cnt++] = i;
-                                       }
+                                       for (auto i : interior_to_subdomain) extended_interior_to_subdomain[cnt++] = i;
+                                       for (auto i : inner_ring_boundary_to_subdomain) extended_interior_to_subdomain[cnt++] = i;
 
                                        // Set up energy-minimal extension
                                        ext = std::make_unique<EnergyMinimalExtension<Mat, Vec>>(*A_dir, extended_interior_to_subdomain, inside_ring_boundary_to_subdomain);
@@ -336,9 +293,8 @@ public:
                                                                         .emplace([&]() {
                                                                           // Here we create another map from 'inside ring boundary' to 'ring' to avoid too many hash map lookups below
                                                                           std::vector<std::size_t> inside_boundary_to_ring(inside_ring_boundary_to_subdomain.size());
-                                                                          for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) {
+                                                                          for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i)
                                                                             inside_boundary_to_ring[i] = subdomain_to_ring[inside_ring_boundary_to_subdomain[i]];
-                                                                          }
 
                                                                           Vec zero(A_dir->N());
                                                                           zero = 0;
@@ -346,23 +302,17 @@ public:
 
                                                                           Vec dirichlet_data(inside_ring_boundary_to_subdomain.size()); // Will be set each iteration
                                                                           for (std::size_t k = 0; k < eigenvectors_ring.size(); ++k) {
-                                                                            const auto &evec = eigenvectors_ring[k];
+                                                                            const auto& evec = eigenvectors_ring[k];
 
-                                                                            for (std::size_t i = 0; i < inside_boundary_to_ring.size(); ++i) {
-                                                                              dirichlet_data[i] = evec[inside_boundary_to_ring[i]];
-                                                                            }
+                                                                            for (std::size_t i = 0; i < inside_boundary_to_ring.size(); ++i) dirichlet_data[i] = evec[inside_boundary_to_ring[i]];
 
                                                                             auto interior_vec = ext->extend(dirichlet_data);
 
                                                                             // First set the values in the ring
-                                                                            for (std::size_t i = 0; i < evec.N(); ++i) {
-                                                                              combined_vectors[k][ring_to_subdomain[i]] = evec[i];
-                                                                            }
+                                                                            for (std::size_t i = 0; i < evec.N(); ++i) combined_vectors[k][ring_to_subdomain[i]] = evec[i];
 
                                                                             // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
-                                                                            for (std::size_t i = 0; i < interior_vec.N(); ++i) {
-                                                                              combined_vectors[k][extended_interior_to_subdomain[i]] = interior_vec[i];
-                                                                            }
+                                                                            for (std::size_t i = 0; i < interior_vec.N(); ++i) combined_vectors[k][extended_interior_to_subdomain[i]] = interior_vec[i];
                                                                           }
 
                                                                           this->basis_ = std::move(combined_vectors);
@@ -389,6 +339,7 @@ private:
   std::unique_ptr<EnergyMinimalExtension<Mat, Vec>> ext;
 };
 
+#if DUNE_DDM_HAVE_TASKFLOW
 /**
  * @brief MsGFEM (Multiscale Generalized Finite Element Method) coarse space builder.
  *
@@ -404,7 +355,6 @@ private:
 template <class Mat, class MaskVec1, class MaskVec2, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
 class MsGFEMCoarseSpace : public CoarseSpaceBuilder<Vec> {
 public:
-#if DUNE_DDM_HAVE_TASKFLOW
   /**
    * @brief Construct MsGFEM coarse space.
    *
@@ -417,23 +367,19 @@ public:
    * @param ptree_prefix Prefix for parameter subtree (default: "msgfem").
    */
   // Note: We intentionally pass shared_ptrs by value to capture them safely in the taskflow lambda
-  MsGFEMCoarseSpace(std::shared_ptr<const Mat> A, std::shared_ptr<const PartitionOfUnity> pou, const MaskVec1 &dirichlet_mask, const MaskVec2 &subdomain_boundary_mask,
-                    const Dune::ParameterTree &ptree, tf::Taskflow &taskflow, const std::string &ptree_prefix = "msgfem")
+  MsGFEMCoarseSpace(std::shared_ptr<const Mat> A, std::shared_ptr<const PartitionOfUnity> pou, const MaskVec1& dirichlet_mask, const MaskVec2& subdomain_boundary_mask,
+                    const Dune::ParameterTree& ptree, tf::Taskflow& taskflow, const std::string& ptree_prefix = "msgfem")
   {
-    const auto &subtree = ptree.sub(ptree_prefix);
-    Dune::ParameterTree eig_ptree = detail::parse_eigensolver_params(subtree);
+    const auto& subtree = ptree.sub(ptree_prefix);
+    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
 
     this->setup_task = taskflow
                            .emplace([A, pou, &dirichlet_mask, &subdomain_boundary_mask, eig_ptree, this] {
                              logger::info("Setting up MsGFEM coarse space");
 
-                             if (dirichlet_mask.N() != A->N()) {
-                               DUNE_THROW(Dune::Exception, "The matrix and the Dirichlet mask must have the same size");
-                             }
+                             if (dirichlet_mask.N() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the Dirichlet mask must have the same size");
 
-                             if (pou->size() != A->N()) {
-                               DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
-                             }
+                             if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
 
                              // Partition the degrees of freedom
                              enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
@@ -462,17 +408,10 @@ public:
                              std::size_t cnt_interior = 0;
                              std::size_t cnt_boundary = num_interior;
                              std::size_t cnt_dirichlet = num_interior + num_boundary;
-                             for (std::size_t i = 0; i < reordering.size(); ++i) {
-                               if (dof_partitioning[i] == DOFType::Interior) {
-                                 reordering[i] = cnt_interior++;
-                               }
-                               else if (dof_partitioning[i] == DOFType::Boundary) {
-                                 reordering[i] = cnt_boundary++;
-                               }
-                               else {
-                                 reordering[i] = cnt_dirichlet++;
-                               }
-                             }
+                             for (std::size_t i = 0; i < reordering.size(); ++i)
+                               if (dof_partitioning[i] == DOFType::Interior) reordering[i] = cnt_interior++;
+                               else if (dof_partitioning[i] == DOFType::Boundary) reordering[i] = cnt_boundary++;
+                               else reordering[i] = cnt_dirichlet++;
 
                              // Assemble the left-hand side of the eigenproblem
                              Mat A_lhs;
@@ -486,9 +425,7 @@ public:
                              for (auto rit = A->begin(); rit != A->end(); ++rit) {
                                auto ii = rit.index();
                                auto ri = reordering[ii];
-                               if (dof_partitioning[ii] != DOFType::Interior) {
-                                 continue;
-                               }
+                               if (dof_partitioning[ii] != DOFType::Interior) continue;
 
                                for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
                                  auto jj = cit.index();
@@ -505,17 +442,14 @@ public:
                              for (auto rit = A->begin(); rit != A->end(); ++rit) {
                                auto ii = rit.index();
                                auto ri = reordering[ii];
-                               if (dof_partitioning[ii] == DOFType::Dirichlet) { // Skip Dirchlet dofs
+                               if (dof_partitioning[ii] == DOFType::Dirichlet) // Skip Dirchlet dofs
                                  continue;
-                               }
 
                                for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
                                  auto jj = cit.index();
                                  auto rj = reordering[jj];
 
-                                 if (dof_partitioning[jj] != DOFType::Dirichlet) {
-                                   A_lhs.entry(ri, rj) = *cit;
-                                 }
+                                 if (dof_partitioning[jj] != DOFType::Dirichlet) A_lhs.entry(ri, rj) = *cit;
                                }
                              }
                              A_lhs.compress();
@@ -529,34 +463,27 @@ public:
                              for (auto rit = A->begin(); rit != A->end(); ++rit) {
                                auto ii = rit.index();
                                auto ri = reordering[ii];
-                               if (dof_partitioning[ii] != DOFType::Interior) {
-                                 continue;
-                               }
+                               if (dof_partitioning[ii] != DOFType::Interior) continue;
 
                                for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
                                  auto jj = cit.index();
                                  auto rj = reordering[jj];
 
-                                 if (dof_partitioning[jj] == DOFType::Interior) {
-                                   B.entry(ri, rj) = (*pou)[ii] * (*pou)[jj] * (*cit);
-                                 }
+                                 if (dof_partitioning[jj] == DOFType::Interior) B.entry(ri, rj) = (*pou)[ii] * (*pou)[jj] * (*cit);
                                }
                              }
                              B.compress();
 
                              // Now we can solve the eigenproblem
-                             auto eigenvectors = solveGEVP(A_lhs, B, Eigensolver::Spectra, eig_ptree);
+                             auto eigenvectors = solve_gevp(A_lhs, B, eig_ptree);
 
                              // Finally, extract the actual eigenvectors
                              Vec v(A->N());
                              v = 0;
                              std::vector<Vec> eigenvectors_actual(eigenvectors.size(), v);
                              for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
-                               for (std::size_t i = 0; i < A->N(); ++i) {
-                                 if (dof_partitioning[i] != DOFType::Dirichlet) {
-                                   eigenvectors_actual[k][i] = eigenvectors[k][reordering[i]];
-                                 }
-                               }
+                               for (std::size_t i = 0; i < A->N(); ++i)
+                                 if (dof_partitioning[i] != DOFType::Dirichlet) eigenvectors_actual[k][i] = eigenvectors[k][reordering[i]];
                              }
 
                              this->basis_ = std::move(eigenvectors_actual);
@@ -564,9 +491,10 @@ public:
                            })
                            .name("MsGFEM coarse space setup");
   }
-#endif
 };
+#endif
 
+#if DUNE_DDM_HAVE_TASKFLOW
 /**
  * @brief MsGFEM ring coarse space builder.
  *
@@ -582,7 +510,6 @@ public:
 template <class Mat, class MaskVec1, class MaskVec2, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
 class MsGFEMRingCoarseSpace : public CoarseSpaceBuilder<Vec> {
 public:
-#if DUNE_DDM_HAVE_TASKFLOW
   /**
    * @brief Construct MsGFEM ring coarse space.
    *
@@ -598,38 +525,33 @@ public:
    * @param ptree_prefix Prefix for parameter subtree (default: "msgfem_ring").
    */
   // Note: We intentionally pass shared_ptrs by value to capture them safely in the taskflow lambda
-  MsGFEMRingCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A, int overlap, std::shared_ptr<const PartitionOfUnity> pou, const MaskVec1 &dirichlet_mask,
-                        const MaskVec2 &subdomain_boundary_mask, const std::vector<std::size_t> &ring_to_subdomain, const Dune::ParameterTree &ptree, tf::Taskflow &taskflow,
-                        const std::string &ptree_prefix = "msgfem_ring")
+  MsGFEMRingCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A, int overlap, std::shared_ptr<const PartitionOfUnity> pou, const MaskVec1& dirichlet_mask,
+                        const MaskVec2& subdomain_boundary_mask, const std::vector<std::size_t>& ring_to_subdomain, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow,
+                        const std::string& ptree_prefix = "msgfem_ring")
   {
-    const auto &subtree = ptree.sub(ptree_prefix);
-    Dune::ParameterTree eig_ptree = detail::parse_eigensolver_params(subtree);
+    const auto& subtree = ptree.sub(ptree_prefix);
+    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
 
     this->setup_task =
         taskflow
-            .emplace([A_dir, A, overlap, pou, &dirichlet_mask, &subdomain_boundary_mask, ring_to_subdomain, eig_ptree, this](tf::Subflow &subflow) {
+            .emplace([A_dir, A, overlap, pou, &dirichlet_mask, &subdomain_boundary_mask, ring_to_subdomain, eig_ptree, this](tf::Subflow& subflow) {
               logger::info("Setting up MsGFEM ring coarse space");
 
               auto setup_boundary_distance_task = subflow
                                                       .emplace([&]() {
                                                         // Similar as in the GenEO coarse space, we start by creating a modification of the
-                                                        // partition of unity function. Here we identify the different classes of dofs via
+                                                        // pargtition of unity function. Here we identify the different classes of dofs via
                                                         // their distance to the overlapping subdomain boundary, so let's compute that
                                                         // distance first (for sufficiently many layers of dofs).
                                                         boundary_distance.resize(A_dir->N(), std::numeric_limits<int>::max() - 1);
-                                                        for (std::size_t i = 0; i < boundary_distance.size(); ++i) {
-                                                          if (subdomain_boundary_mask[i] > 0) {
-                                                            boundary_distance[i] = 0;
-                                                          }
-                                                        }
+                                                        for (std::size_t i = 0; i < boundary_distance.size(); ++i)
+                                                          if (subdomain_boundary_mask[i] > 0) boundary_distance[i] = 0;
 
                                                         for (int round = 0; round < 2 * overlap + 2; ++round) {
                                                           for (std::size_t i = 0; i < boundary_distance.size(); ++i) {
                                                             for (auto cit = (*A_dir)[i].begin(); cit != (*A_dir)[i].end(); ++cit) {
                                                               auto nb_dist_plus_one = boundary_distance[cit.index()] + 1;
-                                                              if (nb_dist_plus_one < boundary_distance[i]) {
-                                                                boundary_distance[i] = nb_dist_plus_one;
-                                                              }
+                                                              if (nb_dist_plus_one < boundary_distance[i]) boundary_distance[i] = nb_dist_plus_one;
                                                             }
                                                           }
                                                         }
@@ -638,176 +560,146 @@ public:
                                                       })
                                                       .name("Setup ring data structures");
 
-              auto solve_eigenproblem_task =
-                  subflow
-                      .emplace([&]() {
-                        // Handle edge case: empty ring
-                        if (ring_to_subdomain.empty()) {
-                          DUNE_THROW(Dune::Exception, "The ring to subdomain mapping is empty, cannot build MsGFEM ring coarse space");
-                        }
+              auto solve_eigenproblem_task = subflow
+                                                 .emplace([&]() {
+                                                   // Handle edge case: empty ring
+                                                   if (ring_to_subdomain.empty()) DUNE_THROW(Dune::Exception, "The ring to subdomain mapping is empty, cannot build MsGFEM ring coarse space");
 
-                        auto mod_pou = *pou;
-                        for (std::size_t i = 0; i < mod_pou.size(); ++i) {
-                          if (boundary_distance[i] >= pou->get_shrink() + ring_width) {
-                            mod_pou[i] = 0;
-                          }
-                        }
+                                                   auto mod_pou = *pou;
+                                                   for (std::size_t i = 0; i < mod_pou.size(); ++i)
+                                                     if (boundary_distance[i] >= pou->get_shrink() + ring_width) mod_pou[i] = 0;
 
-                        std::unordered_set<std::size_t> inside_ring_boundary_dofs;
-                        for (const auto &i : ring_to_subdomain) {
-                          if (boundary_distance[i] == 2 * overlap) {
-                            inside_ring_boundary_dofs.insert(i);
-                          }
-                        }
+                                                   std::unordered_set<std::size_t> inside_ring_boundary_dofs;
+                                                   for (const auto& i : ring_to_subdomain)
+                                                     if (boundary_distance[i] == 2 * overlap) inside_ring_boundary_dofs.insert(i);
 
-                        // Partition DOFs in ring: Interior (ring interior), Boundary (ring boundary + inside ring boundary), Dirichlet
-                        enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
-                        std::vector<DOFType> dof_partitioning(ring_to_subdomain.size());
-                        std::size_t num_interior = 0;
-                        std::size_t num_boundary = 0;
-                        std::size_t num_dirichlet = 0;
+                                                   // Partition DOFs in ring: Interior (ring interior), Boundary (ring boundary + inside ring boundary), Dirichlet
+                                                   enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
+                                                   std::vector<DOFType> dof_partitioning(ring_to_subdomain.size());
+                                                   std::size_t num_interior = 0;
+                                                   std::size_t num_boundary = 0;
+                                                   std::size_t num_dirichlet = 0;
 
-                        for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-                          auto subdomain_idx = ring_to_subdomain[i];
+                                                   for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
+                                                     auto subdomain_idx = ring_to_subdomain[i];
 
-                          if (dirichlet_mask[subdomain_idx] > 0) {
-                            dof_partitioning[i] = DOFType::Dirichlet;
-                            num_dirichlet++;
-                          }
-                          else if (subdomain_boundary_mask[subdomain_idx] || inside_ring_boundary_dofs.contains(subdomain_idx)) {
-                            dof_partitioning[i] = DOFType::Boundary;
-                            num_boundary++;
-                          }
-                          else {
-                            dof_partitioning[i] = DOFType::Interior;
-                            num_interior++;
-                          }
-                        }
+                                                     if (dirichlet_mask[subdomain_idx] > 0) {
+                                                       dof_partitioning[i] = DOFType::Dirichlet;
+                                                       num_dirichlet++;
+                                                     }
+                                                     else if (subdomain_boundary_mask[subdomain_idx] || inside_ring_boundary_dofs.contains(subdomain_idx)) {
+                                                       dof_partitioning[i] = DOFType::Boundary;
+                                                       num_boundary++;
+                                                     }
+                                                     else {
+                                                       dof_partitioning[i] = DOFType::Interior;
+                                                       num_interior++;
+                                                     }
+                                                   }
 
-                        logger::debug_all("Partitioned ring dofs, have {} in interior, {} on boundary, {} on Dirichlet boundary", num_interior, num_boundary, num_dirichlet);
+                                                   logger::debug_all("Partitioned ring dofs, have {} in interior, {} on boundary, {} on Dirichlet boundary", num_interior, num_boundary, num_dirichlet);
 
-                        // Create reordered index set: interior, then boundary, then Dirichlet
-                        std::vector<std::size_t> reordering(ring_to_subdomain.size());
-                        std::size_t cnt_interior = 0;
-                        std::size_t cnt_boundary = num_interior;
-                        std::size_t cnt_dirichlet = num_interior + num_boundary;
+                                                   // Create reordered index set: interior, then boundary, then Dirichlet
+                                                   std::vector<std::size_t> reordering(ring_to_subdomain.size());
+                                                   std::size_t cnt_interior = 0;
+                                                   std::size_t cnt_boundary = num_interior;
+                                                   std::size_t cnt_dirichlet = num_interior + num_boundary;
 
-                        for (std::size_t i = 0; i < reordering.size(); ++i) {
-                          if (dof_partitioning[i] == DOFType::Interior) {
-                            reordering[i] = cnt_interior++;
-                          }
-                          else if (dof_partitioning[i] == DOFType::Boundary) {
-                            reordering[i] = cnt_boundary++;
-                          }
-                          else {
-                            reordering[i] = cnt_dirichlet++;
-                          }
-                        }
+                                                   for (std::size_t i = 0; i < reordering.size(); ++i)
+                                                     if (dof_partitioning[i] == DOFType::Interior) reordering[i] = cnt_interior++;
+                                                     else if (dof_partitioning[i] == DOFType::Boundary) reordering[i] = cnt_boundary++;
+                                                     else reordering[i] = cnt_dirichlet++;
 
-                        // Assemble left-hand side matrix (constrained system with A-harmonic constraint)
-                        const auto n_big = num_interior + num_boundary + num_interior; // Include Lagrange multipliers
-                        const auto avg = 2 * (A->nonzeroes() / A->N());
-                        Mat A_lhs;
-                        A_lhs.setBuildMode(Mat::implicit);
-                        A_lhs.setImplicitBuildModeParameters(avg, 0.2);
-                        A_lhs.setSize(n_big, n_big);
+                                                   // Assemble left-hand side matrix (constrained system with A-harmonic constraint)
+                                                   const auto n_big = num_interior + num_boundary + num_interior; // Include Lagrange multipliers
+                                                   const auto avg = 2 * (A->nonzeroes() / A->N());
+                                                   Mat A_lhs;
+                                                   A_lhs.setBuildMode(Mat::implicit);
+                                                   A_lhs.setImplicitBuildModeParameters(avg, 0.2);
+                                                   A_lhs.setSize(n_big, n_big);
 
-                        // Assemble A-harmonic constraint: A*u = 0 for interior DOFs
-                        for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-                          if (dof_partitioning[i] != DOFType::Interior) {
-                            continue;
-                          }
+                                                   // Assemble A-harmonic constraint: A*u = 0 for interior DOFs
+                                                   for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
+                                                     if (dof_partitioning[i] != DOFType::Interior) continue;
 
-                          auto ri = reordering[i];
+                                                     auto ri = reordering[i];
 
-                          for (auto cit = (*A)[i].begin(); cit != (*A)[i].end(); ++cit) {
-                            auto j = cit.index(); // j is also a ring index
+                                                     for (auto cit = (*A)[i].begin(); cit != (*A)[i].end(); ++cit) {
+                                                       auto j = cit.index(); // j is also a ring index
 
-                            if (dof_partitioning[j] != DOFType::Dirichlet) {
-                              auto rj = reordering[j];
-                              // Add constraint entries: A^T on top, A on bottom
-                              A_lhs.entry(rj, num_interior + num_boundary + ri) = *cit;
-                              A_lhs.entry(num_interior + num_boundary + ri, rj) = *cit;
-                            }
-                          }
-                        }
+                                                       if (dof_partitioning[j] != DOFType::Dirichlet) {
+                                                         auto rj = reordering[j];
+                                                         // Add constraint entries: A^T on top, A on bottom
+                                                         A_lhs.entry(rj, num_interior + num_boundary + ri) = *cit;
+                                                         A_lhs.entry(num_interior + num_boundary + ri, rj) = *cit;
+                                                       }
+                                                     }
+                                                   }
 
-                        // Assemble main matrix block
-                        for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-                          if (dof_partitioning[i] == DOFType::Dirichlet) {
-                            continue;
-                          }
+                                                   // Assemble main matrix block
+                                                   for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
+                                                     if (dof_partitioning[i] == DOFType::Dirichlet) continue;
 
-                          auto ri = reordering[i];
+                                                     auto ri = reordering[i];
 
-                          for (auto cit = (*A)[i].begin(); cit != (*A)[i].end(); ++cit) {
-                            auto j = cit.index(); // j is also a ring index
+                                                     for (auto cit = (*A)[i].begin(); cit != (*A)[i].end(); ++cit) {
+                                                       auto j = cit.index(); // j is also a ring index
 
-                            if (dof_partitioning[j] != DOFType::Dirichlet) {
-                              auto rj = reordering[j];
-                              A_lhs.entry(ri, rj) = *cit;
-                            }
-                          }
-                        }
-                        A_lhs.compress();
+                                                       if (dof_partitioning[j] != DOFType::Dirichlet) {
+                                                         auto rj = reordering[j];
+                                                         A_lhs.entry(ri, rj) = *cit;
+                                                       }
+                                                     }
+                                                   }
+                                                   A_lhs.compress();
 
-                        // Assemble right-hand side matrix (weighted with partition of unity)
-                        Mat B;
-                        B.setBuildMode(Mat::implicit);
-                        B.setImplicitBuildModeParameters(avg, 0.2);
-                        B.setSize(n_big, n_big);
+                                                   // Assemble right-hand side matrix (weighted with partition of unity)
+                                                   Mat B;
+                                                   B.setBuildMode(Mat::implicit);
+                                                   B.setImplicitBuildModeParameters(avg, 0.2);
+                                                   B.setSize(n_big, n_big);
 
-                        for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-                          if (dof_partitioning[i] == DOFType::Dirichlet) {
-                            continue;
-                          }
+                                                   for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
+                                                     if (dof_partitioning[i] == DOFType::Dirichlet) continue;
 
-                          auto subdomain_ii = ring_to_subdomain[i];
-                          auto ri = reordering[i];
+                                                     auto subdomain_ii = ring_to_subdomain[i];
+                                                     auto ri = reordering[i];
 
-                          for (auto cit = (*A)[i].begin(); cit != (*A)[i].end(); ++cit) {
-                            auto j = cit.index(); // j is also a ring index
-                            auto subdomain_jj = ring_to_subdomain[j];
+                                                     for (auto cit = (*A)[i].begin(); cit != (*A)[i].end(); ++cit) {
+                                                       auto j = cit.index(); // j is also a ring index
+                                                       auto subdomain_jj = ring_to_subdomain[j];
 
-                            if (dof_partitioning[j] != DOFType::Dirichlet) {
-                              auto rj = reordering[j];
-                              B.entry(ri, rj) = mod_pou[subdomain_ii] * mod_pou[subdomain_jj] * (*cit);
-                            }
-                          }
-                        }
-                        B.compress();
+                                                       if (dof_partitioning[j] != DOFType::Dirichlet) {
+                                                         auto rj = reordering[j];
+                                                         B.entry(ri, rj) = mod_pou[subdomain_ii] * mod_pou[subdomain_jj] * (*cit);
+                                                       }
+                                                     }
+                                                   }
+                                                   B.compress();
 
-                        // Solve constrained eigenproblem
-                        auto eigenvectors_constrained = solveGEVP(A_lhs, B, Eigensolver::Spectra, eig_ptree);
+                                                   // Solve constrained eigenproblem
+                                                   auto eigenvectors_constrained = solve_gevp(A_lhs, B, eig_ptree);
 
-                        // Extract actual eigenvectors (first part of constrained solution)
-                        Vec v_ring(ring_to_subdomain.size());
-                        v_ring = 0;
-                        eigenvectors_ring.resize(eigenvectors_constrained.size(), v_ring);
+                                                   // Extract actual eigenvectors (first part of constrained solution)
+                                                   Vec v_ring(ring_to_subdomain.size());
+                                                   v_ring = 0;
+                                                   eigenvectors_ring.resize(eigenvectors_constrained.size(), v_ring);
 
-                        for (std::size_t k = 0; k < eigenvectors_constrained.size(); ++k) {
-                          for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-                            if (dof_partitioning[i] != DOFType::Dirichlet) {
-                              eigenvectors_ring[k][i] = eigenvectors_constrained[k][reordering[i]];
-                            }
-                          }
-                        }
-                      })
-                      .name("Solve ring eigenproblem");
+                                                   for (std::size_t k = 0; k < eigenvectors_constrained.size(); ++k) {
+                                                     for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i)
+                                                       if (dof_partitioning[i] != DOFType::Dirichlet) eigenvectors_ring[k][i] = eigenvectors_constrained[k][reordering[i]];
+                                                   }
+                                                 })
+                                                 .name("Solve ring eigenproblem");
 
               auto setup_harmonic_extension_task = subflow
                                                        .emplace([&]() {
                                                          // Next, we identify the region where we compute the harmonic extension
                                                          extension_interior_to_subdomain.reserve(A_dir->N());
                                                          extension_boundary_to_subdomain.reserve(ring_to_subdomain.size());
-                                                         for (std::size_t i = 0; i < A_dir->N(); ++i) {
-                                                           if (boundary_distance[i] > pou->get_shrink() + ring_width - 1) {
-                                                             extension_interior_to_subdomain.push_back(i);
-                                                           }
-                                                           else if (boundary_distance[i] == pou->get_shrink() + ring_width - 1) {
-                                                             extension_boundary_to_subdomain.push_back(i);
-                                                           }
-                                                         }
+                                                         for (std::size_t i = 0; i < A_dir->N(); ++i)
+                                                           if (boundary_distance[i] > pou->get_shrink() + ring_width - 1) extension_interior_to_subdomain.push_back(i);
+                                                           else if (boundary_distance[i] == pou->get_shrink() + ring_width - 1) extension_boundary_to_subdomain.push_back(i);
 
                                                          // Set up energy-minimal extension
                                                          ext = std::make_unique<EnergyMinimalExtension<Mat, Vec>>(*A_dir, extension_interior_to_subdomain, extension_boundary_to_subdomain);
@@ -822,14 +714,11 @@ public:
                                                            // theory.
                                                            // Here we create another map from 'inside ring boundary' to 'ring' to avoid too many hash map lookups below
                                                            std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
-                                                           for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-                                                             subdomain_to_ring[ring_to_subdomain[i]] = i;
-                                                           }
+                                                           for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) subdomain_to_ring[ring_to_subdomain[i]] = i;
 
                                                            std::vector<std::size_t> inside_boundary_to_ring(extension_boundary_to_subdomain.size());
-                                                           for (std::size_t i = 0; i < extension_boundary_to_subdomain.size(); ++i) {
+                                                           for (std::size_t i = 0; i < extension_boundary_to_subdomain.size(); ++i)
                                                              inside_boundary_to_ring[i] = subdomain_to_ring[extension_boundary_to_subdomain[i]];
-                                                           }
 
                                                            Vec zero(A_dir->N());
                                                            zero = 0;
@@ -837,23 +726,17 @@ public:
 
                                                            Vec dirichlet_data(extension_boundary_to_subdomain.size()); // Will be set each iteration
                                                            for (std::size_t k = 0; k < eigenvectors_ring.size(); ++k) {
-                                                             const auto &evec = eigenvectors_ring[k];
+                                                             const auto& evec = eigenvectors_ring[k];
 
-                                                             for (std::size_t i = 0; i < inside_boundary_to_ring.size(); ++i) {
-                                                               dirichlet_data[i] = evec[inside_boundary_to_ring[i]];
-                                                             }
+                                                             for (std::size_t i = 0; i < inside_boundary_to_ring.size(); ++i) dirichlet_data[i] = evec[inside_boundary_to_ring[i]];
 
                                                              auto interior_vec = ext->extend(dirichlet_data);
 
                                                              // First set the values in the ring
-                                                             for (std::size_t i = 0; i < evec.N(); ++i) {
-                                                               combined_vectors[k][ring_to_subdomain[i]] = evec[i];
-                                                             }
+                                                             for (std::size_t i = 0; i < evec.N(); ++i) combined_vectors[k][ring_to_subdomain[i]] = evec[i];
 
                                                              // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
-                                                             for (std::size_t i = 0; i < interior_vec.N(); ++i) {
-                                                               combined_vectors[k][extension_interior_to_subdomain[i]] = interior_vec[i];
-                                                             }
+                                                             for (std::size_t i = 0; i < interior_vec.N(); ++i) combined_vectors[k][extension_interior_to_subdomain[i]] = interior_vec[i];
                                                            }
 
                                                            this->basis_ = std::move(combined_vectors);
@@ -866,7 +749,7 @@ public:
             })
             .name("MsGFEM ring coarse space setup");
   }
-#endif
+
 private:
   std::vector<int> boundary_distance;
   int ring_width;
@@ -875,6 +758,7 @@ private:
   std::vector<Vec> eigenvectors_ring;
   std::unique_ptr<EnergyMinimalExtension<Mat, Vec>> ext;
 };
+#endif
 
 /**
  * @brief Partition of Unity (POU) coarse space builder.
@@ -896,7 +780,7 @@ public:
    * @param taskflow Taskflow instance for parallel execution.
    */
   // Note: We intentionally pass shared_ptrs by value to capture them safely in the taskflow lambda
-  explicit POUCoarseSpace(std::shared_ptr<const PartitionOfUnity> pou, tf::Taskflow &taskflow)
+  explicit POUCoarseSpace(std::shared_ptr<const PartitionOfUnity> pou, tf::Taskflow& taskflow)
   {
     this->setup_task = taskflow
                            .emplace([pou, this] {
@@ -907,9 +791,7 @@ public:
                              this->basis_[0].resize(pou->size());
 
                              // Initialize with constant 1
-                             for (std::size_t i = 0; i < pou->size(); ++i) {
-                               this->basis_[0][i] = 1.0;
-                             }
+                             for (std::size_t i = 0; i < pou->size(); ++i) this->basis_[0][i] = 1.0;
 
                              // Apply partition of unity scaling and normalization
                              detail::finalize_eigenvectors(this->basis_, *pou);
@@ -923,7 +805,7 @@ public:
    *
    * @param pou Partition of unity vector for scaling.
    */
-  explicit POUCoarseSpace(const PartitionOfUnity &pou)
+  explicit POUCoarseSpace(const PartitionOfUnity& pou)
   {
     logger::info("Setting up POU coarse space");
 
@@ -932,15 +814,13 @@ public:
     this->basis_[0].resize(pou.size());
 
     // Initialize with constant 1
-    for (std::size_t i = 0; i < pou.size(); ++i) {
-      this->basis_[0][i] = 1.0;
-    }
+    for (std::size_t i = 0; i < pou.size(); ++i) this->basis_[0][i] = 1.0;
 
     // Apply partition of unity scaling and normalization
     detail::finalize_eigenvectors(this->basis_, pou);
   }
 
-  POUCoarseSpace(const std::vector<Vec> &template_vecs, const PartitionOfUnity &pou)
+  POUCoarseSpace(const std::vector<Vec>& template_vecs, const PartitionOfUnity& pou)
   {
     this->basis_ = template_vecs;
     detail::finalize_eigenvectors(this->basis_, pou);
