@@ -1,16 +1,15 @@
 #pragma once
 
-#include <cstddef>
-#include <memory>
-#include <unordered_map>
-#include <vector>
+#include "../logger.hh"
 
+#include <cstddef>
 #include <dune/istl/operators.hh>
 #include <dune/istl/preconditioners.hh>
 #include <dune/istl/solver.hh>
 #include <dune/istl/umfpack.hh>
-
-#include "../logger.hh"
+#include <memory>
+#include <unordered_map>
+#include <vector>
 
 #if DUNE_DDM_HAVE_UMFPACK_SIMD
 #include <experimental/simd>
@@ -44,34 +43,27 @@ public:
    * @param interior_indices Mapping from interior DOF index to subdomain DOF index
    * @param boundary_indices Mapping from boundary DOF index to subdomain DOF index
    */
-  EnergyMinimalExtension(const Mat &A, const std::vector<std::size_t> &interior_indices, const std::vector<std::size_t> &boundary_indices)
-      : A(A), interior_indices(interior_indices), boundary_indices(boundary_indices)
+  EnergyMinimalExtension(const Mat& A, const std::vector<std::size_t>& interior_indices, const std::vector<std::size_t>& boundary_indices)
+      : A(A)
+      , interior_indices(interior_indices)
+      , boundary_indices(boundary_indices)
   {
     // Create mapping from subdomain DOF index to interior DOF index for efficient lookup
     std::unordered_map<std::size_t, std::size_t> subdomain_to_interior;
     subdomain_to_interior.reserve(interior_indices.size());
-    for (std::size_t i = 0; i < interior_indices.size(); ++i) {
-      subdomain_to_interior[interior_indices[i]] = i;
-    }
+    for (std::size_t i = 0; i < interior_indices.size(); ++i) subdomain_to_interior[interior_indices[i]] = i;
 
     // Extract the interior-interior block of the matrix A_ii
     const auto N = interior_indices.size();
-    interior_matrix = std::make_shared<Mat>(); // Interior-interior block matrix
+    interior_matrix = std::make_shared<Mat>();
 
-    // Estimate average number of non-zeros per row for matrix preallocation
     auto avg = A.nonzeroes() / A.N() + 2;
-
-    // Set matrix build mode with performance parameters
-    // Over-allocation factor of 0.2 (20%) helps avoid expensive reallocations
     interior_matrix->setBuildMode(Mat::implicit);
     interior_matrix->setImplicitBuildModeParameters(avg, 0.2);
     interior_matrix->setSize(N, N);
     for (auto ri = A.begin(); ri != A.end(); ++ri) {
-      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-        if (subdomain_to_interior.count(ri.index()) and subdomain_to_interior.count(ci.index())) {
-          interior_matrix->entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = *ci;
-        }
-      }
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci)
+        if (subdomain_to_interior.count(ri.index()) and subdomain_to_interior.count(ci.index())) interior_matrix->entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = *ci;
     }
     interior_matrix->compress();
 
@@ -81,7 +73,7 @@ public:
 
 private:
   /**
-   * @brief Initialize the appropriate direct solver based on compile-time configuration.
+   * @brief Initialize the direct solver
    */
   void initialize_solver()
   {
@@ -96,10 +88,10 @@ private:
   }
 
 public:
-  EnergyMinimalExtension(const EnergyMinimalExtension &) = delete;
-  EnergyMinimalExtension(const EnergyMinimalExtension &&) = delete;
-  EnergyMinimalExtension &operator=(const EnergyMinimalExtension &) = delete;
-  EnergyMinimalExtension &operator=(const EnergyMinimalExtension &&) = delete;
+  EnergyMinimalExtension(const EnergyMinimalExtension&) = delete;
+  EnergyMinimalExtension(const EnergyMinimalExtension&&) = delete;
+  EnergyMinimalExtension& operator=(const EnergyMinimalExtension&) = delete;
+  EnergyMinimalExtension& operator=(const EnergyMinimalExtension&&) = delete;
   ~EnergyMinimalExtension() = default;
 
   /**
@@ -113,7 +105,7 @@ public:
    * @param boundary_values Vector containing values on the boundary DOFs
    * @return Vector containing the computed interior values
    */
-  Vec extend(const Vec &boundary_values)
+  Vec extend(const Vec& boundary_values)
   {
 #if DUNE_DDM_HAVE_UMFPACK_SIMD
     // Use helper function to reduce code duplication
@@ -122,9 +114,7 @@ public:
     // Copy the boundary values to a vector that lives on the whole subdomain
     Vec v_full(A.N());
     v_full = 0;
-    for (std::size_t i = 0; i < boundary_values.N(); ++i) {
-      v_full[boundary_indices[i]] = boundary_values[i];
-    }
+    for (std::size_t i = 0; i < boundary_values.N(); ++i) v_full[boundary_indices[i]] = boundary_values[i];
 
     // Multiply by the whole subdomain matrix: A * [0; u_boundary]
     Vec A_vfull(A.N());
@@ -132,9 +122,7 @@ public:
 
     // Extract the values corresponding to interior DOFs (this gives A_ib * u_b)
     Vec rhs_interior(interior_indices.size());
-    for (std::size_t i = 0; i < interior_indices.size(); ++i) {
-      rhs_interior[i] = A_vfull[interior_indices[i]];
-    }
+    for (std::size_t i = 0; i < interior_indices.size(); ++i) rhs_interior[i] = A_vfull[interior_indices[i]];
 #endif
 
     // Solve A_ii * u_interior = -A_ib * u_boundary
@@ -157,14 +145,12 @@ private:
    * @param boundary_values Input boundary values
    * @return Result of matrix-vector multiplication restricted to interior DOFs
    */
-  Vec compute_interior_rhs(const Vec &boundary_values) const
+  Vec compute_interior_rhs(const Vec& boundary_values) const
   {
     // Copy the boundary values to a vector that lives on the whole subdomain
     Vec v_full(A.N());
     v_full = 0;
-    for (std::size_t i = 0; i < boundary_values.N(); ++i) {
-      v_full[boundary_indices[i]] = boundary_values[i];
-    }
+    for (std::size_t i = 0; i < boundary_values.N(); ++i) v_full[boundary_indices[i]] = boundary_values[i];
 
     // Multiply by the whole subdomain matrix: A * [0; u_boundary]
     Vec A_vfull(A.N());
@@ -172,9 +158,7 @@ private:
 
     // Extract the values corresponding to interior DOFs (this gives A_ib * u_b)
     Vec rhs_interior(interior_indices.size());
-    for (std::size_t i = 0; i < interior_indices.size(); ++i) {
-      rhs_interior[i] = A_vfull[interior_indices[i]];
-    }
+    for (std::size_t i = 0; i < interior_indices.size(); ++i) rhs_interior[i] = A_vfull[interior_indices[i]];
 
     return rhs_interior;
   }
@@ -190,16 +174,14 @@ public:
    * @return Vector of interior solution vectors
    * @note The number of input vectors must be divisible by the SIMD width
    */
-  std::vector<Vec> extend(const std::vector<Vec> &boundary_vectors)
+  std::vector<Vec> extend(const std::vector<Vec>& boundary_vectors)
   {
     namespace stdx = std::experimental;
 
     using Scalar = double;
     using ScalarV = stdx::native_simd<Scalar>;
 
-    if (boundary_vectors.size() % ScalarV::size() != 0) {
-      DUNE_THROW(Dune::Exception, "Number of vectors must be divisible by SIMD width " + std::to_string(ScalarV::size()) + "\n");
-    }
+    if (boundary_vectors.size() % ScalarV::size() != 0) DUNE_THROW(Dune::Exception, "Number of vectors must be divisible by SIMD width " + std::to_string(ScalarV::size()) + "\n");
 
     Vec zero(interior_indices.size());
     zero = 0;
@@ -216,9 +198,7 @@ public:
         Vec rhs_interior = compute_interior_rhs(boundary_vectors[i]);
 
         // Pack into SIMD vector
-        for (std::size_t j = 0; j < interior_indices.size(); ++j) {
-          rhs_interior_simd[j][i % ScalarV::size()] = rhs_interior[j];
-        }
+        for (std::size_t j = 0; j < interior_indices.size(); ++j) rhs_interior_simd[j][i % ScalarV::size()] = rhs_interior[j];
       }
 
       // Apply inverse of interior matrix to all vectors of the current block
@@ -226,11 +206,8 @@ public:
       solver->apply_simd(interior_solutions_simd, rhs_interior_simd, numeric_data);
 
       // Extract results and apply sign correction
-      for (std::size_t i = block_start; i < block_start + ScalarV::size(); ++i) {
-        for (std::size_t j = 0; j < interior_indices.size(); ++j) {
-          interior_solutions[i][j] = -interior_solutions_simd[j][i % ScalarV::size()];
-        }
-      }
+      for (std::size_t i = block_start; i < block_start + ScalarV::size(); ++i)
+        for (std::size_t j = 0; j < interior_indices.size(); ++j) interior_solutions[i][j] = -interior_solutions_simd[j][i % ScalarV::size()];
     }
 
     return interior_solutions;
@@ -238,9 +215,9 @@ public:
 #endif
 
 private:
-  const Mat &A;                                     ///< Reference to the full subdomain matrix
-  const std::vector<std::size_t> &interior_indices; ///< Mapping from interior DOF index to subdomain DOF index
-  const std::vector<std::size_t> &boundary_indices; ///< Mapping from boundary DOF index to subdomain DOF index
+  const Mat& A;                                     ///< Reference to the full subdomain matrix
+  const std::vector<std::size_t>& interior_indices; ///< Mapping from interior DOF index to subdomain DOF index
+  const std::vector<std::size_t>& boundary_indices; ///< Mapping from boundary DOF index to subdomain DOF index
 
 #ifndef DUNE_DDM_HAVE_STRUMPACK
   std::unique_ptr<Dune::UMFPack<Mat>> solver; ///< Direct solver for interior system (UMFPACK)
