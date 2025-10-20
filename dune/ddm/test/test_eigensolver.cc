@@ -1,12 +1,10 @@
-#include "dune/ddm/eigensolvers/inner_products.hh"
-
-#include <type_traits>
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 
 #include <algorithm>
 #include <limits>
+#include <type_traits>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
@@ -25,14 +23,16 @@
 #pragma GCC diagnostic pop
 
 #include "matrix_symmetry_helper.hh"
-#include "mmloader/mmloader.h"
+// #include "mmloader/mmloader.h"
 
 #include <dune/ddm/eigensolvers/blockmultivector.hh>
 #include <dune/ddm/eigensolvers/eigensolvers.hh>
+#include <dune/ddm/eigensolvers/inner_products.hh>
 #include <dune/ddm/eigensolvers/orthogonalisation.hh>
 #include <dune/ddm/eigensolvers/subspace_iteration.hh>
 #include <experimental/simd>
-#include <slepceps.h>
+
+// #include <slepceps.h>
 
 int main(int argc, char* argv[])
 {
@@ -43,7 +43,7 @@ int main(int argc, char* argv[])
       return 1;
     }
 
-    PetscCall(SlepcInitialize(&argc, &argv, nullptr, nullptr));
+    // PetscCall(SlepcInitialize(&argc, &argv, nullptr, nullptr));
 
     Dune::ParameterTree ptree;
     Dune::ParameterTreeParser ptreeparser;
@@ -67,27 +67,27 @@ int main(int argc, char* argv[])
     // Check and ensure matrix symmetry for proper eigenvalue computation
     matrix_symmetry_helper::ensure_matrix_symmetry(A, B, 1e-12, false);
 
-    if (false) {
-      // Solve problem in SLEPc
+    // if (false) {
+    //   // Solve problem in SLEPc
 
-      Mat A;
-      Mat B;
-      EPS eps;
+    //   Mat A;
+    //   Mat B;
+    //   EPS eps;
 
-      PetscCall(MatCreateFromMTX(&A, Afile.c_str(), PETSC_TRUE));
-      PetscCall(MatCreateFromMTX(&B, Bfile.c_str(), PETSC_TRUE));
+    //   PetscCall(MatCreateFromMTX(&A, Afile.c_str(), PETSC_TRUE));
+    //   PetscCall(MatCreateFromMTX(&B, Bfile.c_str(), PETSC_TRUE));
 
-      PetscCall(EPSCreate(PETSC_COMM_SELF, &eps));
-      PetscCall(EPSSetOperators(eps, A, B));
-      PetscCall(EPSSetProblemType(eps, EPS_GHEP));
-      PetscCall(EPSSetFromOptions(eps));
-      PetscCall(EPSSetUp(eps));
-      PetscCall(EPSSolve(eps));
+    //   PetscCall(EPSCreate(PETSC_COMM_SELF, &eps));
+    //   PetscCall(EPSSetOperators(eps, A, B));
+    //   PetscCall(EPSSetProblemType(eps, EPS_GHEP));
+    //   PetscCall(EPSSetFromOptions(eps));
+    //   PetscCall(EPSSetUp(eps));
+    //   PetscCall(EPSSolve(eps));
 
-      PetscCall(EPSDestroy(&eps));
-      PetscCall(MatDestroy(&A));
-      PetscCall(MatDestroy(&B));
-    }
+    //   PetscCall(EPSDestroy(&eps));
+    //   PetscCall(MatDestroy(&A));
+    //   PetscCall(MatDestroy(&B));
+    // }
 
     if (true) {
       orthogonalisation::MatrixInnerProduct<std::remove_cvref_t<decltype(*B)>, BlockMultiVector<double, 8>> ip(B);
