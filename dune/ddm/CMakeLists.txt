@@ -15,3 +15,5 @@ install(FILES
         coarsespaces/eigensolvers.hh
         coarsespaces/energy_minimal_extension.hh
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/dune/ddm)
+
+add_subdirectory(test)
