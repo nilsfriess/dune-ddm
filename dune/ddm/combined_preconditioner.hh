@@ -164,7 +164,7 @@ public:
 
 private:
   /** @brief Initialize logging events for performance monitoring */
-  void initLogEvents() { apply_event = Logger::get().registerEvent("CombinedPreconditioner", "apply"); }
+  void initLogEvents() { apply_event = Logger::get().registerOrGetEvent("CombinedPreconditioner", "apply"); }
 
   /** @brief Vector of preconditioners to be combined */
   std::vector<std::shared_ptr<Dune::Preconditioner<X, Y>>> precs;

@@ -1,12 +1,11 @@
 #pragma once
 
+#include "helpers.hh"
+#include "logger.hh"
+
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
-#include <numeric>
-
-#include <mpi.h>
-
 #include <dune/common/parallel/communicator.hh>
 #include <dune/common/parallel/interface.hh>
 #include <dune/common/parametertree.hh>
@@ -15,10 +14,8 @@
 #include <dune/istl/preconditioner.hh>
 #include <dune/istl/solver.hh>
 #include <dune/istl/umfpack.hh>
-
-#include "logger.hh"
-
-#include "helpers.hh"
+#include <mpi.h>
+#include <numeric>
 
 /** @brief A Galerkin-type preconditioner that implements R^T (R A R^T)^-1 R.
 
@@ -55,16 +52,16 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   struct AddGatherScatter {
     using DataType = double;
 
-    static DataType gather(const Vec &x, std::size_t i) { return x[i]; }
-    static void scatter(Vec &x, DataType v, std::size_t i) { x[i] += v; }
+    static DataType gather(const Vec& x, std::size_t i) { return x[i]; }
+    static void scatter(Vec& x, DataType v, std::size_t i) { x[i] += v; }
   };
 
   /** @brief Gather-scatter helper for copying values during communication */
   struct CopyGatherScatter {
     using DataType = double;
 
-    static DataType gather(const Vec &x, std::size_t i) { return x[i]; }
-    static void scatter(Vec &x, DataType v, std::size_t i) { x[i] = v; }
+    static DataType gather(const Vec& x, std::size_t i) { return x[i]; }
+    static void scatter(Vec& x, DataType v, std::size_t i) { x[i] = v; }
   };
 
   /** @brief Helper class for distributing vectors across MPI ranks during communication */
@@ -76,9 +73,11 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
      * @param temp Template vector used for creating neighbor vectors
      * @param neighbours List of neighbor rank IDs
      */
-    VecDistributor(const Vec &temp, const std::vector<int> &neighbours, int rank) : temp{temp}, rank{rank}
+    VecDistributor(const Vec& temp, const std::vector<int>& neighbours, int rank)
+        : temp{temp}
+        , rank{rank}
     {
-      for (const auto &nb : neighbours) {
+      for (const auto& nb : neighbours) {
         others.emplace(nb, temp);
         others[nb] = 0;
       }
@@ -87,18 +86,16 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
     /** @brief Clear all neighbor vectors (set to zero) */
     void clear()
     {
-      for (auto &[rank, vec] : others) {
-        vec = 0;
-      }
+      for (auto& [rank, vec] : others) vec = 0;
     }
 
-    VecDistributor(const VecDistributor &) = delete;
-    VecDistributor(const VecDistributor &&) = delete;
-    VecDistributor &operator=(const VecDistributor &) = delete;
-    VecDistributor &operator=(const VecDistributor &&) = delete;
+    VecDistributor(const VecDistributor&) = delete;
+    VecDistributor(const VecDistributor&&) = delete;
+    VecDistributor& operator=(const VecDistributor&) = delete;
+    VecDistributor& operator=(const VecDistributor&&) = delete;
     ~VecDistributor() = default;
 
-    Vec *own = nullptr;        /**< Pointer to our own vector */
+    Vec* own = nullptr;        /**< Pointer to our own vector */
     std::map<int, Vec> others; /**< Vectors from other ranks */
     Vec temp;                  /**< Template vector for initialization */
     int rank;
@@ -108,10 +105,10 @@ class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   struct CopyGatherScatterWithRank {
     using DataType = std::pair<int, double>;
 
-    static DataType gather(const VecDistributor &vd, std::size_t i) { return std::make_pair(vd.rank, (*vd.own)[i]); }
-    static void scatter(VecDistributor &vd, const DataType &data, std::size_t i)
+    static DataType gather(const VecDistributor& vd, std::size_t i) { return std::make_pair(vd.rank, (*vd.own)[i]); }
+    static void scatter(VecDistributor& vd, const DataType& data, std::size_t i)
     {
-      const auto &[rank, v] = data;
+      const auto& [rank, v] = data;
 
       if (vd.others.count(rank) == 0) {
         logger::error_all("Rank {} is no neighbour", rank);
@@ -135,21 +132,20 @@ public:
    * @throws Dune::Exception if no template vectors are provided or if template vector size doesn't match matrix size
    */
   template <class Mat, class RemoteIndices>
-  GalerkinPreconditioner(const Mat &A, const std::vector<Vec> &ts, const RemoteIndices &remoteids, const Dune::ParameterTree &ptree, const std::string &subtree_name = "galerkin")
-      : n(A.N()), d_ovlp(n), x_ovlp(n), num_t(ts.size())
+  GalerkinPreconditioner(const Mat& A, const std::vector<Vec>& ts, const RemoteIndices& remoteids, const Dune::ParameterTree& ptree, const std::string& subtree_name = "galerkin")
+      : n(A.N())
+      , d_ovlp(n)
+      , x_ovlp(n)
+      , num_t(ts.size())
   {
     register_log_events();
     build_communication_interfaces(remoteids);
 
-    const auto &subtree = subtree_name.size() == 0 ? ptree : ptree.sub(subtree_name);
+    const auto& subtree = subtree_name.size() == 0 ? ptree : ptree.sub(subtree_name);
 
-    if (ts.size() == 0) {
-      DUNE_THROW(Dune::Exception, "Must at least pass one template vector");
-    }
+    if (ts.size() == 0) DUNE_THROW(Dune::Exception, "Must at least pass one template vector");
 
-    if (ts[0].N() != A.N()) {
-      DUNE_THROW(Dune::Exception, "Template vectors must match size of matrix");
-    }
+    if (ts[0].N() != A.N()) DUNE_THROW(Dune::Exception, "Template vectors must match size of matrix");
 
     std::size_t max_num_t = ts.size();
     MPI_Allreduce(MPI_IN_PLACE, &max_num_t, 1, MPI_UNSIGNED_LONG, MPI_MAX, comm);
@@ -157,9 +153,7 @@ public:
     Vec zero(ts[0].N());
     zero = 0;
     restr_vecs.resize(max_num_t, Vec(ts[0].N()));
-    for (int i = 0; i < num_t; ++i) {
-      restr_vecs[i] = ts[i];
-    }
+    for (int i = 0; i < num_t; ++i) restr_vecs[i] = ts[i];
 
     logger::debug("Setting up GalerkinPreconditioner with {} template vector{} (max. one rank has is {})", num_t, (num_t == 1 ? "" : "s"), max_num_t);
 
@@ -168,28 +162,23 @@ public:
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
 
-  void pre(Vec &, Vec &) override {}
-  void post(Vec &) override {}
+  void pre(Vec&, Vec&) override {}
+  void post(Vec&) override {}
 
-  void apply(Vec &x, const Vec &d) override
+  void apply(Vec& x, const Vec& d) override
   {
     Logger::ScopedLog se(apply_event);
 
     // 1. Copy local values from non-overlapping to overlapping defect
-    for (std::size_t i = 0; i < d.N(); ++i) {
-      d_ovlp[i] = d[i];
-    }
+    for (std::size_t i = 0; i < d.N(); ++i) d_ovlp[i] = d[i];
 
     // 1.5 Get remaining values from other ranks
     owner_copy_comm.forward<CopyGatherScatter>(d_ovlp);
 
     // 2. Compute local contribution of coarse defect
     std::vector<double> d_local(num_t, 0);
-    for (int k = 0; k < num_t; ++k) {
-      for (std::size_t i = 0; i < restr_vecs[0].N(); ++i) {
-        d_local[k] += restr_vecs[k][i] * d_ovlp[i];
-      }
-    }
+    for (int k = 0; k < num_t; ++k)
+      for (std::size_t i = 0; i < restr_vecs[0].N(); ++i) d_local[k] += restr_vecs[k][i] * d_ovlp[i];
 
     // 3. Gather defect values on rank 0
     Vec d0(total_num_t);
@@ -209,19 +198,14 @@ public:
 
     // 6. Prolongate
     x_ovlp = 0;
-    for (int k = 0; k < num_t; ++k) {
-      for (std::size_t j = 0; j < x_ovlp.N(); ++j) {
-        x_ovlp[j] += coarse_solution[k] * restr_vecs[k][j];
-      }
-    }
+    for (int k = 0; k < num_t; ++k)
+      for (std::size_t j = 0; j < x_ovlp.N(); ++j) x_ovlp[j] += coarse_solution[k] * restr_vecs[k][j];
 
     // advdh.setVec(x_ovlp);
     all_all_comm.forward<AddGatherScatter>(x_ovlp);
 
     // 7. Restrict the solution to the non-overlapping subdomain
-    for (std::size_t i = 0; i < x.size(); ++i) {
-      x[i] = x_ovlp[i];
-    }
+    for (std::size_t i = 0; i < x.size(); ++i) x[i] = x_ovlp[i];
   }
 
   // /** @brief Get the assembled coarse matrix R A R^T for inspection or debugging */
@@ -231,9 +215,8 @@ private:
   /** @brief Register logging events for performance monitoring */
   void register_log_events()
   {
-    auto *family = Logger::get().registerFamily("GalerkinPrec");
-    apply_event = Logger::get().registerEvent(family, "apply");
-    build_solver_event = Logger::get().registerEvent(family, "build Matrix");
+    apply_event = Logger::get().registerOrGetEvent("GalerkinPrec", "apply");
+    build_solver_event = Logger::get().registerOrGetEvent("GalerkinPrec", "build Matrix");
   }
 
   /**
@@ -241,7 +224,7 @@ private:
    * @param ris Remote parallel indices describing the overlapping index set and communication patterns
    */
   template <class RemoteIndices>
-  void build_communication_interfaces(const RemoteIndices &remoteids)
+  void build_communication_interfaces(const RemoteIndices& remoteids)
   {
     MPI_Comm_dup(remoteids.communicator(), &comm);
     MPI_Comm_rank(comm, &rank);
@@ -271,30 +254,26 @@ private:
   // TODO: Remove some of the logging, this was just added to find out where the most time is spent,
   //       because this function can become the bottleneck for large simulations.
   template <class Mat, class RemoteIndices>
-  void build_solver(const Mat &A, const RemoteIndices &remoteids, const Dune::ParameterTree &subtree)
+  void build_solver(const Mat& A, const RemoteIndices& remoteids, const Dune::ParameterTree& subtree)
   {
     Logger::ScopedLog se(build_solver_event);
 
-    auto *comm_begin_event = Logger::get().registerEvent("GalerkinPrec", "begin comm");
-    // auto *comm_end_event = Logger::get().registerEvent("GalerkinPrec", "end comm");
-    auto *local_local_sp_event = Logger::get().registerEvent("GalerkinPrec", "dot (local<>local)");
-    auto *local_remote_sp_event = Logger::get().registerEvent("GalerkinPrec", "dot (local<>remote)");
-    auto *gather_A0 = Logger::get().registerEvent("GalerkinPrec", "gather A0");
-    auto *factor_A0 = Logger::get().registerEvent("GalerkinPrec", "factor A0");
-    auto *prepare_event = Logger::get().registerEvent("GalerkinPrec", "prepare");
+    auto* comm_begin_event = Logger::get().registerOrGetEvent("GalerkinPrec", "begin comm");
+    // auto *comm_end_event = Logger::get().registerOrGetEvent("GalerkinPrec", "end comm");
+    auto* local_local_sp_event = Logger::get().registerOrGetEvent("GalerkinPrec", "dot (local<>local)");
+    auto* local_remote_sp_event = Logger::get().registerOrGetEvent("GalerkinPrec", "dot (local<>remote)");
+    auto* gather_A0 = Logger::get().registerOrGetEvent("GalerkinPrec", "gather A0");
+    auto* factor_A0 = Logger::get().registerOrGetEvent("GalerkinPrec", "factor A0");
+    auto* prepare_event = Logger::get().registerOrGetEvent("GalerkinPrec", "prepare");
 
     Logger::get().startEvent(prepare_event);
     Dune::GlobalLookupIndexSet glis(remoteids.sourceIndexSet());
 
     std::vector<bool> neighbours(size, false);
-    for (auto nid : remoteids.getNeighbours()) {
-      neighbours[nid] = true;
-    }
+    for (auto nid : remoteids.getNeighbours()) neighbours[nid] = true;
 
     std::vector<bool> owner_mask(restr_vecs[0].N(), false);
-    for (std::size_t l = 0; l < owner_mask.size(); ++l) {
-      owner_mask[l] = glis.pair(l)->local().attribute() == Attribute::owner;
-    }
+    for (std::size_t l = 0; l < owner_mask.size(); ++l) owner_mask[l] = glis.pair(l)->local().attribute() == Attribute::owner;
 
     // Find out how many template vectors each rank has and how large coarse matrix will be
     num_t_per_rank.resize(size);
@@ -326,30 +305,21 @@ private:
     std::map<int, Vec> basis_vector_buffer; // TODO: Check if using this extra buffer actually helps (it allows to do more computation during communication but requires copying around some vectors).
 
     for (int idx = 0; idx < max_num_t; ++idx) {
-      if (idx < num_t) {
-        vd.own = &restr_vecs[idx];
-      }
-      else {
-        vd.own = &zerovec;
-      }
+      if (idx < num_t) vd.own = &restr_vecs[idx];
+      else vd.own = &zerovec;
 
       Logger::get().startEvent(comm_begin_event);
       // bcomm.forwardBegin<CopyGatherScatterWithRank>(vd);
       Logger::get().endEvent(comm_begin_event);
 
-      if (idx > 0) {
-        for (auto &&[rank, basis_vec] : vd.others) {
-          basis_vector_buffer[rank] = basis_vec;
-        }
-      }
+      if (idx > 0)
+        for (auto&& [rank, basis_vec] : vd.others) basis_vector_buffer[rank] = basis_vec;
 
       // Compute scalar products for local * A * local vectors
       Logger::get().startEvent(local_local_sp_event);
       if (idx < num_t) {
         A.mv(restr_vecs[idx], y);
-        for (int k = 0; k < num_t; ++k) {
-          my_rows_flat[(offset_per_rank[rank] + idx) * num_t + k] = restr_vecs[k] * y;
-        }
+        for (int k = 0; k < num_t; ++k) my_rows_flat[(offset_per_rank[rank] + idx) * num_t + k] = restr_vecs[k] * y;
       }
       Logger::get().endEvent(local_local_sp_event);
 
@@ -357,15 +327,11 @@ private:
         // Compute scalar products for local * A * remote vectors.
         // The remote vectors are those that were send and received in the previous iteration.
         Logger::get().startEvent(local_remote_sp_event);
-        for (const auto &nb : neighbour_vec) {
-          if (idx - 1 >= num_t_per_rank[nb]) {
-            continue;
-          }
+        for (const auto& nb : neighbour_vec) {
+          if (idx - 1 >= num_t_per_rank[nb]) continue;
 
           A.mv(basis_vector_buffer[nb], y);
-          for (int k = 0; k < num_t; ++k) {
-            my_rows_flat[(offset_per_rank[nb] + idx - 1) * num_t + k] = restr_vecs[k] * y;
-          }
+          for (int k = 0; k < num_t; ++k) my_rows_flat[(offset_per_rank[nb] + idx - 1) * num_t + k] = restr_vecs[k] * y;
         }
         Logger::get().endEvent(local_remote_sp_event);
       }
@@ -381,31 +347,23 @@ private:
     // Compute scalar products for local * A * remote vectors for the last basis vectors
     // that we missed above.
     Logger::get().startEvent(local_remote_sp_event);
-    for (const auto &nb : neighbour_vec) {
-      if (max_num_t - 1 >= num_t_per_rank[nb]) {
-        continue;
-      }
+    for (const auto& nb : neighbour_vec) {
+      if (max_num_t - 1 >= num_t_per_rank[nb]) continue;
 
       A.mv(vd.others[nb], y);
-      for (int k = 0; k < num_t; ++k) {
-        my_rows_flat[(offset_per_rank[nb] + max_num_t - 1) * num_t + k] = restr_vecs[k] * y;
-      }
+      for (int k = 0; k < num_t; ++k) my_rows_flat[(offset_per_rank[nb] + max_num_t - 1) * num_t + k] = restr_vecs[k] * y;
     }
     Logger::get().endEvent(local_remote_sp_event);
 #else
-    auto *dot_vecs_event = Logger::get().registerEvent("GalerkinPrec", "dot products");
-    auto *s_event = Logger::get().registerEvent("GalerkinPrec", "comm s");
-    auto *y_event = Logger::get().registerEvent("GalerkinPrec", "comm y");
-    auto *Asy_event = Logger::get().registerEvent("GalerkinPrec", "compute y=As");
+    auto* dot_vecs_event = Logger::get().registerOrGetEvent("GalerkinPrec", "dot products");
+    auto* s_event = Logger::get().registerOrGetEvent("GalerkinPrec", "comm s");
+    auto* y_event = Logger::get().registerOrGetEvent("GalerkinPrec", "comm y");
+    auto* Asy_event = Logger::get().registerOrGetEvent("GalerkinPrec", "compute y=As");
 
     for (int col = 0; col < size; ++col) {
       for (std::size_t i = 0; i < num_t_per_rank[col]; ++i) {
-        if (col == rank) {
-          s = restr_vecs[i];
-        }
-        else {
-          s = 0;
-        }
+        if (col == rank) s = restr_vecs[i];
+        else s = 0;
 
         Logger::get().startEvent(s_event);
         all_all_comm.forward<AddGatherScatter>(s);
@@ -421,9 +379,7 @@ private:
           Logger::get().startEvent(Asy_event);
           A.mv(s, y);
 
-          for (std::size_t l = 0; l < y.N(); ++l) {
-            y[l] *= owner_mask[l];
-          }
+          for (std::size_t l = 0; l < y.N(); ++l) y[l] *= owner_mask[l];
           Logger::get().endEvent(Asy_event);
         }
 
@@ -439,9 +395,7 @@ private:
         // Note that my_rows is initialised with zeros, so just skipping here is fine.
         if (col == rank or neighbours[col]) {
           Logger::get().startEvent(dot_vecs_event);
-          for (std::size_t k = 0; k < num_t; ++k) {
-            my_rows[k][offset_per_rank[col] + i] = restr_vecs[k] * y;
-          }
+          for (std::size_t k = 0; k < num_t; ++k) my_rows[k][offset_per_rank[col] + i] = restr_vecs[k] * y;
           Logger::get().endEvent(dot_vecs_event);
         }
       }
@@ -480,6 +434,6 @@ private:
   Dune::BufferedCommunicator all_all_comm;    ///  Buffered communicator for all-to-all communication
   Dune::Interface owner_copy_interface;       ///  Communication interface for owner-to-copy communication
   Dune::BufferedCommunicator owner_copy_comm; ///  Buffered communicator for owner-to-copy communication
-  Logger::Event *apply_event{};               ///  Logging event for timing the apply method
-  Logger::Event *build_solver_event{};        ///  Logging event for timing the solver building process
+  Logger::Event* apply_event{};               ///  Logging event for timing the apply method
+  Logger::Event* build_solver_event{};        ///  Logging event for timing the solver building process
 };

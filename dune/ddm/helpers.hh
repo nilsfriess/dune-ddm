@@ -1,17 +1,25 @@
 #pragma once
 
 #include "logger.hh"
-#include <dune/common/parallel/mpitraits.hh>
-#include <dune/istl/bcrsmatrix.hh>
-#include <dune/istl/scalarproducts.hh>
 
 #include <algorithm>
 #include <cstddef>
+#include <dune/common/parallel/mpitraits.hh>
+#include <dune/istl/bcrsmatrix.hh>
+#include <dune/istl/scalarproducts.hh>
 #include <iostream>
 #include <memory>
 #include <mpi.h>
 #include <utility>
 #include <vector>
+
+inline void todo_impl(const char* file, int line, const char* message)
+{
+  std::cerr << file << ":" << line << ": TODO: " << message << std::endl;
+  std::abort();
+}
+
+#define TODO(message) todo_impl(__FILE__, __LINE__, message)
 
 #define MPI_CHECK(call)                                                                                                                                                                                \
   do {                                                                                                                                                                                                 \
@@ -40,13 +48,19 @@ public:
   using Type = Attribute;
 
   AttributeSet() = default;
-  explicit AttributeSet(const std::set<Attribute> &s) : subset(s) {}
-  AttributeSet(const std::initializer_list<Attribute> &list) : subset(list) {}
+  explicit AttributeSet(const std::set<Attribute>& s)
+      : subset(s)
+  {
+  }
+  AttributeSet(const std::initializer_list<Attribute>& list)
+      : subset(list)
+  {
+  }
 
-  bool contains(const Type &attribute) const { return subset.find(attribute) != subset.end(); }
+  bool contains(const Type& attribute) const { return subset.find(attribute) != subset.end(); }
 };
 
-inline std::ostream &operator<<(std::ostream &out, Attribute attribute)
+inline std::ostream& operator<<(std::ostream& out, Attribute attribute)
 {
   out << (attribute == Attribute::owner ? "owner" : "copy");
   return out;
@@ -78,26 +92,20 @@ RemoteParallelIndices<RemoteIndices> makeRemoteParallelIndices(std::shared_ptr<R
     Pass a negative value to include all values.
 */
 template <class Vec>
-Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_Comm comm, double clip_tolerance = 0)
+Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec>& rows, MPI_Comm comm, double clip_tolerance = 0)
 {
   int rank = 0;
   int size = 0;
   MPI_CHECK(MPI_Comm_size(comm, &size));
   MPI_CHECK(MPI_Comm_rank(comm, &rank));
 
-  if (rows.size() == 0) {
-    DUNE_THROW(Dune::Exception, "No rows to build matrix from");
-  }
+  if (rows.size() == 0) DUNE_THROW(Dune::Exception, "No rows to build matrix from");
 
   std::size_t columns = rows[0].N();
-  for (const auto &row : rows) {
-    if (row.N() != columns) {
-      DUNE_THROW(Dune::Exception, "Rows have different sizes");
-    }
+  for (const auto& row : rows) {
+    if (row.N() != columns) DUNE_THROW(Dune::Exception, "Rows have different sizes");
 
-    if (row.two_norm() == 0) {
-      DUNE_THROW(Dune::Exception, "Must not provide rows that are zero");
-    }
+    if (row.two_norm() == 0) DUNE_THROW(Dune::Exception, "Must not provide rows that are zero");
   }
 
   // Check that all rows on all ranks have the same size
@@ -108,9 +116,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   MPI_Datatype size_t_type = MPI_UNSIGNED_LONG;
   MPI_CHECK(MPI_Allreduce(&columns, &min_columns, 1, size_t_type, MPI_MIN, comm));
   MPI_CHECK(MPI_Allreduce(&columns, &max_columns, 1, size_t_type, MPI_MAX, comm));
-  if (min_columns != max_columns) {
-    DUNE_THROW(Dune::Exception, "Rows have different sizes");
-  }
+  if (min_columns != max_columns) DUNE_THROW(Dune::Exception, "Rows have different sizes");
 
   constexpr int nitems = 4;
   std::array<int, nitems> blocklengths = {1, 1, 1, 1};
@@ -127,19 +133,14 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   std::vector<TripleWithRank> my_triples;
   my_triples.reserve(columns * rows.size());
   for (std::size_t i = 0; i < rows.size(); ++i) {
-    const auto &row = rows[i];
-    for (std::size_t col = 0; col < columns; ++col) {
-      if (std::abs(row[col]) > clip_tolerance) {
-        my_triples.push_back({rank, i, col, row[col]});
-      }
-    }
+    const auto& row = rows[i];
+    for (std::size_t col = 0; col < columns; ++col)
+      if (std::abs(row[col]) > clip_tolerance) my_triples.push_back({rank, i, col, row[col]});
   }
 
   // Now gather the number of local triples from each process
   std::vector<std::size_t> num_triples;
-  if (rank == 0) {
-    num_triples.resize(size);
-  }
+  if (rank == 0) num_triples.resize(size);
   auto num_my_triples = my_triples.size();
   MPI_CHECK(MPI_Gather(&num_my_triples, 1, MPI_UNSIGNED_LONG, rank == 0 ? num_triples.data() : nullptr, 1, MPI_UNSIGNED_LONG, 0, comm));
 
@@ -148,11 +149,9 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
     std::vector<std::size_t> displacements_sizet(size);
     std::exclusive_scan(num_triples.begin(), num_triples.end(), displacements_sizet.begin(), 0);
     displacements.resize(size);
-    std::transform(displacements_sizet.begin(), displacements_sizet.end(), displacements.begin(), [](auto &&v) { return static_cast<int>(v); });
+    std::transform(displacements_sizet.begin(), displacements_sizet.end(), displacements.begin(), [](auto&& v) { return static_cast<int>(v); });
 
-    for (std::size_t i = 0; i < num_triples.size(); ++i) {
-      logger::trace("In gatherMatrixFromRows: From rank {} got {} triples", i, num_triples[i]);
-    }
+    for (std::size_t i = 0; i < num_triples.size(); ++i) logger::trace("In gatherMatrixFromRows: From rank {} got {} triples", i, num_triples[i]);
   }
 
   std::vector<TripleWithRank> all_triples;
@@ -163,7 +162,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
     logger::debug("Total {} nonzeros in matrix built on rank 0", sum);
   }
   std::vector<int> num_triples_int(num_triples.size());
-  std::transform(num_triples.begin(), num_triples.end(), num_triples_int.begin(), [](auto &&v) { return static_cast<int>(v); });
+  std::transform(num_triples.begin(), num_triples.end(), num_triples_int.begin(), [](auto&& v) { return static_cast<int>(v); });
   MPI_CHECK(MPI_Gatherv(my_triples.data(), static_cast<int>(my_triples.size()), triple_type, all_triples.data(), num_triples_int.data(), displacements.data(), triple_type, 0, comm));
 
   Dune::BCRSMatrix<double> A0;
@@ -171,23 +170,17 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
   if (rank == 0) {
     // Compute offsets of rows for each rank
     std::map<int, std::size_t> rows_per_rank;
-    for (const auto &triple : all_triples) {
-      rows_per_rank[triple.rank] = std::max(rows_per_rank[triple.rank], triple.row + 1);
-    }
+    for (const auto& triple : all_triples) rows_per_rank[triple.rank] = std::max(rows_per_rank[triple.rank], triple.row + 1);
 
     std::vector<std::size_t> row_offsets(size);
     row_offsets[0] = 0;
-    for (int i = 1; i < size; ++i) {
-      row_offsets[i] = row_offsets[i - 1] + rows_per_rank[i - 1];
-    }
+    for (int i = 1; i < size; ++i) row_offsets[i] = row_offsets[i - 1] + rows_per_rank[i - 1];
 
     A0.setBuildMode(Dune::BCRSMatrix<double>::implicit);
     A0.setImplicitBuildModeParameters(all_triples.size() / size, 1); // TODO: Make this robust
     A0.setSize(row_offsets[size - 1] + rows_per_rank[size - 1], columns);
 
-    for (const auto &triple : all_triples) {
-      A0.entry(row_offsets[triple.rank] + triple.row, triple.col) = triple.val;
-    }
+    for (const auto& triple : all_triples) A0.entry(row_offsets[triple.rank] + triple.row, triple.col) = triple.val;
     A0.compress();
   }
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -198,7 +191,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec> &rows, MPI_
 
 /** @brief Overload for special case of one vector per rank */
 template <class Vec>
-Dune::BCRSMatrix<double> gatherMatrixFromRows(const Vec &row, MPI_Comm comm, double clip_tolerance = 0)
+Dune::BCRSMatrix<double> gatherMatrixFromRows(const Vec& row, MPI_Comm comm, double clip_tolerance = 0)
 {
   return gatherMatrixFromRows(std::vector<Vec>{row}, comm, clip_tolerance);
 }
@@ -207,7 +200,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const Vec &row, MPI_Comm comm, dou
 
     The parameter \p n_cols is the length of the individual rows, the number of rows is inferred from the \p rows array.
 */
-inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFlat(const std::vector<double> &rows, std::size_t n_cols, MPI_Comm comm, double clip_tolerance = 0)
+inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFlat(const std::vector<double>& rows, std::size_t n_cols, MPI_Comm comm, double clip_tolerance = 0)
 {
   using Mat = Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>;
 
@@ -216,13 +209,9 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
   MPI_CHECK(MPI_Comm_size(comm, &size));
   MPI_CHECK(MPI_Comm_rank(comm, &rank));
 
-  if (rows.size() == 0) {
-    DUNE_THROW(Dune::Exception, "No rows to build matrix from");
-  }
+  if (rows.size() == 0) DUNE_THROW(Dune::Exception, "No rows to build matrix from");
 
-  if (rows.size() % n_cols != 0) {
-    DUNE_THROW(Dune::Exception, "Rows size is not a multiple of the number of columns");
-  }
+  if (rows.size() % n_cols != 0) DUNE_THROW(Dune::Exception, "Rows size is not a multiple of the number of columns");
   const auto n_rows = rows.size() / n_cols;
 
   // Check that all rows on all ranks have the same size
@@ -233,9 +222,7 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
   MPI_Datatype size_t_type = MPI_UNSIGNED_LONG;
   MPI_CHECK(MPI_Allreduce(&n_cols, &min_columns, 1, size_t_type, MPI_MIN, comm));
   MPI_CHECK(MPI_Allreduce(&n_cols, &max_columns, 1, size_t_type, MPI_MAX, comm));
-  if (min_columns != max_columns) {
-    DUNE_THROW(Dune::Exception, "Rows have different sizes");
-  }
+  if (min_columns != max_columns) DUNE_THROW(Dune::Exception, "Rows have different sizes");
 
   // Now we convert the values in rows into CSR format that rank 0 can then directly assemble.
   // We create the data structures as if the matrix was sequential, rank 0 is responsible for
@@ -327,16 +314,11 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
     // so we have to adjust them to be relative to the global rows.
     std::vector<std::size_t> row_offsets_accumulated(size);
     row_offsets_accumulated[0] = 0;
-    for (int i = 1; i < size; ++i) {
-      row_offsets_accumulated[i] = row_offsets_accumulated[i - 1] + col_values_counts[i - 1];
-    }
+    for (int i = 1; i < size; ++i) row_offsets_accumulated[i] = row_offsets_accumulated[i - 1] + col_values_counts[i - 1];
 
     // Now we have to adjust the row offsets to be relative to the global rows by adding the accumulated offsets.
-    for (int s = 0; s < size; ++s) {
-      for (int i = 0; i < row_offsets_counts[s]; ++i) {
-        global_row_offsets[row_offsets_displacements[s] + i] += row_offsets_accumulated[s];
-      }
-    }
+    for (int s = 0; s < size; ++s)
+      for (int i = 0; i < row_offsets_counts[s]; ++i) global_row_offsets[row_offsets_displacements[s] + i] += row_offsets_accumulated[s];
 
     // Now we can build the matrix
     Mat A0;
@@ -344,11 +326,8 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
     A0.setImplicitBuildModeParameters(total_nnz / size, 1); // TODO: Make this robust
     A0.setSize(total_n_rows, n_cols);
 
-    for (std::size_t i = 0; i < total_n_rows; ++i) {
-      for (std::size_t j = global_row_offsets[i]; j < global_row_offsets[i + 1]; ++j) {
-        A0.entry(i, global_col_indices[j]) = global_values[j];
-      }
-    }
+    for (std::size_t i = 0; i < total_n_rows; ++i)
+      for (std::size_t j = global_row_offsets[i]; j < global_row_offsets[i + 1]; ++j) A0.entry(i, global_col_indices[j]) = global_values[j];
 
     A0.compress();
 
@@ -363,20 +342,23 @@ class MaskedScalarProduct : public Dune::ScalarProduct<Vec> {
   using Base = Dune::ScalarProduct<Vec>;
 
 public:
-  MaskedScalarProduct(const std::vector<unsigned> &mask, Communication comm) : mask(&mask), comm(comm) { dot_event = Logger::get().registerEvent("MaskedScalarProduct", "dot"); }
+  MaskedScalarProduct(const std::vector<unsigned>& mask, Communication comm)
+      : mask(&mask)
+      , comm(comm)
+  {
+    dot_event = Logger::get().registerOrGetEvent("MaskedScalarProduct", "dot");
+  }
 
-  typename Base::field_type dot(const Vec &x, const Vec &y) const override
+  typename Base::field_type dot(const Vec& x, const Vec& y) const override
   {
     Logger::ScopedLog se(dot_event);
 
     typename Base::field_type res{0.0};
-    for (typename Vec::size_type i = 0; i < x.size(); i++) {
-      res += x[i] * y[i] * (*mask)[i];
-    }
+    for (typename Vec::size_type i = 0; i < x.size(); i++) res += x[i] * y[i] * (*mask)[i];
     return comm.sum(res);
   }
 
-  typename Base::real_type norm(const Vec &x) const override
+  typename Base::real_type norm(const Vec& x) const override
   {
     auto res = dot(x, x);
     return std::sqrt(res);
@@ -385,8 +367,8 @@ public:
   typename Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
 
 private:
-  const std::vector<unsigned> *mask;
+  const std::vector<unsigned>* mask;
   Communication comm;
 
-  Logger::Event *dot_event;
+  Logger::Event* dot_event;
 };

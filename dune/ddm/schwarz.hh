@@ -7,6 +7,12 @@
     and restricted additive Schwarz methods for domain decomposition preconditioning.
 */
 
+#include "helpers.hh"
+#include "logger.hh"
+#include "pou.hh"
+#include "strumpack.hh"
+
+#include <cstdint>
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/communicator.hh>
 #include <dune/common/parallel/variablesizecommunicator.hh>
@@ -17,15 +23,8 @@
 #include <dune/istl/preconditioner.hh>
 #include <dune/istl/solver.hh>
 #include <dune/istl/umfpack.hh>
-
-#include <cstdint>
 #include <memory>
 #include <mpi.h>
-
-#include "helpers.hh"
-#include "logger.hh"
-#include "pou.hh"
-#include "strumpack.hh"
 
 #if DUNE_DDM_HAVE_TASKFLOW
 #include <taskflow/taskflow.hpp>
@@ -65,15 +64,15 @@ class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   struct AddGatherScatter {
     using DataType = double;
 
-    static DataType gather(const Vec &x, std::size_t i) { return x[i]; }
-    static void scatter(Vec &x, DataType v, std::size_t i) { x[i] += v; }
+    static DataType gather(const Vec& x, std::size_t i) { return x[i]; }
+    static void scatter(Vec& x, DataType v, std::size_t i) { x[i] += v; }
   };
 
   struct CopyGatherScatter {
     using DataType = double;
 
-    static DataType gather(const Vec &x, std::size_t i) { return x[i]; }
-    static void scatter(Vec &x, DataType v, std::size_t i) { x[i] = v; }
+    static DataType gather(const Vec& x, std::size_t i) { return x[i]; }
+    static void scatter(Vec& x, DataType v, std::size_t i) { x[i] = v; }
   };
 
 public:
@@ -108,21 +107,16 @@ public:
    * @param subtree_name Name of the subtree containing Schwarz parameters
    */
   template <class RemoteIndices>
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, std::shared_ptr<RemoteIndices> remoteids, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree &ptree, tf::Taskflow &taskflow,
-                        const std::string &subtree_name = "schwarz")
-      : Aovlp(std::move(Aovlp)), pou(std::move(pou))
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, std::shared_ptr<RemoteIndices> remoteids, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow,
+                        const std::string& subtree_name = "schwarz")
+      : Aovlp(std::move(Aovlp))
+      , pou(std::move(pou))
   {
-    const auto &subtree = ptree.sub(subtree_name);
+    const auto& subtree = ptree.sub(subtree_name);
     auto type_string = subtree.get("type", "restricted");
-    if (type_string == "restricted") {
-      type = SchwarzType::Restricted;
-    }
-    else if (type_string == "standard") {
-      type = SchwarzType::Standard;
-    }
-    else {
-      DUNE_THROW(Dune::NotImplemented, "Unknown Schwarz type '" + type_string + "'");
-    }
+    if (type_string == "restricted") type = SchwarzType::Restricted;
+    else if (type_string == "standard") type = SchwarzType::Standard;
+    else DUNE_THROW(Dune::NotImplemented, "Unknown Schwarz type '" + type_string + "'");
 
     setup_task = taskflow.emplace([&, remoteids]() { init(*remoteids); }).name("Init overlapping Schwarz preconditioner");
   }
@@ -142,21 +136,16 @@ public:
    * @param subtree_name Name of the subtree containing Schwarz parameters
    */
   template <class RemoteIndices>
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const RemoteIndices &remoteids, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree &ptree,
-                        const std::string &subtree_name = "schwarz", const std::string &solver_subtree_name = "subdomain_solver")
-      : Aovlp(std::move(Aovlp)), pou(std::move(pou))
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const RemoteIndices& remoteids, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree& ptree,
+                        const std::string& subtree_name = "schwarz", const std::string& solver_subtree_name = "subdomain_solver")
+      : Aovlp(std::move(Aovlp))
+      , pou(std::move(pou))
   {
-    const auto &subtree = ptree.sub(subtree_name);
+    const auto& subtree = ptree.sub(subtree_name);
     auto type_string = subtree.get("type", "restricted");
-    if (type_string == "restricted") {
-      type = SchwarzType::Restricted;
-    }
-    else if (type_string == "standard") {
-      type = SchwarzType::Standard;
-    }
-    else {
-      DUNE_THROW(Dune::NotImplemented, "Unknown Schwarz type '" + type_string + "'");
-    }
+    if (type_string == "restricted") type = SchwarzType::Restricted;
+    else if (type_string == "standard") type = SchwarzType::Standard;
+    else DUNE_THROW(Dune::NotImplemented, "Unknown Schwarz type '" + type_string + "'");
 
     Dune::initSolverFactories<Op>();
     auto op = std::make_shared<Op>(this->Aovlp);
@@ -166,8 +155,8 @@ public:
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
 
-  void pre(Vec &, Vec &) override {}
-  void post(Vec &) override {}
+  void pre(Vec&, Vec&) override {}
+  void post(Vec&) override {}
 
   /**
    * @brief Apply the Schwarz preconditioner.
@@ -183,16 +172,14 @@ public:
    * @param x Output: preconditioned solution vector
    * @param d Input: defect/residual vector to be preconditioned
    */
-  void apply(Vec &x, const Vec &d) override
+  void apply(Vec& x, const Vec& d) override
   {
     Logger::ScopedLog sl(apply_event);
 
     // 1. Copy local values from non-overlapping to overlapping defect
     Logger::get().startEvent(get_defect_event);
     *d_ovlp = 0;
-    for (std::size_t i = 0; i < d.size(); ++i) {
-      (*d_ovlp)[i] = d[i];
-    }
+    for (std::size_t i = 0; i < d.size(); ++i) (*d_ovlp)[i] = d[i];
 
     // 2. Get remaining values from other ranks
     owner_copy_comm.forward<CopyGatherScatter>(*d_ovlp);
@@ -207,22 +194,15 @@ public:
 
     // 4. Make the solution consistent according to the type of the Schwarz method
     Logger::get().startEvent(add_solution_event);
-    if (type == SchwarzType::Standard) {
-      all_all_comm.forward<AddGatherScatter>(*x_ovlp);
-    }
+    if (type == SchwarzType::Standard) { all_all_comm.forward<AddGatherScatter>(*x_ovlp); }
     else if (type == SchwarzType::Restricted) {
-      if (pou) {
-        for (std::size_t i = 0; i < pou->size(); ++i) {
-          (*x_ovlp)[i] *= (*pou)[i];
-        }
-      }
+      if (pou)
+        for (std::size_t i = 0; i < pou->size(); ++i) (*x_ovlp)[i] *= (*pou)[i];
       all_all_comm.forward<AddGatherScatter>(*x_ovlp);
     }
 
     // 4. Restrict the solution to the non-overlapping subdomain
-    for (std::size_t i = 0; i < x.size(); ++i) {
-      x[i] = (*x_ovlp)[i];
-    }
+    for (std::size_t i = 0; i < x.size(); ++i) x[i] = (*x_ovlp)[i];
     Logger::get().endEvent(add_solution_event);
   }
 
@@ -230,14 +210,14 @@ public:
    * @brief Get reference to the local subdomain solver.
    * @return Reference to the solver instance
    */
-  Solver &getSolver() { return *solver; }
+  Solver& getSolver() { return *solver; }
 
 #if DUNE_DDM_HAVE_TASKFLOW
   /**
    * @brief Return the setup task.
    * @return Reference to the setup task
    */
-  tf::Task &get_setup_task() { return setup_task; }
+  tf::Task& get_setup_task() { return setup_task; }
 #endif
 
 private:
@@ -248,15 +228,15 @@ private:
    * and allocates working vectors.
    */
   template <class RemoteIndices>
-  void init(const RemoteIndices &remoteids)
+  void init(const RemoteIndices& remoteids)
   {
     logger::debug("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
 
-    apply_event = Logger::get().registerEvent("Schwarz", "apply");
-    subdomain_solve_event = Logger::get().registerEvent("Schwarz", "local solve");
-    get_defect_event = Logger::get().registerEvent("Schwarz", "get defect");
-    add_solution_event = Logger::get().registerEvent("Schwarz", "add solution");
-    auto *init_event = Logger::get().registerEvent("Schwarz", "init");
+    apply_event = Logger::get().registerOrGetEvent("Schwarz", "apply");
+    subdomain_solve_event = Logger::get().registerOrGetEvent("Schwarz", "local solve");
+    get_defect_event = Logger::get().registerOrGetEvent("Schwarz", "get defect");
+    add_solution_event = Logger::get().registerOrGetEvent("Schwarz", "add solution");
+    auto* init_event = Logger::get().registerOrGetEvent("Schwarz", "init");
 
     Logger::ScopedLog sl(init_event);
 
@@ -292,8 +272,8 @@ private:
 #endif
 
   // Performance monitoring events
-  Logger::Event *apply_event{nullptr};           ///< Event for timing the apply method
-  Logger::Event *subdomain_solve_event{nullptr}; ///< Event for timing local solves
-  Logger::Event *get_defect_event{nullptr};      ///< Event for timing defect communication
-  Logger::Event *add_solution_event{nullptr};    ///< Event for timing solution communication
+  Logger::Event* apply_event{nullptr};           ///< Event for timing the apply method
+  Logger::Event* subdomain_solve_event{nullptr}; ///< Event for timing local solves
+  Logger::Event* get_defect_event{nullptr};      ///< Event for timing defect communication
+  Logger::Event* add_solution_event{nullptr};    ///< Event for timing solution communication
 };
