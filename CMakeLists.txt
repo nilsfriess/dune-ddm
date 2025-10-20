@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.24)
 project(dune-ddm
         VERSION 0.0.1
-        LANGUAGES CXX C)
+        LANGUAGES CXX C Fortran)
 
+include(CheckFunctionExists)
+
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_COLOR_DIAGNOSTICS ON)
 
 list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_BINARY_DIR}/extern)
@@ -44,33 +47,41 @@ else()
   # start a dune project with information from dune.module
   dune_project()
   if (dune-common_VERSION VERSION_GREATER_EQUAL 2.10)
-    dune_add_library(duneddm EXPORT_NAME DDM)
+    dune_add_library(duneddm INTERFACE EXPORT_NAME DDM)
   else()
-    dune_add_library(duneddm EXPORT_NAME Dune::DDM)
+    dune_add_library(duneddm INTERFACE EXPORT_NAME Dune::DDM)
   endif()
 
-  target_link_libraries(duneddm PUBLIC ${DUNE_LIBS})
-  dune_enable_all_packages()
+  # target_link_libraries(duneddm PUBLIC ${DUNE_LIBS})
+  # dune_enable_all_packages()
 endif()
 
+find_package(LAPACK REQUIRED)
+find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED)
 find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK CHOLMOD)
+
+target_link_libraries(duneddm PUBLIC INTERFACE
+                              MPI::MPI_C
+                              SuiteSparse::SuiteSparse
+                              OpenMP::OpenMP_CXX
+                              BLAS::BLAS
+                              lapacke
+                              LAPACK::LAPACK)
+target_compile_definitions(duneddm PUBLIC INTERFACE ENABLE_SUITESPARSE=1)
+
 # optionally find STRUMPACK
 find_package(STRUMPACK CONFIG)
 
-include(FetchContent)
+target_include_directories(duneddm PUBLIC INTERFACE
+                                   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/extern/spectra-1.2.0/include>
+                                   $<INSTALL_INTERFACE:extern/spectra-1.2.0/include>)
+add_dune_eigen_flags(duneddm)
 
-message(STATUS "Trying to download Spectra (C++ ARPACK implementation based on Eigen)")
-find_package(Eigen3 REQUIRED)
-FetchContent_Declare(
-  Spectra
-  GIT_REPOSITORY https://github.com/yixuan/spectra
-  GIT_TAG        v1.0.1
-)
-FetchContent_MakeAvailable(Spectra)
-
-option(DUNE_DDM_WITH_TASKFLOW "Download the taskflow library for asynchronous execution" OFF)
-if (${DUNE_DDM_WITH_TASKFLOW})
+option(DUNE_DDM_WITH_TASKFLOW "Download the taskflow library for asynchronous execution" On)
+#if (${DUNE_DDM_WITH_TASKFLOW})
+if(1)
+   include(FetchContent)
    message(STATUS "Trying to download Taskflow (C++ Parallel Programming Library)")
    set(TF_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
    set(TF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -80,8 +91,8 @@ if (${DUNE_DDM_WITH_TASKFLOW})
      GIT_TAG        v3.8.0
    )
    FetchContent_MakeAvailable(Taskflow)
-   target_link_libraries(duneddm PUBLIC Taskflow)
-   target_compile_definitions(duneddm PUBLIC DUNE_DDM_HAVE_TASKFLOW=1)
+   target_link_libraries(duneddm PUBLIC INTERFACE Taskflow)
+   target_compile_definitions(duneddm PUBLIC INTERFACE DUNE_DDM_HAVE_TASKFLOW=1)
 endif()
 
 option(DUNE_DDM_WITH_BLOPEX "Download and enable BLOPEX" OFF)
@@ -98,14 +109,7 @@ if(${DUNE_DDM_WITH_BLOPEX})
   set(BLOPEX_LIB BLOPEX)
 endif()
 
-target_sources(duneddm PRIVATE dune/ddm/eigensolvers/eigensolvers.cc)
-target_include_directories(duneddm PRIVATE ${Spectra_SOURCE_DIR}/include)
-add_dune_suitesparse_flags(duneddm)
-add_dune_arpackpp_flags(duneddm)
-add_dune_eigen_flags(duneddm)
-add_dune_superlu_flags(duneddm)
-add_dune_mpi_flags(duneddm)
-add_dune_parmetis_flags(duneddm)
+# target_sources(duneddm PRIVATE dune/ddm/eigensolvers/eigensolvers.cc)
 
 # add_library(eigensolvers src/eigensolvers.cc)
 # target_include_directories(eigensolvers PUBLIC ${PROJECT_SOURCE_DIR}/include)
