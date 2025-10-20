@@ -4,16 +4,13 @@
 
 #define EIGEN_DEFAULT_DENSE_INDEX_TYPE std::int64_t
 
-#define USE_UGGRID 1 // Set to zero to use YASPGrid
+#define USE_UGGRID 0 // Set to zero to use YASPGrid
 #define GRID_DIM 2
 
 #include <algorithm>
 #include <bitset>
 #include <cmath>
 #include <cstddef>
-#include <iostream>
-#include <string>
-
 #include <dune/common/densevector.hh>
 #include <dune/common/exceptions.hh>
 #include <dune/common/fmatrix.hh>
@@ -35,14 +32,6 @@
 #include <dune/grid/io/file/vtk/subsamplingvtkwriter.hh>
 #include <dune/grid/utility/parmetisgridpartitioner.hh>
 #include <dune/grid/utility/structuredgridfactory.hh>
-#if USE_UGGRID
-#include <dune/grid/io/file/gmshreader.hh>
-#include <dune/grid/uggrid.hh>
-#else
-#include <dune/grid/yaspgrid.hh>
-#include <dune/grid/yaspgrid/coordinates.hh>
-#endif
-
 #include <dune/istl/basearray.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/bvector.hh>
@@ -57,10 +46,20 @@
 #include <dune/pdelab/gridfunctionspace/vtk.hh>
 #include <dune/pdelab/localoperator/permeability_adapter.hh>
 #include <dune/pdelab/ordering/transformations.hh>
-
+#include <iostream>
 #include <mpi.h>
-#include <spdlog/spdlog.h>
-#include <taskflow/taskflow.hpp>
+#include <string>
+
+#if USE_UGGRID
+#include <dune/grid/io/file/gmshreader.hh>
+#include <dune/grid/uggrid.hh>
+#else
+#include <dune/grid/yaspgrid.hh>
+#include <dune/grid/yaspgrid/coordinates.hh>
+#endif
+
+#include "pdelab_helper.hh"
+#include "poisson.hh"
 
 #include <dune/ddm/coarsespaces/coarse_spaces.hh>
 #include <dune/ddm/combined_preconditioner.hh>
@@ -73,20 +72,21 @@
 #include <dune/ddm/pou.hh>
 #include <dune/ddm/schwarz.hh>
 
-#include "pdelab_helper.hh"
-#include "poisson.hh"
+#if DUNE_DDM_HAVE_TASKFLOW
+#include <taskflow/taskflow.hpp>
+#endif
 
 namespace {
-auto make_grid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MPIHelper &helper)
+auto make_grid(const Dune::ParameterTree& ptree, [[maybe_unused]] const Dune::MPIHelper& helper)
 {
-  auto *event = Logger::get().registerEvent("Grid", "create");
+  auto* event = Logger::get().registerEvent("Grid", "create");
   Logger::ScopedLog sl(event);
 
 #if USE_UGGRID
   using Grid = Dune::UGGrid<GRID_DIM>;
   std::unique_ptr<Grid> grid;
   if (ptree.hasKey("meshfile")) {
-    spdlog::info("Loading mesh from file");
+    logger::info("Loading mesh from file");
     const auto meshfile = ptree.get("meshfile", "../data/unitsquare.msh");
     const auto verbose = ptree.get("verbose", 0);
 
@@ -133,7 +133,7 @@ auto make_grid(const Dune::ParameterTree &ptree, [[maybe_unused]] const Dune::MP
 }
 
 template <class Vec, class RemoteIndices>
-bool is_pou(const Vec &pou, const RemoteIndices &remote_indices)
+bool is_pou(const Vec& pou, const RemoteIndices& remote_indices)
 {
   AttributeSet allAttributes{Attribute::owner, Attribute::copy};
   Dune::Interface all_all_interface;
@@ -147,22 +147,22 @@ bool is_pou(const Vec &pou, const RemoteIndices &remote_indices)
 }
 } // namespace
 
-int main(int argc, char *argv[])
+int main(int argc, char* argv[])
 {
   try {
     using Dune::PDELab::Backend::native;
     using Dune::PDELab::Backend::Native;
 
-    const auto &helper = Dune::MPIHelper::instance(argc, argv);
+    const auto& helper = Dune::MPIHelper::instance(argc, argv);
     setup_loggers(helper.rank(), argc, argv);
 
     // Create the taskflow that will hold all the tasks
     tf::Taskflow taskflow("Main taskflow");
 
-    auto *matrix_setup = Logger::get().registerEvent("Total", "Setup problem");
-    auto *prec_setup = Logger::get().registerEvent("Total", "Setup preconditioner");
-    auto *solve = Logger::get().registerEvent("Total", "Linear solve");
-    auto *total = Logger::get().registerEvent("Total", "Total time");
+    auto* matrix_setup = Logger::get().registerEvent("Total", "Setup problem");
+    auto* prec_setup = Logger::get().registerEvent("Total", "Setup preconditioner");
+    auto* solve = Logger::get().registerEvent("Total", "Linear solve");
+    auto* total = Logger::get().registerEvent("Total", "Total time");
     Logger::get().startEvent(total);
 
     Logger::get().startEvent(matrix_setup);
@@ -189,26 +189,14 @@ int main(int argc, char *argv[])
 
     // The nonzero pattern of the non-overlapping matrix is now set up, and we have a parallel index set
     // on the overlapping subdomains. Now we can assemble the overlapping matrices.
-    const auto &coarsespace_subtree = ptree.sub("coarsespace");
+    const auto& coarsespace_subtree = ptree.sub("coarsespace");
     auto coarsespace = coarsespace_subtree.get("type", "geneo");
-    if (coarsespace == "geneo") {
-      problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::Overlap, true);
-    }
-    else if (coarsespace == "msgfem") {
-      problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
-    }
-    else if (coarsespace == "pou" or coarsespace == "none") {
-      problem.assemble_dirichlet_matrix_only(ext_indices);
-    }
-    else if (coarsespace == "geneo_ring") {
-      problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, false);
-    }
-    else if (coarsespace == "msgfem_ring") {
-      problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::Overlap, NeumannRegion::Overlap, false);
-    }
-    else {
-      DUNE_THROW(Dune::NotImplemented, "Unknown coarse space");
-    }
+    if (coarsespace == "geneo" or coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
+    else if (coarsespace == "msgfem") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
+    else if (coarsespace == "pou" or coarsespace == "none") problem.assemble_dirichlet_matrix_only(ext_indices);
+    else if (coarsespace == "geneo_ring") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, false);
+    else if (coarsespace == "msgfem_ring") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::Overlap, NeumannRegion::Overlap, false);
+    else DUNE_THROW(Dune::NotImplemented, "Unknown coarse space");
 
     // Extract the three matrices that have been assembled
     auto A_dir = problem.get_dirichlet_matrix();
@@ -220,32 +208,28 @@ int main(int argc, char *argv[])
 
     // Next, create a partition of unity
     auto pou = std::make_shared<PartitionOfUnity>(*A_dir, ext_indices, ptree);
-    if (!is_pou(pou->vector(), ext_indices.get_remote_indices())) {
-      spdlog::warn("POU does not add up to 1");
-    }
-    else {
-      spdlog::debug("POU adds up to 1");
-    }
+    if (!is_pou(pou->vector(), ext_indices.get_remote_indices())) logger::warn("POU does not add up to 1");
+    else logger::debug("POU adds up to 1");
 
     // Now we can create the preconditioner. First the fine level overlapping Schwarz method
-    spdlog::info("Setting up tasks");
+    logger::info("Setting up tasks");
     auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>>>(A_dir, *remoteids, pou, ptree);
+    logger::info("After schwarz");
 
     using CoarseLevel = GalerkinPreconditioner<Native<Vec>>;
     std::shared_ptr<CoarseLevel> coarse;
 
-    const auto zero_at_dirichlet = [&](auto &&x) {
-      for (std::size_t i = 0; i < x.size(); ++i) {
-        if (problem.get_overlapping_dirichlet_mask()[i] > 0) {
-          x[i] = 0;
-        }
-      }
+    const auto zero_at_dirichlet = [&](auto&& x) {
+      for (std::size_t i = 0; i < x.size(); ++i)
+        if (problem.get_overlapping_dirichlet_mask()[i] > 0) x[i] = 0;
     };
 
     std::unique_ptr<CoarseSpaceBuilder<>> coarse_space = nullptr;
 
-    if (coarsespace == "geneo") {
-      coarse_space = std::make_unique<GenEOCoarseSpace<Native<Mat>>>(A_neu, B_neu, pou, ptree, taskflow);
+    if (coarsespace == "geneo") { coarse_space = std::make_unique<GenEOCoarseSpace<Native<Mat>>>(A_neu, B_neu, pou, ptree, taskflow); }
+    else if (coarsespace == "constraint_geneo") {
+      coarse_space = std::make_unique<ConstraintGenEOCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(ext_indices.get_overlapping_boundary_mask())>>>(
+          A_dir, A_neu, B_neu, pou, ext_indices.get_overlapping_boundary_mask(), ptree, taskflow);
     }
     else if (coarsespace == "geneo_ring") {
       coarse_space = std::make_unique<GenEORingCoarseSpace<Native<Mat>>>(A_dir, A_neu, pou, problem.get_neumann_region_to_subdomain(), ptree, taskflow);
@@ -285,12 +269,10 @@ int main(int argc, char *argv[])
     }
 
     Logger::get().startEvent(prec_setup);
-    spdlog::info("Starting taskflow execution");
+    logger::info("Starting taskflow execution");
     tf::Executor executor(ptree.get("taskflow_executor_threads", 2));
     std::shared_ptr<tf::TFProfObserver> observer;
-    if (helper.rank() == 0) {
-      observer = executor.make_observer<tf::TFProfObserver>();
-    }
+    if (helper.rank() == 0) observer = executor.make_observer<tf::TFProfObserver>();
     executor.run(taskflow).get();
 
     if (helper.rank() == 0) {
@@ -312,9 +294,7 @@ int main(int argc, char *argv[])
 
     prec->set_op(op);
     prec->add(schwarz);
-    if (coarse) {
-      prec->add(coarse);
-    }
+    if (coarse) prec->add(coarse);
 
     auto solver_subtree = ptree.sub("solver");
     solver_subtree["verbose"] = helper.rank() == 0 ? solver_subtree["verbose"] : "0";
@@ -365,16 +345,12 @@ int main(int argc, char *argv[])
 
       // Plot the partition of unity
       auto pou_vis = pou->vector();
-      if (helper.rank() != ptree.get("debug_rank", 0)) {
-        pou_vis = 0;
-      }
+      if (helper.rank() != ptree.get("debug_rank", 0)) pou_vis = 0;
       advdh.setVec(pou_vis);
       all_all_comm.forward(advdh);
 
       Native<Vec> pou_vec_small(problem.getX().N());
-      for (std::size_t i = 0; i < pou_vec_small.N(); ++i) {
-        pou_vec_small[i] = pou_vis[i];
-      }
+      for (std::size_t i = 0; i < pou_vec_small.N(); ++i) pou_vec_small[i] = pou_vis[i];
       P::Vec pougf(problem.getGFS(), pou_vec_small);
       DGF dgfpou(problem.getGFS(), pougf);
       writer.addVertexData(std::make_shared<VTKF>(dgfpou, "POU"));
@@ -385,9 +361,7 @@ int main(int argc, char *argv[])
       advdh.setVec(ovlp_subdomain);
       all_all_comm.forward(advdh);
       Native<Vec> ovlp_subdomain_small(problem.getX().N());
-      for (std::size_t i = 0; i < ovlp_subdomain_small.size(); ++i) {
-        ovlp_subdomain_small[i] = ovlp_subdomain[i];
-      }
+      for (std::size_t i = 0; i < ovlp_subdomain_small.size(); ++i) ovlp_subdomain_small[i] = ovlp_subdomain[i];
       P::Vec ovlpgf(problem.getGFS(), ovlp_subdomain_small);
       DGF dgfovlp(problem.getGFS(), ovlpgf);
       writer.addVertexData(std::make_shared<VTKF>(dgfovlp, "Ovlp. subdm."));
@@ -398,27 +372,19 @@ int main(int argc, char *argv[])
       auto bcast_root = debug_rank;
       if (debug_rank >= helper.size()) {
         bcast_root = 0;
-        if (helper.rank() == 0) {
-          spdlog::warn("debug_rank ({}) >= number of processes ({}), using rank 0 for broadcast", debug_rank, helper.size());
-        }
+        if (helper.rank() == 0) logger::warn("debug_rank ({}) >= number of processes ({}), using rank 0 for broadcast", debug_rank, helper.size());
       }
       MPI_Bcast(&n_basis, 1, MPI_UNSIGNED_LONG, bcast_root, helper.getCommunicator());
       std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> small_basis_vecs(n_basis); // The need to be allocated here so that they are not freed before visualising
       for (std::size_t k = 0; k < n_basis; ++k) {
         auto bvec_vis = basis[0];
-        if (helper.rank() != bcast_root) {
-          bvec_vis = 0;
-        }
-        else {
-          bvec_vis = basis[k];
-        }
+        if (helper.rank() != bcast_root) bvec_vis = 0;
+        else bvec_vis = basis[k];
         advdh.setVec(bvec_vis);
         all_all_comm.forward(advdh);
 
         small_basis_vecs[k].resize(problem.getX().N());
-        for (std::size_t i = 0; i < problem.getX().N(); ++i) {
-          small_basis_vecs[k][i] = bvec_vis[i];
-        }
+        for (std::size_t i = 0; i < problem.getX().N(); ++i) small_basis_vecs[k][i] = bvec_vis[i];
         auto pougf = std::make_shared<P::Vec>(problem.getGFS(), small_basis_vecs[k]);
         auto dgfpou = std::make_shared<DGF>(Dune::stackobject_to_shared_ptr(problem.getGFS()), pougf);
         writer.addVertexData(std::make_shared<VTKF>(dgfpou, "Basis vec " + std::format("{:04}", k)));
@@ -427,17 +393,12 @@ int main(int argc, char *argv[])
       // Ring region
       Native<Vec> ring_region(ext_indices.size());
       ring_region = 0;
-      if (helper.rank() == ptree.get("debug_rank", 0)) {
-        for (const auto &idx : problem.get_neumann_region_to_subdomain()) {
-          ring_region[idx] = 1;
-        }
-      }
+      if (helper.rank() == ptree.get("debug_rank", 0))
+        for (const auto& idx : problem.get_neumann_region_to_subdomain()) ring_region[idx] = 1;
       advdh.setVec(ring_region);
       all_all_comm.forward(advdh);
       Native<Vec> ring_region_small(problem.getX().N());
-      for (std::size_t i = 0; i < ring_region_small.size(); ++i) {
-        ring_region_small[i] = ring_region[i];
-      }
+      for (std::size_t i = 0; i < ring_region_small.size(); ++i) ring_region_small[i] = ring_region[i];
       P::Vec ring_gf(problem.getGFS(), ring_region_small);
       DGF ring_dgf(problem.getGFS(), ring_gf);
       writer.addVertexData(std::make_shared<VTKF>(ring_dgf, "Ring region"));
@@ -512,16 +473,14 @@ int main(int argc, char *argv[])
     }
 
     Logger::get().endEvent(total);
-    if (ptree.get("view_report", true)) {
-      Logger::get().report(helper.getCommunicator());
-    }
+    if (ptree.get("view_report", true)) Logger::get().report(helper.getCommunicator());
   }
-  catch (const Dune::Exception &e) {
+  catch (const Dune::Exception& e) {
     std::cerr << "Caught Dune exception: " << e << '\n';
     MPI_Abort(MPI_COMM_WORLD, 1);
     return 1;
   }
-  catch (const std::exception &e) {
+  catch (const std::exception& e) {
     std::cerr << "Caught std exception: " << e.what() << '\n';
     MPI_Abort(MPI_COMM_WORLD, 2);
     return 1;

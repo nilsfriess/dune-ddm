@@ -4,11 +4,18 @@
 #include <dune/common/parametertree.hh>
 
 struct EigensolverParams {
-  enum class Type { Spectra, SubspaceIteration, /* RAES*/ };
+  enum class Type { Spectra, SubspaceIteration, SRRIT, KrylovSchur /* RAES*/ };
+
+  EigensolverParams()
+      : ncv(2 * nev)
+  {
+  }
 
   explicit EigensolverParams(const Dune::ParameterTree& ptree)
   {
     if (ptree.hasKey("nev")) nev = ptree.get<std::size_t>("nev");
+    if (ptree.hasKey("ncv")) ncv = ptree.get<std::size_t>("ncv");
+    else ncv = 2 * nev;
     if (ptree.hasKey("maxit")) maxit = ptree.get<std::size_t>("maxit");
     if (ptree.hasKey("tolerance")) tolerance = ptree.get<double>("tolerance");
     if (ptree.hasKey("shift")) shift = ptree.get<double>("shift");
@@ -17,14 +24,17 @@ struct EigensolverParams {
     const auto& typestr = ptree.get<std::string>("type");
     if (typestr == "Spectra") type = Type::Spectra;
     else if (typestr == "SubspaceIteration") type = Type::SubspaceIteration;
+    else if (typestr == "SRRIT") type = Type::SRRIT;
+    else if (typestr == "KrylovSchur") type = Type::KrylovSchur;
     // else if (typestr == "RAES") {
     //   type = Type::RAES;
     // }
     else DUNE_THROW(Dune::NotImplemented, "Unknown eigensolver type '" + typestr + "'");
   }
 
-  Type type;
+  Type type = Type::KrylovSchur;
   std::size_t nev = 16;
+  std::size_t ncv; // Will be set to 2 * nev in the constructor if not given by user
   std::size_t maxit = 1000;
   std::size_t seed = 1;
   std::size_t blocksize = 8;

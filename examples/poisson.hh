@@ -44,7 +44,6 @@
 #include "assemblewrapper.hh"
 #include "dune/ddm/datahandles.hh"
 #include "dune/ddm/helpers.hh"
-#include "spdlog/spdlog.h"
 
 /** @brief Determines the region where the "restricted Neumann" matrix is defined (to be used with the function PoissonProblem#assemble_overlapping_matrices()).
  */
@@ -282,7 +281,7 @@ public:
                                  std::conditional_t<USEDG,                                                                                                        // and discretisation is DG
                                                     Dune::PDELab::QkDGLocalFiniteElementMap<typename GridView::Grid::ctype, double, degree, GridView::dimension>, // then use Qk DG
                                                     Dune::PDELab::QkLocalFiniteElementMap<ES, DF, RF, degree>>,                                                   // otherwise use Qk CG
-                                 Dune::PDELab::PkLocalFiniteElementMap<ES, DF, RF, degree>>;                                                                      // and in case of another grid, just use Pk CG
+                                 Dune::PDELab::QkLocalFiniteElementMap<ES, DF, RF, degree>>;                                                                      // and in case of another grid, just use Pk CG
   // clang-format on
   using LOP = std::conditional_t<USEDG, Dune::PDELab::ConvectionDiffusionDG<ModelProblem, FEM>, Dune::PDELab::ConvectionDiffusionFEM<ModelProblem, FEM>>;
 
@@ -350,10 +349,10 @@ public:
     // Create the grid operator, assemble the residual and setup the nonzero pattern of the matrix
     go = std::make_unique<GO>(*gfs, cc, *gfs, cc, *wrapper, MBE(9));
 
-    spdlog::info("Assembling sparsity pattern");
+    logger::info("Assembling sparsity pattern");
     As = std::make_unique<Mat>(*go);
 
-    spdlog::info("Assembling residual");
+    logger::info("Assembling residual");
     go->residual(*x, *d);
 
     *x0 = *x;
@@ -376,7 +375,7 @@ public:
   void assemble_dirichlet_matrix_only(const ExtendedRemoteIndices &extids)
   {
     using Dune::PDELab::Backend::native;
-    spdlog::info("Assembling overlapping Dirichlet matrix");
+    logger::info("Assembling overlapping Dirichlet matrix");
 
     const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
     Dune::Interface interface_ext;
@@ -451,7 +450,7 @@ public:
   void assemble_overlapping_matrices(const ExtendedRemoteIndices &extids, NeumannRegion first_neumann_region, NeumannRegion second_neumann_region, bool neumann_size_as_dirichlet = true)
   {
     using Dune::PDELab::Backend::native;
-    spdlog::info("Assembling overlapping Dirichlet and Neumann matrices");
+    logger::info("Assembling overlapping Dirichlet and Neumann matrices");
 
     int ownrank{};
     MPI_Comm_rank(extids.get_remote_indices().communicator(), &ownrank);
@@ -619,7 +618,7 @@ public:
             (*A_neu)[lrow][lcol] -= triple.val;
           }
           else {
-            spdlog::debug("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
+            logger::debug("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
           }
         }
       }
@@ -658,7 +657,7 @@ public:
               (*A_neu)[lrow][lcol] -= triple.val;
             }
             else {
-              spdlog::debug("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
+              logger::debug("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
             }
           }
         }
@@ -717,7 +716,7 @@ public:
               (*A_neu)[subdomain_to_neumann_region[lrow]][subdomain_to_neumann_region[lcol]] -= triple.val;
             }
             else {
-              spdlog::debug("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
+              logger::debug("Global index ({}, {}) does not exist in subdomain", triple.row, triple.col);
             }
           }
         }

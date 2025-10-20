@@ -9,10 +9,13 @@
 */
 
 #include "../logger.hh"
+#include "dune/ddm/eigensolvers/umfpack.hh"
 
 #include <dune/common/exceptions.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/istl/bvector.hh>
+#include <dune/istl/matrixmarket.hh>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -169,10 +172,109 @@ public:
 
                              if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
 
-                             Mat C = *B; // The rhs of the eigenproblem
-                             detail::scale_matrix_with_pou(C, *pou);
+                             auto C = std::make_shared<Mat>(*B); // The rhs of the eigenproblem
+                             detail::scale_matrix_with_pou(*C, *pou);
 
-                             this->basis_ = solve_gevp(*A, C, eig_ptree);
+                             this->basis_ = solve_gevp(A, C, eig_ptree);
+
+                             detail::finalize_eigenvectors(this->basis_, *pou);
+                           })
+                           .name("GenEO coarse space setup");
+  }
+#endif
+};
+
+template <class Mat, class MaskVec, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
+class ConstraintGenEOCoarseSpace : public CoarseSpaceBuilder<Vec> {
+public:
+#if DUNE_DDM_HAVE_TASKFLOW
+  /**
+   * @brief Construct GenEO coarse space.
+   *
+   * @param A Neumann matrix on the overlapping subdomain (left-hand side of eigenproblem).
+   * @param B Neumann matrix defined in the overlap region (used to construct right-hand side).
+   * @param pou Partition of unity vector (diagonal of D matrix).
+   * @param ptree ParameterTree containing solver and selection parameters.
+   * @param taskflow Taskflow instance for parallel execution.
+   * @param ptree_prefix Prefix for parameter subtree (default: "geneo").
+   */
+  // Note: We intentionally pass shared_ptrs by value to capture them safely in the taskflow lambda
+  // TODO: Pass the references as shared_ptrs as well.
+  ConstraintGenEOCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A, std::shared_ptr<const Mat> B, std::shared_ptr<const PartitionOfUnity> pou,
+                             const MaskVec& subdomain_boundary, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow, const std::string& ptree_prefix = "geneo")
+  {
+    const auto& subtree = ptree.sub(ptree_prefix);
+    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+
+    this->setup_task = taskflow
+                           .emplace([A_dir, A, B, pou, eig_ptree, &subdomain_boundary, this] {
+                             logger::info("Setting up GenEO coarse space");
+
+                             if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
+
+                             auto C = std::make_shared<Mat>(*B); // The rhs of the eigenproblem
+                             detail::scale_matrix_with_pou(*C, *pou);
+
+                             // Assemble the matrix A_ii corresponding to interior dofs
+                             std::unordered_map<std::size_t, std::size_t> subdomain_to_interior;
+                             subdomain_to_interior.reserve(subdomain_boundary.size());
+                             std::size_t cnt = 0;
+                             for (std::size_t i = 0; i < subdomain_boundary.size(); ++i)
+                               if (subdomain_boundary[i] == 0) subdomain_to_interior[i] = cnt++;
+
+                             // Extract the interior-interior block of the matrix A_ii
+                             const auto N = subdomain_to_interior.size();
+                             auto interior_matrix = std::make_shared<Mat>();
+
+                             auto avg = A_dir->nonzeroes() / A_dir->N() + 2;
+                             interior_matrix->setBuildMode(Mat::implicit);
+                             interior_matrix->setImplicitBuildModeParameters(avg, 0.2);
+                             interior_matrix->setSize(N, N);
+                             for (auto ri = A_dir->begin(); ri != A_dir->end(); ++ri) {
+                               for (auto ci = ri->begin(); ci != ri->end(); ++ci)
+                                 if (subdomain_to_interior.count(ri.index()) and subdomain_to_interior.count(ci.index()))
+                                   interior_matrix->entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = *ci;
+                             }
+                             interior_matrix->compress();
+
+                             UMFPackMultivecSolver interior_solver(*interior_matrix);
+
+                             const auto solve_constraint = [&](auto& X, std::size_t block) {
+                               using BMV = std::remove_cvref_t<decltype(X)>;
+
+                               // Compute the interior right-hand side
+                               auto W = X;  // work vector, will be zero in the interior, equal to X at the boundary
+                               auto AW = W; // work vector, will hold A*W
+
+                               // Copy X to W at the boundary indices
+                               W.set_zero();
+                               auto Wb = W.block_view(block);
+                               auto Xb = X.block_view(block);
+                               for (std::size_t i = 0; i < subdomain_boundary.size(); ++i)
+                                 if (subdomain_boundary[i] != 0)
+                                   for (std::size_t j = 0; j < BMV::blocksize; ++j) Wb(i, j) = Xb(i, j);
+
+                               // Compute AW = A*W
+                               auto AWb = AW.block_view(block);
+                               Wb.apply_to_mat(*A_dir, AWb);
+
+                               // Extract the interior values
+                               BMV Xi(subdomain_to_interior.size(), X.cols());
+                               auto Xib = Xi.block_view(block);
+                               for (std::size_t i = 0; i < subdomain_boundary.size(); ++i)
+                                 if (subdomain_boundary[i] == 0)
+                                   for (std::size_t j = 0; j < BMV::blocksize; ++j) Xib(subdomain_to_interior[i], j) = AWb(i, j);
+
+                               // Solve in the interior
+                               interior_solver(Xi, block);
+
+                               // Copy the results back into X
+                               for (std::size_t i = 0; i < subdomain_boundary.size(); ++i)
+                                 if (subdomain_boundary[i] == 0)
+                                   for (std::size_t j = 0; j < BMV::blocksize; ++j) Xb(i, j) = -Xib(subdomain_to_interior[i], j);
+                             };
+
+                             this->basis_ = solve_gevp(A, C, solve_constraint, eig_ptree);
 
                              detail::finalize_eigenvectors(this->basis_, *pou);
                            })
@@ -253,11 +355,11 @@ public:
 
                              auto solve_eigenproblem_task = subflow
                                                                 .emplace([&]() {
-                                                                  Mat C = *A; // The rhs of the eigenproblem
-                                                                  detail::scale_matrix_with_pou(C, *mod_pou, ring_to_subdomain);
+                                                                  auto C = std::make_shared<Mat>(*A); // The rhs of the eigenproblem
+                                                                  detail::scale_matrix_with_pou(*C, *mod_pou, ring_to_subdomain);
 
                                                                   // Now we can solve the eigenproblem
-                                                                  eigenvectors_ring = solve_gevp(*A, C, eig_ptree);
+                                                                  eigenvectors_ring = solve_gevp(A, C, eig_ptree);
                                                                 })
                                                                 .name("Solve ring eigenproblem");
 
@@ -414,12 +516,12 @@ public:
                                else reordering[i] = cnt_dirichlet++;
 
                              // Assemble the left-hand side of the eigenproblem
-                             Mat A_lhs;
+                             auto A_lhs = std::make_shared<Mat>();
                              const auto n_big = num_interior + num_boundary + num_interior; // size of the big eigenproblem, including the harmonicity constraint
                              const auto avg = 2 * (A->nonzeroes() / A->N());
-                             A_lhs.setBuildMode(Mat::implicit);
-                             A_lhs.setImplicitBuildModeParameters(avg, 0.2);
-                             A_lhs.setSize(n_big, n_big);
+                             A_lhs->setBuildMode(Mat::implicit);
+                             A_lhs->setImplicitBuildModeParameters(avg, 0.2);
+                             A_lhs->setSize(n_big, n_big);
 
                              // Assemble the part corresponding to the a-harmonic constraint
                              for (auto rit = A->begin(); rit != A->end(); ++rit) {
@@ -432,8 +534,8 @@ public:
                                  auto rj = reordering[jj];
 
                                  if (dof_partitioning[jj] != DOFType::Dirichlet) {
-                                   A_lhs.entry(rj, num_interior + num_boundary + ri) = *cit;
-                                   A_lhs.entry(num_interior + num_boundary + ri, rj) = *cit;
+                                   A_lhs->entry(rj, num_interior + num_boundary + ri) = *cit;
+                                   A_lhs->entry(num_interior + num_boundary + ri, rj) = *cit;
                                  }
                                }
                              }
@@ -449,16 +551,16 @@ public:
                                  auto jj = cit.index();
                                  auto rj = reordering[jj];
 
-                                 if (dof_partitioning[jj] != DOFType::Dirichlet) A_lhs.entry(ri, rj) = *cit;
+                                 if (dof_partitioning[jj] != DOFType::Dirichlet) A_lhs->entry(ri, rj) = *cit;
                                }
                              }
-                             A_lhs.compress();
+                             A_lhs->compress();
 
                              // Next, assemble the right-hand side of the eigenproblem
-                             Mat B;
-                             B.setBuildMode(Mat::implicit);
-                             B.setImplicitBuildModeParameters(avg, 0.2);
-                             B.setSize(n_big, n_big);
+                             auto B = std::make_shared<Mat>();
+                             B->setBuildMode(Mat::implicit);
+                             B->setImplicitBuildModeParameters(avg, 0.2);
+                             B->setSize(n_big, n_big);
 
                              for (auto rit = A->begin(); rit != A->end(); ++rit) {
                                auto ii = rit.index();
@@ -469,10 +571,26 @@ public:
                                  auto jj = cit.index();
                                  auto rj = reordering[jj];
 
-                                 if (dof_partitioning[jj] == DOFType::Interior) B.entry(ri, rj) = (*pou)[ii] * (*pou)[jj] * (*cit);
+                                 if (dof_partitioning[jj] == DOFType::Interior) B->entry(ri, rj) = (*pou)[ii] * (*pou)[jj] * (*cit);
                                }
                              }
-                             B.compress();
+                             B->compress();
+
+                             // {
+                             //   Mat An;
+                             //   Mat Bn;
+
+                             //   int rank{};
+                             //   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+                             //   Dune::storeMatrixMarket(*A_lhs, "A" + std::to_string(rank) + ".mtx", 100);
+                             //   Dune::storeMatrixMarket(*B, "B" + std::to_string(rank) + ".mtx", 100);
+
+                             //   Dune::loadMatrixMarket(An, "A" + std::to_string(rank) + ".mtx");
+                             //   Dune::loadMatrixMarket(Bn, "B" + std::to_string(rank) + ".mtx");
+
+                             //   An.axpy(-1, *A_lhs);
+                             //   logger::error_all("A diff Norm {}", An.frobenius_norm());
+                             // }
 
                              // Now we can solve the eigenproblem
                              auto eigenvectors = solve_gevp(A_lhs, B, eig_ptree);
@@ -613,10 +731,10 @@ public:
                                                    // Assemble left-hand side matrix (constrained system with A-harmonic constraint)
                                                    const auto n_big = num_interior + num_boundary + num_interior; // Include Lagrange multipliers
                                                    const auto avg = 2 * (A->nonzeroes() / A->N());
-                                                   Mat A_lhs;
-                                                   A_lhs.setBuildMode(Mat::implicit);
-                                                   A_lhs.setImplicitBuildModeParameters(avg, 0.2);
-                                                   A_lhs.setSize(n_big, n_big);
+                                                   auto A_lhs = std::make_shared<Mat>();
+                                                   A_lhs->setBuildMode(Mat::implicit);
+                                                   A_lhs->setImplicitBuildModeParameters(avg, 0.2);
+                                                   A_lhs->setSize(n_big, n_big);
 
                                                    // Assemble A-harmonic constraint: A*u = 0 for interior DOFs
                                                    for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
@@ -630,8 +748,8 @@ public:
                                                        if (dof_partitioning[j] != DOFType::Dirichlet) {
                                                          auto rj = reordering[j];
                                                          // Add constraint entries: A^T on top, A on bottom
-                                                         A_lhs.entry(rj, num_interior + num_boundary + ri) = *cit;
-                                                         A_lhs.entry(num_interior + num_boundary + ri, rj) = *cit;
+                                                         A_lhs->entry(rj, num_interior + num_boundary + ri) = *cit;
+                                                         A_lhs->entry(num_interior + num_boundary + ri, rj) = *cit;
                                                        }
                                                      }
                                                    }
@@ -647,17 +765,17 @@ public:
 
                                                        if (dof_partitioning[j] != DOFType::Dirichlet) {
                                                          auto rj = reordering[j];
-                                                         A_lhs.entry(ri, rj) = *cit;
+                                                         A_lhs->entry(ri, rj) = *cit;
                                                        }
                                                      }
                                                    }
-                                                   A_lhs.compress();
+                                                   A_lhs->compress();
 
                                                    // Assemble right-hand side matrix (weighted with partition of unity)
-                                                   Mat B;
-                                                   B.setBuildMode(Mat::implicit);
-                                                   B.setImplicitBuildModeParameters(avg, 0.2);
-                                                   B.setSize(n_big, n_big);
+                                                   auto B = std::make_shared<Mat>();
+                                                   B->setBuildMode(Mat::implicit);
+                                                   B->setImplicitBuildModeParameters(avg, 0.2);
+                                                   B->setSize(n_big, n_big);
 
                                                    for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
                                                      if (dof_partitioning[i] == DOFType::Dirichlet) continue;
@@ -671,11 +789,11 @@ public:
 
                                                        if (dof_partitioning[j] != DOFType::Dirichlet) {
                                                          auto rj = reordering[j];
-                                                         B.entry(ri, rj) = mod_pou[subdomain_ii] * mod_pou[subdomain_jj] * (*cit);
+                                                         B->entry(ri, rj) = mod_pou[subdomain_ii] * mod_pou[subdomain_jj] * (*cit);
                                                        }
                                                      }
                                                    }
-                                                   B.compress();
+                                                   B->compress();
 
                                                    // Solve constrained eigenproblem
                                                    auto eigenvectors_constrained = solve_gevp(A_lhs, B, eig_ptree);

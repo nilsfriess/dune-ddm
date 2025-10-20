@@ -1,5 +1,5 @@
   template <class OtherBlockView, class DenseMatView>
-  void dot_manual(OtherBlockView V, DenseMatView R) const
+  void dot(OtherBlockView V, DenseMatView R) const
   {
     const auto m = this->cols();
     const auto n = V.cols();
