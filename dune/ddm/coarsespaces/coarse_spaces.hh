@@ -258,14 +258,14 @@ public:
                                Wb.apply_to_mat(*A_dir, AWb);
 
                                // Extract the interior values
-                               BMV Xi(subdomain_to_interior.size(), X.cols());
-                               auto Xib = Xi.block_view(block);
+                               BMV Xi(subdomain_to_interior.size(), BMV::blocksize);
+                               auto Xib = Xi.block_view(0);
                                for (std::size_t i = 0; i < subdomain_boundary.size(); ++i)
                                  if (subdomain_boundary[i] == 0)
                                    for (std::size_t j = 0; j < BMV::blocksize; ++j) Xib(subdomain_to_interior[i], j) = AWb(i, j);
 
                                // Solve in the interior
-                               interior_solver(Xi, block);
+                               interior_solver(Xi, 0);
 
                                // Copy the results back into X
                                for (std::size_t i = 0; i < subdomain_boundary.size(); ++i)
