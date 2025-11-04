@@ -5,21 +5,11 @@
 #include "dune/ddm/eigensolvers/eigensolver_params.hh"
 #include "dune/ddm/eigensolvers/inner_products.hh"
 #include "dune/ddm/eigensolvers/orthogonalisation.hh"
-#include "dune/ddm/helpers.hh"
 #include "dune/ddm/logger.hh"
 
 #include <cstddef>
-#include <format>
-#include <ios>
 
-struct NoCallback {
-  template <class T>
-  void operator()(T&, std::size_t) const noexcept
-  {
-  }
-};
-
-template <Eigenproblem EVP, class Callback = NoCallback>
+template <Eigenproblem EVP>
 class BlockLanczos {
   using BMV = typename EVP::BlockMultiVec;
   using BlockMatrix = typename EVP::BlockMatrix;
@@ -29,310 +19,170 @@ class BlockLanczos {
   using Ortho = orthogonalisation::BlockOrthogonalisation<InnerProduct>;
   static constexpr std::size_t blocksize = EVP::blocksize;
   static constexpr Real eps = std::numeric_limits<Real>::epsilon();
-  static constexpr Real near_0 = EVP::blocksize * std::numeric_limits<Real>::min() * Real(10);
 
 public:
-  BlockLanczos(std::shared_ptr<EVP> evp, std::shared_ptr<Ortho> orth, const EigensolverParams& params, Callback&& cb = Callback{})
+  BlockLanczos(std::shared_ptr<EVP> evp, std::shared_ptr<Ortho> orth, const EigensolverParams& params)
       : evp(std::move(evp))
       , orth(std::move(orth))
       , V(this->evp->mat_size(), params.ncv + blocksize)
-      , W(this->evp->mat_size(), params.ncv)
-      , F(this->evp->mat_size(), blocksize)
+      , W(this->evp->mat_size(), 2 * blocksize)
       , T(params.ncv / blocksize)
-      , B(2)
+      , B(1)
       , Z(1)
-      , nev{params.nev}
-      , ncv{params.ncv}
-      , tolerance{params.tolerance}
-      , cb(std::move(cb))
   {
-    // Initialise V
-    V.set_random();
-    this->evp->apply_block(0, V, V); // Make sure V is in the range of the operator
-    this->cb(V, 0);
-    this->orth->orthonormalise_block_against_previous(V, 0);
-
-    // Compute the first step of the Lanczos decomposition
-    auto v0 = V.block_view(0);
-    auto v1 = V.block_view(1);
-    auto w0 = W.block_view(0);
-    auto t00 = T.block_view(0, 0);
-    auto beta1 = B.block_view(0, 0);
-    auto z00 = Z.block_view(0, 0);
-
-    // V{1} <- A V{0}
-    this->evp->apply_block(0, V);
-    this->cb(V, 1);
-    this->orth->orthonormalise_block_against_previous(V, 1, &t00, &beta1);
-
-    if (beta1.frobenius_norm() < eps) TODO("Initial beta norm is too small, likely because the initial vectors are eigenvectors already");
-    else logger::debug("BlockLanczos: Initial beta norm is {}", beta1.frobenius_norm());
+    W.set_random();
+    this->evp->apply_block(0, W, V);
+    auto beta = B.block_view(0, 0);
+    this->orth->orthonormalise_block_against_previous(V, 0, nullptr, &beta);
   }
 
   //  Extend a step-k Lanczos decomposition to a step-m Lanczos decomposition
   void extend(std::size_t k, std::size_t m)
   {
-    const auto beta_threshold = eps * evp->mat_size();
+    const auto beta_threshold = eps * std::sqrt(evp->mat_size());
+    auto beta = B.block_view(0, 0); // Will hold the current off-diagonal block (R from QR)
+    auto z00 = Z.block_view(0, 0);  // Will hold the diagonal correction to T(i,i)
+    auto w = W.block_view(0);       // Work block
+    auto y = W.block_view(1);       // Work block
+    bool breakdown = false;
 
-    auto beta1 = B.block_view(0, 0);
-    auto z00 = Z.block_view(0, 0);
-    auto w = W.block_view(0);
-
-    bool restart = false;
+    // We follow the suggestions of Paige (1971, 1980) and compute the coefficients of
+    // the (block) tridiagonal matrix T in the following order:
+    // 1. Apply the operator: v_{i+1} = A v_i
+    // 2. Subtract the previous basis vector scaled by the previous off-diagonal block
+    //    v_{i+1} -= v_{i-1} * beta
+    // 3. Compute the diagonal block
+    //    alpha = <v_i, v_{i+1}>
+    // 4. Subtract the current basis vector scaled by the diagonal block
+    //    v_{i+1} -= v_i * alpha
+    // To ensure orthogonality, we then perform a full orthogonalisation step against all
+    // previous basis vectors. This gives us the final v_{i+1} and also the value of beta
+    // (the off-diagonal block) for the next iteration.
     for (std::size_t i = k; i < m; ++i) {
+      // logger::trace_all("Lanczos extend step, k = {}, m = {}, iteration {}", k, m, i);
       auto vi = V.block_view(i);
       auto vi1 = V.block_view(i + 1);
 
-      auto beta_norm = beta1.frobenius_norm();
-
-      // The following criteria are taken from Spectra (adapted to the block case)
-      restart = restart or (beta_norm < near_0); // If restart was set to true in the previous iteration, keep it
-      if (!restart) {
-        if (beta_norm < std::sqrt(eps)) {
-          auto vprev = V.block_view(i - 1);
-          evp->get_inner_product()->dot(vprev, vi, z00);
-          if (z00.frobenius_norm() > std::sqrt(eps)) restart = true;
-        }
+      if (breakdown) {
+        vi.set_random();
+        orth->orthonormalise_block_against_previous(V, i, nullptr, &beta);
+        breakdown = false;
       }
 
-      if (restart) {
-        // Here we should create a new random block
-        TODO("BlockLanczos: Need to create a new random block");
-      }
-
-      auto Ti_i1 = T.block_view(i, i - 1);
-      auto Ti1_i = T.block_view(i - 1, i);
-      if (!restart) {
-        Ti_i1 = beta1;
-        Ti1_i = beta1;
-        Ti1_i.transpose();
-      }
-      else {
-        Ti_i1.set_zero();
-        Ti1_i.set_zero();
-      }
-
-      // V{i+1} = A V{i}
+      // Step 1: v_{i+1} = A v_i
       evp->apply_block(i, V);
-      cb(V, i + 1); // Call the user-provided callback, or do nothing by default
 
-      // Now we need to do
-      //     V{i+1} <- V{i+1} - V V^T B V{i+1}
-      // to orthogonalise V{i+1} w.r.t. all previous Lanczos vectors. In exact arithmetic the
-      // orthogonalisation against the V{0}, ..., V{i-2} is automatic, i.e.
-      //     V{i+1} <- V{i+1} - V{i} * T{i, i-1} - V{i-1} * T{i, i}
-      // would be enough. In finite precision, this is no longer true; therefore, we orthogonalise
-      // against all previous basis vectors. However, as advocated by Paige (1972, 1980), see also
-      // Cullum and Willoughby (2002), for improved stability we should first compute
-      //     V{i+1} <- V{i+1} - V{i} * T{i, i-1} and use this value to compute T{i,i}. The projection
-      // coefficient that will be computed during the full orthogonalisation below then has to be added
-      // to this value of T{i,i}.
-      if (!restart) {
-        // We have T{i+1, i} != 0 only if we're not restarting.
-        auto vi_1 = V.block_view(i - 1);
-        vi_1.mult(Ti_i1, w);
+      // Step 2: v_{i+1} -= v_i * T(i,i-1)
+      if (i > 0) {
+        auto vprev = V.block_view(i - 1);
+        vprev.mult_transpose(beta, w);
         vi1 -= w;
       }
 
-      // Now compute the next diagonal block, T{i,i} = <V{i} , V{i+1}> = <V{i} , A V{i}>
+      // Step 3: Compute T(i,i) = <v_i, v_{i+1}>
       auto Tii = T.block_view(i, i);
       evp->get_inner_product()->dot(vi, vi1, Tii);
 
-      // V{i+1} <- V{i+1} - V{i+1} * T{i,i}
+      // Step 4: Compute v_{i+1} -= v_i * T(i,i)
       vi.mult(Tii, w);
       vi1 -= w;
 
-      orth->orthonormalise_block_against_previous(V, i + 1, &z00, &beta1);
-      Tii += z00; // Add accumulated projection coefficients to diagonal
-      auto beta2 = B.block_view(0, 1);
-      orth->orthonormalise_block_against_previous(V, i + 1, &z00, &beta2);
-      Tii += z00; // Add accumulated projection coefficients to diagonal
+      // Orthonormalise the current block
+      orth->call_muscle(vi1, vi1, beta);
 
-      if (beta1.frobenius_norm() < beta_threshold) {
-        logger::warn("Lanczos: beta norm is too small at step {}, trying to restart", i);
-        restart = true;
-        continue;
+      // In exact arithmetic, the above would be sufficient to maintain orthogonality.
+      // However, due to numerical errors, we need to reorthogonalise.
+      {
+        // Compute the block-wise inner product between v_{i+1} and V_i
+        const auto needs_orthogonalisation = [&]() {
+          Real max_ortho_error = 0;
+          for (std::size_t j = 0; j <= i; ++j) {
+            auto vj = V.block_view(j);
+            evp->get_inner_product()->dot(vj, vi1, z00);
+            auto error = z00.frobenius_norm();
+            if (error > max_ortho_error) max_ortho_error = error;
+          }
+          // logger::trace_all("Block Lanczos: orthogonalisation error {}, tolerance {}", max_ortho_error, eps * beta.frobenius_norm());
+          return max_ortho_error > eps * beta.frobenius_norm();
+        };
+
+        int count = 0;
+        while (count++ < 5 and needs_orthogonalisation()) {
+          // logger::trace_all("Block Lanczos: orthogonalisation loop {}", count - 1);
+
+          if (beta.frobenius_norm() < beta_threshold) {
+            breakdown = true;
+            std::cout << "########################################\n";
+            std::cout << "BREAKDOWN DETECTED\n";
+            std::cout << "########################################\n";
+            break;
+          }
+
+          // Perform a block modified Gram Schmidt step
+          w = vi1;
+          for (std::size_t j = 0; j <= i; ++j) {
+            auto vj = V.block_view(j);
+            evp->get_inner_product()->dot(vj, vi1, z00);
+            vj.mult(z00, y);
+            w -= y;
+
+            if (j == i - 1) {
+              auto Ti_i1 = T.block_view(i, i - 1);
+              auto Ti1_i = T.block_view(i - 1, i);
+              Ti_i1 += z00;
+
+              Ti1_i = Ti_i1;
+              Ti1_i.transpose();
+            }
+            else if (j == i) {
+              Tii += z00;
+            }
+          }
+
+          z00 = beta;
+          orth->call_muscle(w, vi1, beta);
+          beta *= z00;
+        }
       }
-      restart = false;
-    }
+      /* z00.set_zero();
+      // orth->orthonormalise_block_against_previous(V, i + 1, &z00, &beta);
+      // orth->call_muscle(vi1, vi1, beta);
+      orth->orthonormalise_block_against_previous(V, i + 1, nullptr, &beta);
+      // Tii += z00;
 
-    // T.print(false, false, 10, 0);
+      // Step 5: Write the new off-diagonal blocks T(i+1,i) and T(i,i+1)
+      std::cout << "m_beta = " << beta.frobenius_norm() << "\n";
+      if (beta.frobenius_norm() < beta_threshold) {
+        logger::warn("BlockLanczos: breakdown detected at step {} (||beta||_F = {})", i, beta.frobenius_norm());
+        // break; // Stop extension upon breakdown
+      } */
+
+      // Put the computed beta into T
+      if (i + 1 < T.block_rows()) {
+        auto Ti1_i = T.block_view(i + 1, i);
+        Ti1_i = beta;
+
+        auto Ti_i1 = T.block_view(i, i + 1);
+        Ti_i1 = beta;
+        Ti_i1.transpose();
+      }
+    }
   }
 
   BlockMatrix& get_T_matrix() { return T; }
   BMV& get_basis() { return V; }
   typename BMV::BlockMatrixBlockView get_beta() { return B.block_view(0, 0); }
 
-private:
+private:  
   std::shared_ptr<EVP> evp;
   std::shared_ptr<Ortho> orth;
 
   BMV V;         // Current basis vectors
-  BMV W;         // Work vector. TODO: We can probably get rid of W, and use the next column of V as temporary storage
-  BMV F;         // Residual vector
+  BMV W;         // Work block (two blocks wide)
   BlockMatrix T; // Block tridiagonal matrix
   BlockMatrix B; // 1x1 block matrix that stores the current residual "norm"
-  BlockMatrix Z; // 1x1 work matrix
-
-  // Eigensolver params
-  std::size_t nev;
-  std::size_t ncv;
-  double tolerance;
-
-  // Optional callback that will be called after each extension step
-  Callback cb;
+  BlockMatrix Z; // 1x1 work matrix for diagonal correction
 };
-
-/** @brief Performs one step of block Lanczos extension
- *
- * This function extends the Krylov subspace from span{Q_0, ..., Q_k} to span{Q_0, ..., Q_{k+1}}
- * by computing Q_{k+1} = A * Q_k and then orthogonalising it against all previous blocks.
- *
- * The coefficients computed during orthogonalisation can be used to build the
- * tridiagonal Lanczos matrix T.
- */
-template <Eigenproblem EVP>
-bool lanczos_extend_step(EVP& evp, typename EVP::BlockMultiVec& Q, std::size_t k, orthogonalisation::BlockOrthogonalisation<typename EVP::InnerProduct>& ortho,
-                         typename EVP::BlockMultiVec::DenseBlockMatrixBlockView* alpha = nullptr, typename EVP::BlockMultiVec::DenseBlockMatrixBlockView* beta = nullptr)
-{
-  // Check bounds
-  if (k + 1 >= Q.blocks()) throw std::invalid_argument("Cannot extend to block with index " + std::to_string(k + 1) + " for blockvector with " + std::to_string(Q.blocks()) + " blocks");
-
-  logger::debug_all("lanczos_extend_step() with k = {}", k);
-
-  // Step 1: Compute Q_{k+1} = A * Q_k (this is the candidate before orthogonalisation)
-  evp.apply_block(k, Q);
-
-  auto Qk = Q.block_view(k);
-  auto Qk1 = Q.block_view(k + 1);
-  assert(alpha);
-  evp.get_inner_product()->dot(Qk, Qk1, *alpha);
-
-  // Debug: Check for problematic alpha values
-  auto alpha_norm = alpha->frobenius_norm();
-  logger::debug_all("lanczos_extend_step k={}: alpha norm = {}", k, alpha_norm);
-
-  // Check for numerical issues with alpha coefficients
-  if (alpha_norm < 1e-12) {
-    logger::warn_all("lanczos_extend_step k={}: Extremely small alpha coefficient (norm={})", k, alpha_norm);
-    logger::warn_all("This may indicate numerical breakdown or near-singularity");
-  }
-
-  // Check for very large alpha coefficients too
-  if (alpha_norm > 1e6) {
-    logger::warn_all("lanczos_extend_step k={}: Very large alpha coefficient (norm={})", k, alpha_norm);
-    logger::warn_all("This may indicate numerical scaling issues");
-  }
-
-  alpha->print();
-
-  // Step 2: Orthogonalise Q_{k+1} against all previous blocks Q_0, ..., Q_k
-  // This will extract the coefficients needed for the T matrix
-  // Note: Pass nullptr for alpha to prevent overwriting our computed symmetric alpha
-  ortho.orthonormalise_block_against_previous(Q, k + 1, nullptr, beta);
-
-  // Debug: Print orthognality of the new block w.r.t. to the previous two blocks
-  {
-    auto ip = evp.get_inner_product();
-    typename EVP::BlockMultiVec::BlockMatrix R(2);
-    auto r0 = R.block_view(0, 0);
-    auto r1 = R.block_view(1, 0);
-
-    ip->dot(Q.block_view(k), Q.block_view(k + 1), r0);
-    logger::debug_all("Inner product of new block Q_{} against previous block Q_{}:", k + 1, k);
-    std::cout << std::scientific << std::setprecision(18) << r0(0, 0) << "\n";
-    if (k > 0) {
-      ip->dot(Q.block_view(k - 1), Q.block_view(k + 1), r1);
-      logger::debug_all("Inner product of new block Q_{} against previous block Q_{}:", k + 1, k - 1);
-      std::cout << std::scientific << std::setprecision(18) << r1(0, 0) << "\n";
-    }
-  }
-
-  // Step 3: Check for breakdown (linearly dependent vectors)
-  // This would be indicated by a very small beta coefficient
-  if (beta) {
-    // Use size-dependent breakdown tolerance like Spectra
-    const typename EVP::Real machine_eps = std::numeric_limits<typename EVP::Real>::epsilon();
-    const typename EVP::Real breakdown_tol = std::max(static_cast<typename EVP::Real>(1e-12), machine_eps * std::sqrt(static_cast<typename EVP::Real>(evp.mat_size())));
-    auto beta_norm = beta->frobenius_norm();
-    logger::debug_all("lanczos_extend_step k={}: beta norm = {}", k, beta_norm);
-
-    // Check for numerical breakdown patterns
-    bool breakdown_detected = false;
-
-    // Primary breakdown criterion: beta too small
-    if (beta_norm < breakdown_tol) {
-      logger::error_all("PRIMARY BREAKDOWN at step k={}: beta norm = {} < {}", k, beta_norm, breakdown_tol);
-      breakdown_detected = true;
-    }
-
-    // Secondary breakdown criterion: alpha much larger than beta (scaling issue)
-    if (alpha_norm > 0 && beta_norm > 0) {
-      auto alpha_beta_ratio = alpha_norm / beta_norm;
-      if (alpha_beta_ratio > 1e8) {
-        logger::error_all("SCALING BREAKDOWN at step k={}: alpha/beta ratio = {} is too large", k, alpha_beta_ratio);
-        breakdown_detected = true;
-      }
-    }
-
-    // Tertiary breakdown criterion: alpha coefficients becoming too small
-    if (alpha_norm < 1e-10 && k > 2) {
-      logger::error_all("ALPHA BREAKDOWN at step k={}: alpha norm = {} is too small", k, alpha_norm);
-      breakdown_detected = true;
-    }
-
-    if (breakdown_detected) {
-      logger::error_all("NUMERICAL BREAKDOWN DETECTED - Lanczos process is unreliable from step k={}", k);
-      logger::error_all("Consider using restart, deflation, or different numerical parameters");
-    }
-  }
-
-  return true; // Success
-}
-
-/** @brief Creates an m-step block Lanczos decomposition
- *
- * The first \p k blocks are not modified.
- *
- */
-// clang-format off
-template <Eigenproblem EVP>
-bool lanczos_extend_decomposition(EVP& evp,
-                                  typename EVP::BlockMultiVec& Q,
-                                  std::size_t k,
-                                  std::size_t m,
-                                  orthogonalisation::BlockOrthogonalisation<typename EVP::InnerProduct>& ortho,
-                                  std::vector<typename EVP::BlockMultiVec::DenseBlockMatrixBlockView>& alpha_coeffs,
-                                  std::vector<typename EVP::BlockMultiVec::DenseBlockMatrixBlockView>& beta_coeffs,
-                                  typename EVP::BlockMultiVec::DenseBlockMatrixBlockView* final_beta = nullptr)
-// clang-format on
-{
-  if (k >= Q.blocks()) throw std::invalid_argument("Value of k " + std::to_string(k) + " is too large, must be smaller than number of blocks " + std::to_string(Q.blocks()));
-  if (m >= Q.blocks()) throw std::invalid_argument("Value of m " + std::to_string(m) + " is too large, must be smaller than number of blocks " + std::to_string(Q.blocks()));
-  if (m <= k) throw std::invalid_argument("Value of m " + std::to_string(m) + " must be larger than value of k " + std::to_string(k));
-
-  // Coefficient storage should be sized for the total decomposition
-  if (alpha_coeffs.size() < m || beta_coeffs.size() < m) throw std::invalid_argument("alpha or beta not large enough");
-
-  for (std::size_t block = k; block < m; ++block) {
-    auto* current_alpha = &alpha_coeffs[block];
-    auto* current_beta = &beta_coeffs[block];
-
-    bool success = lanczos_extend_step(evp, Q, block, ortho, current_alpha, current_beta);
-
-    if (!success) {
-      // Breakdown occurred, but the decomposition is valid up to step k
-      // The final beta is the one that was just computed and caused the breakdown
-      if (final_beta) *final_beta = *current_beta;
-      throw std::runtime_error("Breakdown");
-    }
-  }
-
-  // If successful, the final beta is the last one we computed
-  if (final_beta && !beta_coeffs.empty()) *final_beta = beta_coeffs.back();
-
-  return true;
-}
 
 /** @brief Assembles the block-tridiagonal matrix T from Lanczos coefficients.
  *
@@ -362,7 +212,7 @@ void build_tridiagonal_matrix(const std::vector<MatBlockView>& alpha_coeffs, con
   const std::size_t blocksize = alpha_coeffs[0].rows();
   const std::size_t dim = m * blocksize;
 
-  if (T_data.size() != dim * dim) throw std::invalid_argument(std::format("T has incorrect dimension, got {}, expected {}", T_data.size(), dim * dim));
+  if (T_data.size() != dim * dim) throw std::invalid_argument("T has incorrect dimension, got " + std::to_string(T_data.size()) + ", expected " + std::to_string(dim * dim));
 
   // Place alpha blocks on the diagonal
   for (std::size_t k = k_start; k < m; ++k) {

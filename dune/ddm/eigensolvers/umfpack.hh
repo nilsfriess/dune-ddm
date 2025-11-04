@@ -136,7 +136,7 @@ public:
   template <class Multivec1, class Multivec2>
   void solve(Multivec1& xx, Multivec2& bb, std::size_t block_from, std::size_t block_to)
   {
-    if (!xx.matches(bb)) DUNE_THROW(Dune::Exception, "Vectors are incompatible");
+    if (!xx.matches_blocks(bb)) DUNE_THROW(Dune::Exception, "Vectors are incompatible");
 
     constexpr auto block_size = Multivec1::blocksize;
     using VReal = std::experimental::fixed_size_simd<double, block_size>;

@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <ostream>
+#include <type_traits>
 #include <vector>
 
 template <class RealT, std::size_t order>
@@ -56,9 +57,10 @@ public:
   std::size_t rows() const { return order; }
 
   /** @brief Computes the Frobenius norm of the matrix block */
-  Real frobenius_norm() const
+  auto frobenius_norm() const
   {
-    Real norm_sq = 0;
+    using ValueType = std::remove_const_t<Real>;
+    ValueType norm_sq = 0;
     for (std::size_t i = 0; i < rows(); ++i)
       for (std::size_t j = 0; j < cols(); ++j) norm_sq += (*this)(i, j) * (*this)(i, j);
     return std::sqrt(norm_sq);
@@ -237,6 +239,24 @@ public:
     }
   }
 
+  std::size_t block_rows() const noexcept { return size; }
+  std::size_t block_cols() const noexcept { return size; }
+
+  /** @brief Computes the Frobenius norm of the entire block matrix */
+  Real frobenius_norm() const
+  {
+    using ValueType = std::remove_const_t<Real>;
+    ValueType norm_sq = 0;
+    for (std::size_t i = 0; i < size; ++i) {
+      for (std::size_t j = 0; j < size; ++j) {
+        auto block = block_view(i, j);
+        auto block_norm = block.frobenius_norm();
+        norm_sq += block_norm * block_norm;
+      }
+    }
+    return std::sqrt(norm_sq);
+  }
+
   void print(bool with_separator = true, bool scientific = true, int precision = 8, Real tolerance = 1e-10) const
   {
     if (with_separator) {
@@ -299,74 +319,74 @@ private:
   std::size_t size; // The number of block rows/ block columns
 };
 
-/** @brief A symmetric block tridiagonal matrix with reduced storage requirements
- *
- *  This class implements a symmetric block tridiagonal matrix where the blocks are stored
- *  in row-major storage format and the blocks are stored contiguously in memory. The order
- *  of the stored blocks is: first the diagonal blocks, then the blocks of the upper off-
- *  diagonal (the lower off-diagonal blocks are not stored due to symmetry).
- */
-template <class RealT, std::size_t blocksize_, std::size_t alignment>
-class BlockTridiagonalMatrix {
-public:
-  using Real = RealT;
-  constexpr static std::size_t blocksize = blocksize_;
+// /** @brief A symmetric block tridiagonal matrix with reduced storage requirements
+//  *
+//  *  This class implements a symmetric block tridiagonal matrix where the blocks are stored
+//  *  in row-major storage format and the blocks are stored contiguously in memory. The order
+//  *  of the stored blocks is: first the diagonal blocks, then the blocks of the upper off-
+//  *  diagonal (the lower off-diagonal blocks are not stored due to symmetry).
+//  */
+// template <class RealT, std::size_t blocksize_, std::size_t alignment>
+// class BlockTridiagonalMatrix {
+// public:
+//   using Real = RealT;
+//   constexpr static std::size_t blocksize = blocksize_;
 
-  using BlockView = DenseMatrixBlockView<Real, blocksize>;
-  using ConstBlockView = DenseMatrixBlockView<const Real, blocksize>;
+//   using BlockView = DenseMatrixBlockView<Real, blocksize>;
+//   using ConstBlockView = DenseMatrixBlockView<const Real, blocksize>;
 
-  explicit BlockTridiagonalMatrix(std::size_t size_in_blocks)
-      : size(size_in_blocks)
-  {
-    auto s = 2 * size * blocksize * blocksize;
-    data = static_cast<RealT*>(std::aligned_alloc(alignment, s * sizeof(RealT)));
-    std::fill_n(data, size, 0);
-  }
+//   explicit BlockTridiagonalMatrix(std::size_t size_in_blocks)
+//       : size(size_in_blocks)
+//   {
+//     auto s = 2 * size * blocksize * blocksize;
+//     data = static_cast<RealT*>(std::aligned_alloc(alignment, s * sizeof(RealT)));
+//     std::fill_n(data, size, 0);
+//   }
 
-  BlockTridiagonalMatrix(const BlockTridiagonalMatrix& other)
-      : size(other.size)
-  {
-    auto s = size * size * blocksize * blocksize;
-    data = static_cast<RealT*>(std::aligned_alloc(alignment, s * sizeof(RealT)));
-    std::copy_n(other.data, size, data);
-  }
+//   BlockTridiagonalMatrix(const BlockTridiagonalMatrix& other)
+//       : size(other.size)
+//   {
+//     auto s = size * size * blocksize * blocksize;
+//     data = static_cast<RealT*>(std::aligned_alloc(alignment, s * sizeof(RealT)));
+//     std::copy_n(other.data, size, data);
+//   }
 
-  BlockTridiagonalMatrix& operator=(const BlockTridiagonalMatrix& other)
-  {
-    if (this != &other) {
-      if (other.size != size) throw std::invalid_argument("DenseSquareBlockMatrix copy assignment: The two matrices are not compatible");
-      auto s = size * size * blocksize * blocksize;
-      std::copy_n(other.data, size, data);
-    }
-    return *this;
-  }
+//   BlockTridiagonalMatrix& operator=(const BlockTridiagonalMatrix& other)
+//   {
+//     if (this != &other) {
+//       if (other.size != size) throw std::invalid_argument("DenseSquareBlockMatrix copy assignment: The two matrices are not compatible");
+//       auto s = size * size * blocksize * blocksize;
+//       std::copy_n(other.data, size, data);
+//     }
+//     return *this;
+//   }
 
-  BlockTridiagonalMatrix(BlockTridiagonalMatrix&&) = default;
-  BlockTridiagonalMatrix& operator=(BlockTridiagonalMatrix&& other) = default;
+//   BlockTridiagonalMatrix(BlockTridiagonalMatrix&&) = default;
+//   BlockTridiagonalMatrix& operator=(BlockTridiagonalMatrix&& other) = default;
 
-  ~BlockTridiagonalMatrix() { std::free(data); }
+//   ~BlockTridiagonalMatrix() { std::free(data); }
 
-  BlockView block_view(std::size_t row, std::size_t col)
-  {
-    if ((row != col) and (col == row + 1)) throw std::invalid_argument("Can only access diagonal or upper off-diagonal blocks, not (" + std::to_string(row) + ", " + std::to_string(col) + ")");
+//   BlockView block_view(std::size_t row, std::size_t col)
+//   {
+//     if ((row != col) and (col == row + 1)) throw std::invalid_argument("Can only access diagonal or upper off-diagonal blocks, not (" + std::to_string(row) + ", " + std::to_string(col) + ")");
 
-    if (row == col) return BlockView(data + row * blocksize * blocksize);
-    else
-      return BlockView(data + size * blocksize * blocksize // skip the diagonal blocks
-                       + row * blocksize * blocksize);     // and then skip the first 'row' off-diagonal blocks
-  }
+//     if (row == col) return BlockView(data + row * blocksize * blocksize);
+//     else
+//       return BlockView(data + size * blocksize * blocksize // skip the diagonal blocks
+//                        + row * blocksize * blocksize);     // and then skip the first 'row' off-diagonal blocks
+//   }
 
-  ConstBlockView block_view(std::size_t row, std::size_t col) const
-  {
-    if ((row != col) and (col == row + 1)) throw std::invalid_argument("Can only access diagonal or upper off-diagonal blocks, not (" + std::to_string(row) + ", " + std::to_string(col) + ")");
+//   ConstBlockView block_view(std::size_t row, std::size_t col) const
+//   {
+//     if ((row != col) and (col == row + 1)) throw std::invalid_argument("Can only access diagonal or upper off-diagonal blocks, not (" + std::to_string(row) + ", " + std::to_string(col) + ")");
 
-    if (row == col) return ConstBlockView(data + row * blocksize * blocksize);
-    else
-      return ConstBlockView(data + size * blocksize * blocksize // skip the diagonal blocks
-                            + row * blocksize * blocksize);     // and then skip the first 'row' off-diagonal blocks
-  }
+//     if (row == col) return ConstBlockView(data + row * blocksize * blocksize);
+//     else
+//       return ConstBlockView(data + size * blocksize * blocksize // skip the diagonal blocks
+//                             + row * blocksize * blocksize);     // and then skip the first 'row' off-diagonal blocks
+//   }
 
-private:
-  Real* data;
-  std::size_t size; // The size of the matrix in blocks
-};
+// private:
+//   Real* data;
+//   std::size_t size; // The size of the matrix in blocks
+// };

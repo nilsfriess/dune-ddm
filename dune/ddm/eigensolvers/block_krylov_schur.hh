@@ -3,20 +3,19 @@
 #include "arnoldi.hh"
 #include "concepts.hh"
 #include "dune/ddm/eigensolvers/orthogonalisation.hh"
-#include "dune/ddm/helpers.hh"
 #include "dune/ddm/logger.hh"
 #include "eigensolver_params.hh"
 #include "lapacke.hh"
 
 #include <dune/istl/bvector.hh>
 #include <iomanip>
-#include <iostream>
 #include <memory>
 #include <numeric>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
-template <Eigenproblem EVP, class Callback = NoCallback>
+template <Eigenproblem EVP>
 class BlockKrylovSchur {
   constexpr static std::size_t blocksize = EVP::blocksize;
   using Real = typename EVP::Real;
@@ -33,27 +32,13 @@ public:
       , ncv(params.ncv)
       , tolerance(params.tolerance)
       , ritz_values(ncv, 0)
+      , res_norms(nev, 0)
       , T(ncv * ncv, 0)
       , X(ncv * ncv, 0)
 
   {
-    if (nev % blocksize != 0) throw std::invalid_argument("Number of requested eigenvalues must be multiple of blocksize");
-    if (ncv % blocksize != 0) throw std::invalid_argument("Number of basis vectors must be multiple of blocksize");
-    if (ncv <= nev) throw std::invalid_argument("Number of basis vectors must be larger than number of requested eigenvalues");
-  }
-
-  BlockKrylovSchur(std::shared_ptr<EVP> evp, const EigensolverParams& params, Callback&& callback)
-      : orth(std::make_shared<Ortho>(BetweenBlocks::ClassicalGramSchmidt, WithinBlocks::CholQR2, evp->get_inner_product()))
-      , evp(std::move(evp))
-      , lanczos(this->evp, orth, params, std::move(callback))
-      , nev(params.nev)
-      , ncv(params.ncv)
-      , tolerance(params.tolerance)
-      , ritz_values(ncv, 0)
-      , T(ncv * ncv, 0)
-      , X(ncv * ncv, 0)
-
-  {
+    // Use CGS with a small number of reorthogonalisation passes (twice-is-enough)
+    orth->set_reorthogonalization(true, 10);
     if (nev % blocksize != 0) throw std::invalid_argument("Number of requested eigenvalues must be multiple of blocksize");
     if (ncv % blocksize != 0) throw std::invalid_argument("Number of basis vectors must be multiple of blocksize");
     if (ncv <= nev) throw std::invalid_argument("Number of basis vectors must be larger than number of requested eigenvalues");
@@ -63,187 +48,131 @@ public:
   {
     auto& Tmat = lanczos.get_T_matrix();
     auto& Q = lanczos.get_basis();
-    auto W = Q; // work vector
+    auto W = Q;  // work vector
+    auto Z_ = W; // TODO: We only need one block
+    auto Z = Z_.block_view(0);
 
-    while (true) {
+    // We start by creating a Lanczos decomposition of the maximum allowed size
+    lanczos.extend(0, ncv / blocksize);
+
+    const std::size_t max_restarts = 100;
+    while (its < max_restarts) {
       its++;
 
-      // Extend the current Krylov decomposition block-by-block to the wanted size
-      lanczos.extend(nconv + 1, ncv / blocksize);
-      T = Tmat.to_flat_column_major();
+      // Transform the decomposition into Krylov-Schur form; in our case (real symmetric) this means diagonalising T
+      solve_small();
 
-      // Diagonalise the T matrix (in general: transform it to Schur form, but in the symmetric case, this means diagonalising it)
-      std::copy(T.begin(), T.end(), X.begin()); // Copy to X because syev solves in-place, and we want the result in X
-      int info = lapacke::syev(LAPACK_COL_MAJOR, 'V', 'U', (int)ncv, X.data(), (int)ncv, ritz_values.data());
-      if (info != 0) throw std::runtime_error("FAILED: LAPACK syev failed with info = " + std::to_string(info));
+      // Update number of converged blocks
+      update_nconv();
+      debug_print();
 
-      // Sort eigenvalues and eigenvectors
-      std::vector<unsigned int> indices(ncv);
-      std::iota(indices.begin(), indices.end(), 0);
-      std::sort(indices.begin(), indices.end(), [&](const auto& i, const auto& j) { return evp->compare_untransformed(ritz_values[i], ritz_values[j]); });
+      // After the restart, we need to keep the residual block (it becomes the new residual block).
+      // Therefore, we save it here, before computing the Ritz vectors.
+      auto Qlast = Q.block_view(Q.blocks() - 1);
+      Z = Qlast;
 
-      // Apply sorting permutation
-      std::vector<Real> sorted_ritz_values(ritz_values.size());
-      std::vector<Real> sorted_X(X.size());
-      for (std::size_t i = 0; i < indices.size(); ++i) {
-        sorted_ritz_values[i] = ritz_values[indices[i]];
-        // Copy column indices[i] to column i (LAPACK_COL_MAJOR storage)
-        for (std::size_t j = 0; j < ncv; ++j) sorted_X[j + i * ncv] = X[j + indices[i] * ncv];
-      }
-      ritz_values = std::move(sorted_ritz_values);
-      X = std::move(sorted_X);
-
-      // if (logger::get_level() <= logger::Level::trace) {
-      //   logger::info_all("Iteration {}, transformed Ritz values are", its);
-      //   for (std::size_t i = 0; i < ncv; ++i) logger::info_all("  {}: {}", i, evp->transform_eigenvalue(ritz_values[i]));
-      // }
-
-      // Compute Ritz vectors. For that, first turn X into a SquareDenseBlockMatrix so that
-      // we can use the optimised multiplication methods of the BlockMultiVector
+      // Compute the Ritz vectors
+      // TODO: Here we multiply by the whole ncv x nvc matrix X. This is not necessary, we only keep
+      //       the first nev vectors anyways, so we only need to compute Q * X[:, 1:nev].
       typename EVP::BlockMultiVec::BlockMatrix X_mat(Q.blocks() - 1);
       X_mat.from_flat_column_major(X);
-
-      Q.mult(X_mat, W, Q.blocks() - 2); // Skip the last block of Q
+      Q.mult(X_mat, W, nev / blocksize); // Compute Ritz vectors that we will keep
       std::swap(Q, W);
 
-      std::vector<Real> last_X(blocksize);
-      std::vector<Real> tmp(blocksize);
-      auto b = lanczos.get_beta();
-      for (std::size_t i = 0; i < ncv; ++i) {
-        for (std::size_t j = 0; j < blocksize; ++j) last_X[j] = X[(ncv - 1 + i * ncv) - blocksize + j + 1];
-
-        b.mult(last_X, tmp);
-        double sum_sq = std::accumulate(tmp.begin(), tmp.end(), 0.0, [](double acc, double x) { return acc + x * x; });
-        auto res = std::sqrt(sum_sq);
-
-        if (i < nev) std::cout << "Ritz value " << std::setw(2) << i << ": " << std::setprecision(10) << std::setw(12) << evp->transform_eigenvalue(ritz_values[i]) << ", Residual: " << res << "\n";
+      if (nconv * blocksize >= nev) {
+        logger::info_all("Converged target {} eigenpairs after {} restarts. Stopping.", nev, its);
+        break;
       }
 
-      // std::cout << "Lanczos beta: ";
-      // lanczos.get_beta().print();
+      // Not enough Ritz vectors have converged, so we prepare for restart.
 
-      return;
+      // Overwrite the first nev rows/columns of Tmat with a diagonal matrix containing the Ritz values
+      for (std::size_t i = 0; i < nev / blocksize; ++i)
+        for (std::size_t j = 0; j < nev / blocksize; ++j) Tmat.block_view(i, j).set_zero();
 
-      TODO("Lanczos");
+      for (std::size_t i = 0; i < nev / blocksize; ++i) {
+        auto Tii = Tmat.block_view(i, i);
+        for (std::size_t j = 0; j < blocksize; ++j) {
+          const std::size_t idx = i * blocksize + j;
+          Tii(j, j) = ritz_values[idx];
+        }
+      }
 
-      // // First we extend the current Krylov decomposition
-      // std::vector<Real> final_beta_data(blocksize * blocksize);
-      // typename EVP::BlockMultiVec::DenseBlockMatrixBlockView final_beta(final_beta_data.data());
-      // lanczos_extend_decomposition(*evp, Q, nconv + 1, Q.blocks() - 1, orth, alphas, betas, &final_beta);
+      // Just to be sure, clear the remaining blocks
+      for (std::size_t i = nev / blocksize; i < Tmat.block_rows(); ++i) {
+        Tmat.block_view(i, i).set_zero();
+        if (i < Tmat.block_rows() - 1) {
+          Tmat.block_view(i, i + 1).set_zero();
+          Tmat.block_view(i + 1, i).set_zero();
+        }
+      }
 
-      // Next, update the Rayleigh quotient matrix by putting the newly computed alphas and betas into the matrix,
-      // leaving the old alphas and betas, as well as the entries corresponding to the previous residual as-is.
-      // build_tridiagonal_matrix(alphas, betas, T, nconv);
+      // Compute beta * E_m^T * X and put the leading blocksize x nev part into
+      // the correct location of Tmat
+      std::vector<Real> T_res_block(blocksize * ncv); // matrix of size blocksize x ncv stored in column-major
+      auto beta = lanczos.get_beta();
+      for (std::size_t i = 0; i < blocksize; ++i) {
+        for (std::size_t j = 0; j < ncv; ++j) {
+          Real sum = 0;
+          for (std::size_t p = 0; p < blocksize; ++p) sum += beta(i, p) * X[(ncv - blocksize + p) + j * ncv];
+          T_res_block[i + j * blocksize] = sum;
+        }
+      }
 
-      // if (false) {
-      //   // Debug: Print T matrix with block structure visualization
-      //   std::cout << "############### T matrix #########################\n";
+      for (std::size_t bcol = 0; bcol < nev / blocksize; ++bcol) {
+        auto Tres = Tmat.block_view(nev / blocksize, bcol);
+        for (std::size_t i = 0; i < blocksize; ++i) {
+          for (std::size_t j = 0; j < blocksize; ++j) {
+            const std::size_t col_idx = bcol * blocksize + j;
+            Tres(i, j) = T_res_block[i + col_idx * blocksize];
+          }
+        }
 
-      //   // Print column headers to show block boundaries
-      //   std::cout << "    ";
-      //   for (std::size_t j = 0; j < ncv; ++j) {
-      //     if (j % blocksize == 0 && j > 0) std::cout << "| ";
-      //     std::cout << std::setw(10) << j << " ";
-      //   }
-      //   std::cout << "\n";
+        // Put the transposed block into (bcol, nconv) as well
+        auto Tres_T = Tmat.block_view(bcol, nev / blocksize);
+        Tres_T = Tres;
+        Tres_T.transpose();
+      }
 
-      //   // Print horizontal separator
-      //   std::cout << "    ";
-      //   for (std::size_t j = 0; j < ncv; ++j) {
-      //     if (j % blocksize == 0 && j > 0) std::cout << "+-";
-      //     std::cout << "-----------";
-      //   }
-      //   std::cout << "\n";
+      // Now the Lanczos relation does not hold anymore. We carry out one (quasi) Lanczos step to
+      // create a proper Lanczos decomposition. After that, we can use the "normal" Lanczos method.
+      auto k = nev / blocksize;
+      auto Qi = Q.block_view(k);
+      Qi = Z;                 // Restore the "residual" block that we saved earlier
+      evp->apply_block(k, Q); // Compute Q_{k + 1} = A * Q_{k}
 
-      //   for (std::size_t i = 0; i < ncv; ++i) {
-      //     // Print row separators between blocks
-      //     if (i % blocksize == 0 && i > 0) {
-      //       std::cout << "    ";
-      //       for (std::size_t j = 0; j < ncv; ++j) {
-      //         if (j % blocksize == 0 && j > 0) std::cout << "+-";
-      //         std::cout << "-----------";
-      //       }
-      //       std::cout << "\n";
-      //     }
+      // Compute the next diagonal block
+      auto Qi1 = Q.block_view(k + 1);
+      auto Tii = Tmat.block_view(k, k);
+      evp->get_inner_product()->dot(Qi, Qi1, Tii);
 
-      //     // Print row index
-      //     std::cout << std::setw(3) << i << " ";
+      // Compute Q_{k + 1} -= Q_{k} * T(k, k)
+      Qi.mult(Tii, Z);
+      Qi1 -= Z;
 
-      //     for (std::size_t j = 0; j < ncv; ++j) {
-      //       // Add vertical separator between blocks
-      //       if (j % blocksize == 0 && j > 0) std::cout << "| ";
+      // TODO: This differs from the original paper, there they modify the vector differently.
+      //       The original version is more efficient, so we should use that.
+      // Orthogonalise Q_{k+1} against all previous vectors
+      orth->orthonormalise_block_against_previous(Q, k + 1, nullptr, &beta);
+      if (k + 1 < Tmat.block_rows()) {
+        auto Ti1_i = Tmat.block_view(k + 1, k);
+        Ti1_i = beta;
 
-      //       auto entry = T[j * ncv + i];
-      //       if (entry == 0.0) std::cout << std::setw(10) << "*";
-      //       else std::cout << std::setw(10) << std::fixed << std::setprecision(3) << entry;
-      //       std::cout << " ";
-      //     }
-      //     std::cout << "\n";
-      //   }
-      //   std::cout << "##################################################\n";
-      // }
+        auto Ti_i1 = Tmat.block_view(k, k + 1);
+        Ti_i1 = beta;
+        Ti_i1.transpose();
+      }
 
-      // // Compute residual norms for convergence checking
-      // std::vector<Real> res_norms(nev);
-      // for (std::size_t i = 0; i < nev; ++i) {
-      //   // Extract the last blocksize components of the i-th eigenvector
-      //   // LAPACK stores eigenvectors in columns (LAPACK_COL_MAJOR)
-      //   // So the i-th eigenvector is column i: X[row + i * ncv] for row = 0...ncv-1
-      //   std::vector<Real> X_last_components(blocksize);
-      //   for (std::size_t j = 0; j < blocksize; ++j) {
-      //     // Get the (ncv - blocksize + j)-th component of the i-th eigenvector
-      //     std::size_t row = (ncv - blocksize) + j;
-      //     X_last_components[j] = X[row + i * ncv];
-      //   }
-
-      //   // Compute residual: r = final_beta * X_last_components
-      //   std::vector<Real> residual_vector(blocksize, 0.0);
-      //   for (std::size_t row = 0; row < blocksize; ++row)
-      //     for (std::size_t col = 0; col < blocksize; ++col) residual_vector[row] += final_beta.data()[row * blocksize + col] * X_last_components[col];
-
-      //   // Compute 2-norm of the residual
-      //   res_norms[i] = 0;
-      //   for (const auto& val : residual_vector) res_norms[i] += val * val;
-      //   res_norms[i] = std::sqrt(res_norms[i]);
-
-      //   logger::info("Ritz value {}: {}, residual norm: {}", i, evp->transform_eigenvalue(ritz_values[i]), res_norms[i]);
-      // }
-
-      // // Compute Ritz vectors. For that, first turn X into a SquareDenseBlockMatrix so that
-      // // we can use the optimised multiplication methods of the BlockMultiVector
-      // typename EVP::BlockMultiVec::BlockMatrix X_mat(Q.blocks() - 1);
-      // X_mat.from_flat_column_major(X);
-      // Q.mult(X_mat, W, Q.blocks() - 2); // Skip the last block of Q
-      // std::swap(Q, W);
-
-      // // Check convergence and update nconv
-      // std::size_t new_nconv = 0;
-      // for (std::size_t i = 0; i < res_norms.size(); i += blocksize) {
-      //   bool block_converged = true;
-      //   for (std::size_t j = 0; j < blocksize && i + j < res_norms.size(); ++j) {
-      //     if (res_norms[i + j] > tolerance) {
-      //       block_converged = false;
-      //       break;
-      //     }
-      //   }
-      //   if (block_converged) new_nconv++;
-      //   else break;
-      // }
-
-      // nconv = new_nconv;
-      // if (true or nconv * blocksize >= nev) {
-      //   logger::info("Converged! Found {} eigenvalues", nconv * blocksize);
-      //   break;
-      // }
-
-      TODO("Krylov-Schur");
+      lanczos.extend(k + 1, ncv / blocksize);
+    }
+    if (its >= max_restarts) {
+      if (nconv * blocksize >= nev) logger::info_all("Converged target {} eigenpairs after {} restarts. Stopping.", nev, its);
+      else logger::warn_all("Maximum number of restarts reached ({}). Converged {} out of {} requested eigenpairs.", its, nconv * blocksize, nev);
     }
   }
 
   std::vector<Vec> extract_eigenvectors()
   {
-    // orth.orthonormalise(Q); // TODO: Is this necessary?
-
     // Extract the first nev columns of Q (which contains the Ritz vectors after convergence)
     std::vector<Vec> eigenvectors(nev, Vec(evp->mat_size()));
 
@@ -259,16 +188,119 @@ public:
     for (std::size_t i = 0; i < nev; ++i) transformed_eigenvalues[i] = evp->transform_eigenvalue(ritz_values[i]);
 
     if (logger::get_level() <= logger::Level::trace)
-      for (std::size_t i = 0; i < nev; ++i) logger::trace("Eigenvalue {}: {}", i, transformed_eigenvalues[i]);
-    else logger::debug("Computed {} eigenvalues: smallest {}, largest {}", nev, transformed_eigenvalues[0], transformed_eigenvalues[nev - 1]);
+      for (std::size_t i = 0; i < nev; ++i) logger::trace_all("Eigenvalue {}: {}", i, transformed_eigenvalues[i]);
+    else logger::debug_all("Computed {} eigenvalues: smallest {}, largest {}", nev, transformed_eigenvalues[0], transformed_eigenvalues[nev - 1]);
 
     return eigenvectors;
   }
 
 private:
+  void update_nconv()
+  {
+    // Compute residuals and determine number of converged eigenpairs
+    std::vector<Real> last_X(blocksize);
+    std::vector<Real> tmp(blocksize);
+    auto b = lanczos.get_beta();
+    for (std::size_t i = nconv * blocksize; i < nev; ++i) { // Skip already converged Ritz values
+      for (std::size_t j = 0; j < blocksize; ++j) last_X[j] = X[(ncv - blocksize + j) + i * ncv];
+
+      b.mult(last_X, tmp);
+      double sum_sq = std::accumulate(tmp.begin(), tmp.end(), 0.0, [](double acc, double x) { return acc + x * x; });
+      auto res = std::sqrt(sum_sq);
+      res_norms[i] = res;
+    }
+
+    const Real eps23 = pow(std::numeric_limits<Real>::epsilon(), Real(2) / 3);
+
+    // Update nconv (in blocks)
+    std::size_t new_nconv = 0;
+    const std::size_t max_blocks = nev / blocksize;
+    for (std::size_t bidx = nconv; bidx < max_blocks; ++bidx) {
+      bool block_converged = true;
+      for (std::size_t j = 0; j < blocksize; ++j) {
+        const std::size_t idx = bidx * blocksize + j;
+
+        // Compute specific threshold for this Ritz value
+        auto thresh = std::max(tolerance * std::abs(ritz_values[idx]), eps23);
+
+        if (res_norms[idx] > tolerance) {
+          block_converged = false;
+          break;
+        }
+      }
+      if (block_converged) new_nconv++;
+      else break;
+    }
+    logger::info("Computed residuals, converged blocks before {}, converged blocks now {}", nconv, nconv + new_nconv);
+    nconv += new_nconv;
+  }
+
+  void solve_small()
+  {
+    T = lanczos.get_T_matrix().to_flat_column_major();
+
+    // Diagonalise the T matrix (in general: transform it to Schur form, but in the symmetric case, this means diagonalising it)
+    // TODO: We only need to consider the part of T that corresponds to unconverged Ritz values
+    std::copy(T.begin(), T.end(), X.begin()); // Copy to X because syev solves in-place, and we want the result in X
+    int info = lapacke::syevd(LAPACK_COL_MAJOR, 'V', 'U', (int)ncv, X.data(), (int)ncv, ritz_values.data());
+    if (info != 0) throw std::runtime_error("FAILED: LAPACK syev failed with info = " + std::to_string(info));
+
+    // Sort eigenvalues and eigenvectors
+    std::vector<unsigned int> indices(ncv);
+    std::iota(indices.begin(), indices.end(), 0);
+    std::sort(indices.begin(), indices.end(), [&](const auto& i, const auto& j) { return evp->compare_untransformed(ritz_values[i], ritz_values[j]); });
+
+    // Apply sorting permutation
+    std::vector<Real> sorted_ritz_values(ritz_values.size());
+    std::vector<Real> sorted_X(X.size());
+    for (std::size_t i = 0; i < indices.size(); ++i) {
+      sorted_ritz_values[i] = ritz_values[indices[i]];
+      // Copy column indices[i] to column i (LAPACK_COL_MAJOR storage)
+      for (std::size_t j = 0; j < ncv; ++j) sorted_X[j + i * ncv] = X[j + indices[i] * ncv];
+    }
+    ritz_values = std::move(sorted_ritz_values);
+    X = std::move(sorted_X);
+  }
+
+  void debug_print()
+  {
+    // Nicely formatted table for Ritz values, residuals, thresholds, and convergence
+    // Column widths and numeric formatting chosen to be compact and readable
+    const int idx_w = 4;
+    const int val_w = 14;
+    const int res_w = 14;
+    const int thr_w = 14;
+    const int conv_w = 10;
+
+    std::cout << std::left << std::setw(idx_w) << "#" << std::right << std::setw(val_w) << "Ritz value" << std::setw(res_w) << "Residual" << std::setw(thr_w) << "Threshold" << std::setw(conv_w)
+              << "Converged" << std::endl;
+
+    for (std::size_t i = 0; i < nev; i++) {
+      // Choose notation: use fixed for moderately sized numbers, scientific otherwise
+      const Real v = ritz_values[i];
+      const Real r = res_norms[i];
+      const Real t = tolerance;
+
+      auto print_num = [&](Real x, int width) {
+        // small/large magnitudes -> scientific with 6 sig figs, otherwise fixed with 6 decimals
+        const Real ax = std::abs(x);
+        if (ax != Real(0) && (ax < Real(1e-4) || ax >= Real(1e6))) std::cout << std::scientific << std::setprecision(6) << std::setw(width) << x;
+        else std::cout << std::fixed << std::setprecision(6) << std::setw(width) << x;
+        // restore default float format to avoid carrying formatting to next outputs
+        std::cout << std::defaultfloat;
+      };
+
+      std::cout << std::left << std::setw(idx_w) << i;
+      print_num(v, val_w);
+      print_num(r, res_w);
+      print_num(t, thr_w);
+      std::cout << std::right << std::setw(conv_w) << ((r < t) ? "Yes" : "No") << std::endl;
+    }
+  }
+
   std::shared_ptr<Ortho> orth;
   std::shared_ptr<EVP> evp;
-  BlockLanczos<EVP, Callback> lanczos;
+  BlockLanczos<EVP> lanczos;
 
   // Eigensolver parameters
   std::size_t nev;
@@ -279,21 +311,16 @@ private:
   std::size_t its{0};
 
   std::vector<Real> ritz_values;
-
-  // // TODO: Create a block triangular matrix type to hold these coefficients
-  // std::vector<std::array<typename EVP::Real, EVP::blocksize * EVP::blocksize>> alpha_data;
-  // std::vector<std::array<typename EVP::Real, EVP::blocksize * EVP::blocksize>> beta_data;
-  // std::vector<typename EVP::BlockMultiVec::BlockMatrixBlockView> alphas;
-  // std::vector<typename EVP::BlockMultiVec::BlockMatrixBlockView> betas;
+  std::vector<Real> res_norms;
 
   std::vector<Real> T; // The flat T matrix
   std::vector<Real> X; // This holds the eigenvectors of the reduced problem
 };
 
-template <Eigenproblem EVP, class Callback = NoCallback>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> block_krylov_schur(std::shared_ptr<EVP> evp, const EigensolverParams& params, Callback callback = Callback{})
+template <Eigenproblem EVP>
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> block_krylov_schur(std::shared_ptr<EVP> evp, const EigensolverParams& params)
 {
-  BlockKrylovSchur solver(evp, params, std::move(callback));
+  BlockKrylovSchur solver(evp, params);
   solver.apply();
   return solver.extract_eigenvectors();
 }

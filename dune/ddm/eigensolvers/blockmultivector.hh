@@ -160,7 +160,7 @@ public:
   }
 
   template <class OtherBlockView>
-  void dot_manual(OtherBlockView V, BlockMatView R) const
+  void dot(OtherBlockView V, BlockMatView R) const
   {
     // Compute R = this^T * V
     // this is rows_ x cols(), V is rows_ x cols(), R is cols() x cols()
@@ -181,6 +181,12 @@ public:
   void mult_add(ConstBlockMatView R, OtherBlockView V) const
   {
     blas::gemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, rows_, cols(), cols(), 1., data_, cols(), R.data(), cols(), 1., V.data(), cols());
+  }
+
+  template <class OtherBlockView>
+  void mult_transpose(BlockMatView R, OtherBlockView V) const
+  {
+    blas::gemm(CblasRowMajor, CblasNoTrans, CblasTrans, rows_, cols(), cols(), 1., data_, cols(), R.data(), cols(), 0., V.data(), cols());
   }
 
   template <class OtherBlockView>
@@ -221,6 +227,13 @@ public:
         }
       }
     }
+  }
+
+  void set_random(std::size_t seed = 1)
+  {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<Real> dist(-0.5, 0.5);
+    for (std::size_t i = 0; i < rows_ * blocksize; ++i) data_[i] = dist(rng);
   }
 
   RealT& operator()(std::size_t row, std::size_t col)
@@ -458,9 +471,32 @@ public:
   {
     // clang-format off
     return std::is_same_v<RealT, RealT2>     
-           && alignment == alignment2        
-           && rows_ == other.rows_           
-           && cols_ == other.cols_           
+           && alignment == alignment2
+           && rows_ == other.rows_
+           && cols_ == other.cols_
+           && blocksize == other.blocksize;
+    // clang-format on
+  }
+
+  /**
+   * @brief Check if one block of this BlockMultiVector is compatible with another for operations.
+   *
+   * This does essentially the same thing as matches() except for checking that both Multivecs
+   * have the same number of columns.
+   *
+   * @tparam RealT2 Scalar type of the other BlockMultiVector
+   * @tparam alignment2 Alignment of the other BlockMultiVector
+   * @tparam blocksize_extent2 Block size extent of the other BlockMultiVector
+   * @param other The other BlockMultiVector to check compatibility with
+   * @return true if compatible (same type, alignment, and dimensions)
+   */
+  template <class RealT2, std::size_t blocksize_extent2, std::size_t alignment2>
+  bool matches_blocks(const BlockMultiVector<RealT2, blocksize_extent2, alignment2>& other) const
+  {
+    // clang-format off
+    return std::is_same_v<RealT, RealT2>
+           && alignment == alignment2
+           && rows_ == other.rows_
            && blocksize == other.blocksize;
     // clang-format on
   }
@@ -500,6 +536,19 @@ public:
     }
   }
 
+  /** @brief Block-wise dot product but only up to block \p block_to */
+  void dot(const BlockMultiVector& v, BlockMatrix& R, std::size_t block_to) const
+  {
+    for (std::size_t i = 0; i < block_to; ++i) {
+      auto xi = block_view(i);
+      for (std::size_t j = 0; j < block_to; ++j) {
+        auto bj = v.block_view(j);
+        auto rij = R.block_view(i, j);
+        xi.dot(bj, rij);
+      }
+    }
+  }
+
   /** @brief Blockvector times square block matrix */
   void mult(const BlockMatrix& R, BlockMultiVector& v)
   {
@@ -516,17 +565,19 @@ public:
     }
   }
 
-  /** @brief Blockvector times square block matrix, but only up to block \p block_to
+  /** @brief Blockvector times part of a square block matrix.
+   *
+   *  This method computes V[0 : block_to - 1] = Q * R[:, 0 : block_to - 1]
    *
    *  @note All blocks of \p V are zeroed.
    */
-  void mult(const BlockMatrix& R, BlockMultiVector& v, std::size_t block_to)
+  void mult(const BlockMatrix& R, BlockMultiVector& V, std::size_t block_to)
   {
-    v.set_zero();
+    V.set_zero();
     for (std::size_t i = 0; i < block_to; ++i) {
-      auto vi = v.block_view(i);
+      auto vi = V.block_view(i);
 
-      for (std::size_t k = 0; k < block_to; ++k) {
+      for (std::size_t k = 0; k < blocks() - 1; ++k) {
         auto rki = R.block_view(k, i);
         auto xk = block_view(k);
 
@@ -560,7 +611,7 @@ public:
     return *this;
   }
 
-  Real two_norm() const
+  Real frobenius_norm() const
   {
     Real res{0};
     for (std::size_t i = 0; i < rows_ * cols_; ++i) res += data_ptr[i] * data_ptr[i];

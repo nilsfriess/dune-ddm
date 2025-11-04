@@ -171,8 +171,10 @@ public:
       ip->dot(X, X, R);
       auto& r = R(0, 0);
       r = std::sqrt(r);
+      Q = X;
       Q *= 1. / r;
-      return r < std::numeric_limits<typename VecView::Real>::epsilon();
+      // Return true on success (no breakdown): r should be well above machine epsilon
+      return r >= std::numeric_limits<typename VecView::Real>::epsilon();
     }
     else {
       if (muscle == WithinBlocks::CholQR) return chol_qr_ip(X, Q, R);
@@ -192,151 +194,85 @@ public:
   template <class BMV>
   bool orthonormalise_block_mgs(BMV& Q, std::size_t block, typename BMV::BlockMatrixBlockView* alpha, typename BMV::BlockMatrixBlockView* beta)
   {
-    using Real = typename BMV::Real;
-    using BlockViewType = typename BMV::BlockViewType;
-    using DenseBlockMatrix = typename BMV::BlockMatrix;
-    using DenseBlockMatrixBlockView = typename BMV::BlockMatrixBlockView;
+    (void)alpha;
+    logger::trace_all("Calling Block MGS for block {}", block);
+    BMV W_storage(Q.rows(), BMV::blocksize);
+    auto W = W_storage.block_view(0);
 
-    const Real machine_eps = std::numeric_limits<Real>::epsilon();
-    const Real reorth_tol = 10.0 * machine_eps; // Slightly more conservative than machine epsilon
+    BMV Z_storage(Q.rows(), BMV::blocksize);
+    auto Z = Z_storage.block_view(0);
 
-    // Work vectors
-    auto W_ = static_cast<Real*>(std::aligned_alloc(BMV::alignment, Q.rows() * Q.blocksize * sizeof(Real)));
-    BlockViewType W(W_, Q.rows());
+    typename BMV::BlockMatrix R_storage(1);
+    auto R = R_storage.block_view(0, 0);
 
-    auto Z_ = static_cast<Real*>(std::aligned_alloc(BMV::alignment, Q.rows() * Q.blocksize * sizeof(Real)));
-    BlockViewType Z(Z_, Q.rows());
-
-    auto V = Q.block_view(block);
-    W = V; // Copy the block to be orthogonalized
-
-    // Allocate coefficient matrices
-    DenseBlockMatrix coeff_storage(1);
-    auto coeff = coeff_storage.block_view(0, 0);
-
-    DenseBlockMatrix coeff_correction_storage(1);
-    auto coeff_correction = coeff_correction_storage.block_view(0, 0);
-
-    // Modified Gram-Schmidt: orthogonalise against one Qⱼ at a time
+    auto Qb = Q.block_view(block);
+    W = Qb;
     for (std::size_t j = 0; j < block; ++j) {
       auto Qj = Q.block_view(j);
-
-      // Initial orthogonalization: coeff = <Qⱼ, W>_IP
-      ip->dot(Qj, W, alpha ? *alpha : coeff);
-
-      // Store the initial coefficient for accumulation
-      if (alpha) coeff = *alpha;
-
-      // Subtract projection: W = W - Qⱼ * coeff
-      Qj.mult(alpha ? *alpha : coeff, Z); // Z = Qⱼ * coeff
-      for (std::size_t i = 0; i < Q.rows() * Q.blocksize; ++i) W.data()[i] -= Z.data()[i];
-
-      // Iterative reorthogonalization (if enabled)
-      if (enable_reorth) {
-        Real W_norm = block_norm(W);
-
-        for (int reorth_iter = 0; reorth_iter < max_reorth_iterations; ++reorth_iter) {
-          // Measure orthogonality error
-          ip->dot(Qj, W, coeff_correction);
-          Real ortho_err = max_abs_entry(coeff_correction);
-          logger::trace_all("Ortho iteration {}, ortho_err = {}, tol = {}", reorth_iter, ortho_err, reorth_tol * W_norm);
-
-          // Check convergence
-          if (ortho_err <= reorth_tol * W_norm) {
-            if (reorth_iter > 0) logger::info_all("Reorthogonalization converged after {} iterations, ortho_err = {}, tol = {}", reorth_iter, ortho_err, reorth_tol * W_norm);
-            break;
-          }
-
-          // Apply correction: W = W - Qⱼ * coeff_correction
-          Qj.mult(coeff_correction, Z);
-          for (std::size_t i = 0; i < Q.rows() * Q.blocksize; ++i) W.data()[i] -= Z.data()[i];
-
-          // Accumulate coefficients (crucial for maintaining accuracy)
-          if (alpha) {
-            for (std::size_t i = 0; i < alpha->rows(); ++i)
-              for (std::size_t k = 0; k < alpha->cols(); ++k) (*alpha)(i, k) += coeff_correction(i, k);
-          }
-          else {
-            for (std::size_t i = 0; i < coeff.rows(); ++i)
-              for (std::size_t k = 0; k < coeff.cols(); ++k) coeff(i, k) += coeff_correction(i, k);
-          }
-
-          // Update norm for next iteration
-          W_norm = block_norm(W);
-
-          if (reorth_iter == max_reorth_iterations - 1)
-            logger::warn_all("Reorthogonalization did not converge after {} iterations, final ortho_err = {}, tol = {}", max_reorth_iterations, ortho_err, reorth_tol * W_norm);
-        }
-      }
+      ip->dot(Qj, W, R);
+      Qj.mult(R, Z);
+      W -= Z;
     }
-
-    // Final QR step to orthonormalize the result
-    auto Q_block = Q.block_view(block);
-    if (beta) {
-      if (!call_muscle(W, Q_block, *beta)) {
-        std::free(W_);
-        std::free(Z_);
-        return false;
-      }
-    }
-    else {
-      DenseBlockMatrix dummy_beta(1);
-      auto dummy_view = dummy_beta.block_view(0, 0);
-      if (!call_muscle(W, Q_block, dummy_view)) {
-        std::free(W_);
-        std::free(Z_);
-        return false;
-      }
-    }
-
-    std::free(W_);
-    std::free(Z_);
-    return true;
+    return call_muscle(W, Qb, beta ? *beta : R);
   }
 
   template <class BMV>
   bool orthonormalise_block_cgs(BMV& Q, std::size_t block, typename BMV::BlockMatrixBlockView* alpha, typename BMV::BlockMatrixBlockView* beta)
   {
-    typename BMV::BlockMatrix R(std::max(block, 2UL)); // TODO: Avoid these heap allocations
+    typename BMV::BlockMatrix R(block); // TODO: Avoid these heap allocations
+    typename BMV::BlockMatrix last_beta_storage(1);
+    auto last_beta = last_beta_storage.block_view(0, 0);
+
+    typename BMV::BlockMatrix new_alpha_storage(1);
+    auto new_alpha = new_alpha_storage.block_view(0, 0);
+
     BMV W_storage(Q.rows(), BMV::blocksize);
     auto W = W_storage.block_view(0);
 
+    BMV Z_storage(Q.rows(), BMV::blocksize);
+    auto Z = Z_storage.block_view(0);
+
     auto Qb = Q.block_view(block);
 
-    // First pass
-    for (std::size_t j = 0; j < block; ++j) {
-      auto Qj = Q.block_view(j);
-      auto Rj = R.block_view(0, j);
-      ip->dot(Qj, Qb, Rj);
-      // Qj.dot(Qb, Rj);
-      Qj.mult(Rj, W);
-      Qb -= W;
-    }
+    const std::size_t its = enable_reorth ? max_reorth_iterations : 1;
 
-    // Second pass
-    if (enable_reorth) {
-      for (int it = 0; it < max_reorth_iterations; ++it) {
-        for (std::size_t j = 0; j < block; ++j) {
-          auto Qj = Q.block_view(j);
-          auto Rj = R.block_view(1, j);
-          auto Rj0 = R.block_view(0, j);
-          ip->dot(Qj, Qb, Rj);
-          // Qj.dot(Qb, Rj);
-          Rj0 += Rj;
+    // Reorthogonlisation loop
+    for (std::size_t it = 0; it < its; ++it) {
+      for (std::size_t j = 0; j < block; ++j) { // Compute all dot products
+        auto Qj = Q.block_view(j);
+        auto Rj = R.block_view(0, j);
+        ip->dot(Qj, Qb, Rj);
 
-          Qj.mult(Rj, W);
-          Qb -= W;
+        if (j == block - 1) new_alpha = Rj;
+      }
+
+      W = Qb;
+      for (std::size_t j = 0; j < block; ++j) { // Subtract all corrections
+        auto Qj = Q.block_view(j);
+        auto Rj = R.block_view(0, j);
+        Qj.mult(Rj, Z);
+        W -= Z;
+      }
+
+      auto R00 = R.block_view(0, 0); // Use first block temp storage
+      last_beta = R00;
+      if (!call_muscle(W, Qb, R00)) return false;
+
+      if (alpha) {
+        if (it == 0) *alpha = new_alpha;
+        if (it > 0) {
+          new_alpha *= last_beta;
+          *alpha += new_alpha;
         }
+      }
+
+      if (beta) {
+        if (it == 0) *beta = R00;
+        else *beta *= R00;
       }
     }
 
-    if (alpha) {
-      auto Rb = R.block_view(0, block - 1);
-      *alpha = Rb;
-    }
-
-    W = Qb;
-    return call_muscle(W, Qb, *beta);
+    return true;
   }
 
   /** @brief CholQR factorisation using configurable inner product */
