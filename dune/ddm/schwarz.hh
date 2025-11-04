@@ -183,6 +183,7 @@ public:
 
     // 2. Get remaining values from other ranks
     owner_copy_comm.forward<CopyGatherScatter>(*d_ovlp);
+
     Logger::get().endEvent(get_defect_event);
 
     // 3. Solve using the overlapping subdomain matrix
@@ -239,6 +240,15 @@ private:
     auto* init_event = Logger::get().registerOrGetEvent("Schwarz", "init");
 
     Logger::ScopedLog sl(init_event);
+
+    // Validate that remote indices match the overlapping matrix size
+    const auto remote_indices_size = remoteids.sourceIndexSet().size();
+    const auto matrix_size = Aovlp->N();
+    if (remote_indices_size != matrix_size)
+      DUNE_THROW(Dune::InvalidStateException, "Remote indices size (" << remote_indices_size << ") does not match overlapping matrix size (" << matrix_size << ").");
+
+    // Validate that partition of unity has the correct size
+    if (pou && pou->size() != matrix_size) DUNE_THROW(Dune::InvalidStateException, "Partition of unity size (" << pou->size() << ") does not match overlapping matrix size (" << matrix_size << ").");
 
     all_all_interface.build(remoteids, allAttributes, allAttributes);
     all_all_comm.build<Vec>(all_all_interface);
