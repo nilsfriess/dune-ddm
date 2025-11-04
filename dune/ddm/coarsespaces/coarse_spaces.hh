@@ -201,15 +201,14 @@ public:
   // Note: We intentionally pass shared_ptrs by value to capture them safely in the taskflow lambda
   // TODO: Pass the references as shared_ptrs as well.
   ConstraintGenEOCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A, std::shared_ptr<const Mat> B, std::shared_ptr<const PartitionOfUnity> pou,
-                             const MaskVec& subdomain_boundary, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow, const std::string& ptree_prefix = "geneo")
+                             const MaskVec& subdomain_boundary, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow, const std::string& ptree_prefix = "constraint_geneo")
   {
     const auto& subtree = ptree.sub(ptree_prefix);
     Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
 
     this->setup_task = taskflow
                            .emplace([A_dir, A, B, pou, eig_ptree, &subdomain_boundary, this] {
-                             logger::info("Setting up GenEO coarse space");
-
+                             logger::info("Setting up GenEO coarse space with manual constraint");
                              if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
 
                              auto C = std::make_shared<Mat>(*B); // The rhs of the eigenproblem
