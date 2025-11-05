@@ -1,8 +1,8 @@
 #pragma once
 
 #include "dune/common/exceptions.hh"
+#include "blas.hh"
 
-#include <cblas-openblas.h>
 #include <memory>
 #include <type_traits>
 #include <vector>

@@ -3,6 +3,7 @@ if (${dune-pdelab_FOUND})
   if (${DUNE_DDM_BUILD_EXAMPLES})
     add_executable(poisson EXCLUDE_FROM_ALL poisson.cc)
     target_link_dune_default_libraries(poisson)
+    target_link_libraries(poisson PUBLIC duneddm)
     
     target_link_libraries(poisson PUBLIC duneddm)
     dune_symlink_to_source_files(FILES poisson.ini)

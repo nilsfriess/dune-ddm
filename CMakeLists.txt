@@ -56,6 +56,7 @@ else()
   # dune_enable_all_packages()
 endif()
 
+find_package(BLAS REQUIRED)
 find_package(LAPACK REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED)
@@ -66,8 +67,8 @@ target_link_libraries(duneddm PUBLIC INTERFACE
                               SuiteSparse::SuiteSparse
                               OpenMP::OpenMP_CXX
                               BLAS::BLAS
-                              lapacke
-                              LAPACK::LAPACK)
+                              LAPACK::LAPACK
+                              lapacke)
 target_compile_definitions(duneddm PUBLIC INTERFACE ENABLE_SUITESPARSE=1)
 
 # optionally find STRUMPACK

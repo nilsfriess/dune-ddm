@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cblas-openblas.h>
+#include <cblas.h>
 
 namespace blas {
 
