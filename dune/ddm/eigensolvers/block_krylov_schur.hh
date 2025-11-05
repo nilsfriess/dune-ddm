@@ -72,7 +72,7 @@ public:
       Z = Qlast;
 
       // Compute the Ritz vectors
-      // TODO: Here we multiply by the whole ncv x nvc matrix X. This is not necessary, we only keep
+      // TODO: Here we multiply by the whole ncv x ncv matrix X. This is not necessary, we only keep
       //       the first nev vectors anyways, so we only need to compute Q * X[:, 1:nev].
       typename EVP::BlockMultiVec::BlockMatrix X_mat(Q.blocks() - 1);
       X_mat.from_flat_column_major(X);
