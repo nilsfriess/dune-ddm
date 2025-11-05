@@ -18,15 +18,15 @@
 #include <vector>
 
 template <class Mat1, class Mat2>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solve_gevp(std::shared_ptr<Mat1> A_, std::shared_ptr<Mat2> B_, const Dune::ParameterTree& ptree)
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solve_gevp(std::shared_ptr<Mat1> A, std::shared_ptr<Mat2> B, const Dune::ParameterTree& ptree)
 {
   static_assert(std::is_convertible_v<Mat1, Mat2> or std::is_convertible_v<Mat1, Mat2>, "The two matrix types must be compatible");
   using Mat = std::remove_cvref_t<Mat1>;
 
-  auto A = std::make_shared<Mat>(*A_);
-  auto B = std::make_shared<Mat>(*B_);
+  // auto A = std::make_shared<Mat>(*A_);
+  // auto B = std::make_shared<Mat>(*B_);
 
-  matrix_symmetry_helper::ensure_matrix_symmetry(A, B);
+  // matrix_symmetry_helper::ensure_matrix_symmetry(A, B);
 
   EigensolverParams params(ptree);
 
@@ -41,15 +41,15 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solve_gevp(std::sha
 }
 
 template <class Mat1, class Mat2, class Callback>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solve_gevp(std::shared_ptr<Mat1> A_, std::shared_ptr<Mat2> B_, Callback&& callback, const Dune::ParameterTree& ptree)
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solve_gevp(std::shared_ptr<Mat1> A, std::shared_ptr<Mat2> B, Callback&& callback, const Dune::ParameterTree& ptree)
 {
   static_assert(std::is_convertible_v<Mat1, Mat2> or std::is_convertible_v<Mat1, Mat2>, "The two matrix types must be compatible");
   using Mat = std::remove_cvref_t<Mat1>;
 
-  auto A = std::make_shared<Mat>(*A_);
-  auto B = std::make_shared<Mat>(*B_);
+  // auto A = std::make_shared<Mat>(*A_);
+  // auto B = std::make_shared<Mat>(*B_);
 
-  matrix_symmetry_helper::ensure_matrix_symmetry(A, B);
+  // matrix_symmetry_helper::ensure_matrix_symmetry(A, B);
 
   EigensolverParams params(ptree);
 
