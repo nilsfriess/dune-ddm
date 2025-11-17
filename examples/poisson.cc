@@ -90,7 +90,7 @@ auto make_grid(const Dune::ParameterTree& ptree, [[maybe_unused]] const Dune::MP
     const auto meshfile = ptree.get("meshfile", "../data/unitsquare.msh");
     const auto verbose = ptree.get("verbose", 0);
 
-    grid = Dune::GmshReader<Grid>::read(meshfile, verbose > 2, false);
+    grid = Dune::GmshReader<Grid>::read(meshfile, verbose > 2);
   }
   else {
     auto gridsize = static_cast<unsigned int>(ptree.get("gridsize", 32));
@@ -184,7 +184,8 @@ int main(int argc, char* argv[])
     const int overlap = ptree.get("overlap", 1);
 
     // Using the sparsity pattern of the matrix, create the overlapping subdomains by extending this index set
-    auto remoteids = make_remote_indices(problem.getGFS(), helper);
+    auto remoteids = make_remote_indices(*problem.getGFS(), helper);
+    using RemoteIndices = std::remove_cvref_t<decltype(*remoteids)>;
     ExtendedRemoteIndices ext_indices(*remoteids, native(problem.getA()), overlap);
 
     // The nonzero pattern of the non-overlapping matrix is now set up, and we have a parallel index set
@@ -193,7 +194,8 @@ int main(int argc, char* argv[])
     auto coarsespace = coarsespace_subtree.get("type", "geneo");
     if (coarsespace == "geneo" or coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
     else if (coarsespace == "msgfem") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
-    else if (coarsespace == "pou" or coarsespace == "none") problem.assemble_dirichlet_matrix_only(ext_indices);
+    else if (coarsespace == "pou" or coarsespace == "harmonic_extension" or coarsespace == "algebraic_geneo" or coarsespace == "algebraic_msgfem" or coarsespace == "gdsw" or coarsespace == "none")
+      problem.assemble_dirichlet_matrix_only(ext_indices);
     else if (coarsespace == "geneo_ring") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, false);
     else if (coarsespace == "msgfem_ring") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::Overlap, NeumannRegion::Overlap, false);
     else DUNE_THROW(Dune::NotImplemented, "Unknown coarse space");
@@ -244,6 +246,15 @@ int main(int argc, char* argv[])
       coarse_space = std::make_unique<MsGFEMRingCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>,
                                                             std::remove_reference_t<decltype(ext_indices.get_overlapping_boundary_mask())>>>(
           A_dir, A_neu, overlap, pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), problem.get_neumann_region_to_subdomain(), ptree, taskflow);
+    }
+    else if (coarsespace == "algebraic_geneo") {
+      coarse_space =
+          std::make_unique<AlgebraicGenEOCoarseSpace<Native<Mat>>>(debug_vector, problem.getA().storage(), A_dir, pou, problem.get_overlapping_dirichlet_mask(), ext_indices, ptree, taskflow);
+    }
+    else if (coarsespace == "algebraic_msgfem") {
+      coarse_space = std::make_unique<AlgebraicMsGFEMCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>,
+                                                                 std::remove_reference_t<decltype(ext_indices.get_overlapping_boundary_mask())>>>(
+          problem.getA().storage(), A_dir, pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), ext_indices, ptree, taskflow);
     }
     else if (coarsespace == "pou") {
       coarse_space = std::make_unique<POUCoarseSpace<>>(pou, taskflow);

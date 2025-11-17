@@ -9,12 +9,18 @@
 */
 
 #include "../logger.hh"
-#include "dune/ddm/eigensolvers/umfpack.hh"
+#include "dune/ddm/helpers.hh"
 
+#include <numeric>
+#include <random>
+#define HAVE_MPI
 #include <dune/common/exceptions.hh>
+#include <dune/common/parallel/indexset.hh>
+#include <dune/common/parallel/interface.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/istl/bvector.hh>
 #include <dune/istl/matrixmarket.hh>
+#include <mpi.h>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -25,6 +31,7 @@
 #endif
 
 #include "../eigensolvers/eigensolvers.hh"
+#include "../eigensolvers/umfpack.hh"
 #include "../pou.hh"
 #include "energy_minimal_extension.hh"
 
@@ -83,6 +90,116 @@ inline void scale_matrix_with_pou(Mat& C, const PartitionOfUnity& pou, const std
       *ci *= pou[i_idx] * pou[j_idx];
     }
   }
+}
+
+template <class Mat, class ExtendedRemoteIndices, class Vec>
+std::shared_ptr<Mat> build_algebraic_neumann(const Mat& A_novlp, const Mat& A, const ExtendedRemoteIndices& extids, const Vec& dirichlet_mask)
+{
+  /** We use the approach of Al Daas, Jolivet, Rees (doi 10.1137/22M1469833).
+      We proceed as follows:
+      1. Identify our own subdomain boundary
+      2. Tell our neighbours what or subdomain boundary is
+      3. Prepare the corrections that we need to send to our neighbours
+      4. Apply the corrections
+  */
+  IdentifyBoundaryDataHandle ibdh(A, extids.get_parallel_index_set());
+  auto& varcomm = extids.get_overlapping_communicator();
+  varcomm.forward(ibdh);
+
+  // Create a vector that is 1 in the interior of our subdomain and 2 on the boundary.
+  std::vector<int> boundary_indicator(extids.size(), 1);
+  for (std::size_t i = 0; i < extids.size(); ++i)
+    if (ibdh.get_boundary_mask()[i]) boundary_indicator[i] = 2;
+
+  int rank{};
+  MPI_Comm_rank(extids.get_remote_indices().communicator(), &rank);
+  CopyVectorDataHandleWithRank cvdh(boundary_indicator, rank);
+  varcomm.forward(cvdh);
+
+  // Now the map cvdh.copied_vecs contains copies of our neighbours boundary masks (for each neighbour).
+  // We will now use them to compute the corrections for the correct matrix entries of our neighbours.
+  std::map<int, Vec> corrections_for_rank;
+  for (const auto& [remoterank, remote_boundary_indicator] : cvdh.copied_vecs) {
+    corrections_for_rank.insert({remoterank, Vec(extids.size())});
+    corrections_for_rank[remoterank] = 0;
+
+    for (auto ri = A_novlp.begin(); ri != A_novlp.end(); ++ri) {
+      if (remote_boundary_indicator[ri.index()] == 2) {
+        for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+          if (remote_boundary_indicator[ci.index()] != 0) continue;
+          corrections_for_rank[remoterank][ri.index()] += std::abs(*ci);
+        }
+      }
+    }
+  }
+
+  // Now we have to send the corrections to the corresponding ranks. First we count how much data we need to send to each rank.
+  std::map<int, std::size_t> count_for_rank;
+  for (const auto& [remoterank, corrections] : corrections_for_rank) {
+    count_for_rank[remoterank] = 0;
+
+    for (auto c : corrections)
+      if (c != 0) count_for_rank[remoterank]++; // We only need to send non-zero data
+  }
+
+  // Let's send this info to our neighbours while we compute the actual data to send
+  std::vector<MPI_Request> requests;
+  requests.reserve(3 * count_for_rank.size());
+  for (const auto& [remoterank, count] : count_for_rank) MPI_Isend(&count, 1, MPI_UNSIGNED_LONG, remoterank, 0, extids.get_remote_indices().communicator(), &requests.emplace_back());
+
+  std::map<int, std::vector<std::size_t>> indices_for_rank;
+  std::map<int, std::vector<double>> values_for_rank;
+  Dune::GlobalLookupIndexSet glis(extids.get_parallel_index_set());
+  for (const auto& [remoterank, corrections] : corrections_for_rank) {
+    indices_for_rank[remoterank].resize(count_for_rank[remoterank]);
+    values_for_rank[remoterank].resize(count_for_rank[remoterank]);
+    int count = 0;
+
+    for (std::size_t i = 0; i < corrections.size(); ++i) {
+      const auto c = corrections[i];
+
+      if (c != 0) {
+        indices_for_rank[remoterank][count] = glis.pair(i)->global();
+        values_for_rank[remoterank][count] = c;
+        count++;
+      }
+    }
+
+    MPI_Isend(indices_for_rank[remoterank].data(), count, MPI_UNSIGNED_LONG, remoterank, 1, extids.get_remote_indices().communicator(), &requests.emplace_back());
+    MPI_Isend(values_for_rank[remoterank].data(), count, MPI_DOUBLE, remoterank, 2, extids.get_remote_indices().communicator(), &requests.emplace_back());
+  }
+
+  MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE);
+
+  // Now reserve enough data for the data we will receive (we'll reuse the data structures from above for that)
+  for (auto& [remoterank, count] : count_for_rank) {
+    MPI_Recv(&count, 1, MPI_UNSIGNED_LONG, remoterank, 0, extids.get_remote_indices().communicator(), MPI_STATUS_IGNORE);
+
+    indices_for_rank[remoterank].resize(count);
+    values_for_rank[remoterank].resize(count);
+    MPI_Recv(indices_for_rank[remoterank].data(), count, MPI_UNSIGNED_LONG, remoterank, 1, extids.get_remote_indices().communicator(), MPI_STATUS_IGNORE);
+    MPI_Recv(values_for_rank[remoterank].data(), count, MPI_DOUBLE, remoterank, 2, extids.get_remote_indices().communicator(), MPI_STATUS_IGNORE);
+  }
+
+  // Now we can apply all corrections
+  auto Aneu = std::make_shared<Mat>(A);
+  const auto& paridxs = extids.get_parallel_index_set();
+  for (auto& [remoterank, count] : count_for_rank) {
+    const auto& indices = indices_for_rank[remoterank];
+    const auto& values = values_for_rank[remoterank];
+
+    for (std::size_t i = 0; i < indices.size(); ++i)
+      if (paridxs.exists(indices[i])) {
+        auto li = paridxs[indices[i]].local();
+        if (dirichlet_mask[li] == 0) // Only apply correction if not on Dirichlet boundary
+          (*Aneu)[li][li] -= values[i];
+      }
+      else {
+        DUNE_THROW(Dune::Exception, "Got an index that is not in our subdomain");
+      }
+  }
+
+  return Aneu;
 }
 
 } // namespace detail
@@ -147,6 +264,9 @@ protected:
  */
 template <class Mat, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
 class GenEOCoarseSpace : public CoarseSpaceBuilder<Vec> {
+  template <class M, class V>
+  friend class AlgebraicGenEOCoarseSpace;
+
 public:
 #if DUNE_DDM_HAVE_TASKFLOW
   /**
@@ -166,22 +286,105 @@ public:
     const auto& subtree = ptree.sub(ptree_prefix);
     Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
 
-    this->setup_task = taskflow
-                           .emplace([A, B, pou, eig_ptree, this] {
-                             logger::info("Setting up GenEO coarse space");
+    this->setup_task = taskflow.emplace([A, B, pou, eig_ptree, this] { setup_geneo_impl(A, B, pou, eig_ptree); }).name("GenEO coarse space setup");
+  }
 
-                             if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
+  /**
+   * @brief Alternative constructor that defers task creation to the caller.
+   *
+   * This allows external code to create the task and call setup_geneo_impl() directly,
+   * enabling composition with other tasks (e.g., building Neumann matrices first).
+   */
+  GenEOCoarseSpace() = default;
 
-                             auto C = std::make_shared<Mat>(*B); // The rhs of the eigenproblem
-                             detail::scale_matrix_with_pou(*C, *pou);
+  /**
+   * @brief Create the setup task manually. Use this when you need to add dependencies.
+   *
+   * @return A lambda that can be used with taskflow.emplace() or subflow.emplace()
+   */
+  template <class TaskflowOrSubflow>
+  auto create_setup_task(TaskflowOrSubflow& tf, std::shared_ptr<const Mat> A, std::shared_ptr<const Mat> B, std::shared_ptr<const PartitionOfUnity> pou,
+                         const Dune::ParameterTree& eig_ptree) -> tf::Task
+  {
+    return tf.emplace([A, B, pou, eig_ptree, this] { setup_geneo_impl(A, B, pou, eig_ptree); }).name("GenEO coarse space setup");
+  }
 
-                             this->basis_ = solve_gevp(A, C, eig_ptree);
+protected:
+  /**
+   * @brief Core implementation of GenEO setup - can be called from any task context.
+   */
+  void setup_geneo_impl(std::shared_ptr<const Mat> A, std::shared_ptr<const Mat> B, std::shared_ptr<const PartitionOfUnity> pou, const Dune::ParameterTree& eig_ptree)
+  {
+    logger::info("Setting up GenEO coarse space");
 
-                             detail::finalize_eigenvectors(this->basis_, *pou);
-                           })
-                           .name("GenEO coarse space setup");
+    if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
+
+    auto C = std::make_shared<Mat>(*B); // The rhs of the eigenproblem
+    detail::scale_matrix_with_pou(*C, *pou);
+
+    this->basis_ = solve_gevp(A, C, eig_ptree);
+
+    detail::finalize_eigenvectors(this->basis_, *pou);
   }
 #endif
+};
+
+/**
+ * @brief GenEO (Generalized Eigenproblems in the Overlaps) coarse space builder.
+ *
+ * Constructs the classical GenEO coarse space by solving the generalized eigenproblem
+ * \f$ Ax = \lambda DBDx \f$, where A and B are matrices and D is a diagonal matrix
+ * representing a partition of unity.
+ *
+ * @tparam Mat Matrix type
+ * @tparam Vec Vector type for basis vectors
+ */
+template <class Mat, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
+class AlgebraicGenEOCoarseSpace : public CoarseSpaceBuilder<Vec> {
+public:
+#if DUNE_DDM_HAVE_TASKFLOW
+  /**
+   * @brief Construct GenEO coarse space.
+   *
+   * @param A Dirichlet matrix on the overlapping subdomain (left-hand side of eigenproblem).
+   * @param pou Partition of unity vector (diagonal of D matrix).
+   * @param dirichlet_mask Mask vector indicating Dirichlet boundary DOFs (>0 means Dirichlet).
+   * @param ptree ParameterTree containing solver and selection parameters.
+   * @param taskflow Taskflow instance for parallel execution.
+   * @param ptree_prefix Prefix for parameter subtree (default: "geneo").
+   */
+  // Note: We intentionally pass shared_ptrs by value to capture them safely in the taskflow lambda
+  template <class ExtendedRemoteIndices, class DirichletMask>
+  AlgebraicGenEOCoarseSpace(Vec& debug_vector, // for visualisation
+                            std::shared_ptr<const Mat> A_novlp, std::shared_ptr<const Mat> A, std::shared_ptr<const PartitionOfUnity> pou, const DirichletMask& dirichlet_mask,
+                            const ExtendedRemoteIndices& extids, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow, const std::string& ptree_prefix = "algebraic_geneo")
+  {
+    const auto& subtree = ptree.sub(ptree_prefix);
+    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+
+    // Use a subflow to handle the sequential dependencies
+    this->setup_task = taskflow
+                           .emplace([A_novlp, A, pou, &extids, &dirichlet_mask, eig_ptree, this](tf::Subflow& subflow) {
+                             // Task 1: Build the Neumann matrix
+                             auto build_neumann_task =
+                                 subflow.emplace([A_novlp, A, &extids, &dirichlet_mask, this] { Aneu_matrix = detail::build_algebraic_neumann(*A_novlp, *A, extids, dirichlet_mask); })
+                                     .name("Build algebraic Neumann matrix");
+
+                             // Task 2: Run GenEO setup with the Neumann matrix
+                             auto geneo_setup_task = subflow.emplace([A, pou, eig_ptree, this] { geneo.setup_geneo_impl(Aneu_matrix, A, pou, eig_ptree); }).name("GenEO eigenproblem solve");
+                             geneo_setup_task.succeed(build_neumann_task);
+
+                             // Task 3: Copy basis vectors
+                             auto copy_basis_task = subflow.emplace([this] { this->basis_ = std::move(geneo.basis_); }).name("Copy GenEO basis");
+                             copy_basis_task.succeed(geneo_setup_task);
+                           })
+                           .name("Algebraic GenEO coarse space setup");
+  }
+#endif
+
+private:
+  std::shared_ptr<Mat> Aneu_matrix;
+  GenEOCoarseSpace<Mat, Vec> geneo;
 };
 
 template <class Mat, class MaskVec, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
@@ -231,24 +434,24 @@ public:
                              interior_matrix->setSize(N, N);
                              for (auto ri = A_dir->begin(); ri != A_dir->end(); ++ri) {
                                for (auto ci = ri->begin(); ci != ri->end(); ++ci)
-                                 if (subdomain_to_interior.count(ri.index()) and subdomain_to_interior.count(ci.index()))
+                                 if (subdomain_to_interior.count(ri.index()) > 0 and subdomain_to_interior.count(ci.index()) > 0)
                                    interior_matrix->entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = *ci;
                              }
                              interior_matrix->compress();
 
-                             UMFPackMultivecSolver interior_solver(*interior_matrix);
+                             UMFPackMultivecSolver interior_solver(*interior_matrix, 0); // 0 means no iterative refinement
 
                              const auto solve_constraint = [&](auto& X, std::size_t block) {
                                using BMV = std::remove_cvref_t<decltype(X)>;
 
                                // Compute the interior right-hand side
-                               auto W = X;  // work vector, will be zero in the interior, equal to X at the boundary
-                               auto AW = W; // work vector, will hold A*W
+                               BMV W(X.rows(), BMV::blocksize);
+                               BMV AW(X.rows(), BMV::blocksize);
 
                                // Copy X to W at the boundary indices
                                W.set_zero();
-                               auto Wb = W.block_view(block);
-                               auto Xb = X.block_view(block);
+                               auto Wb = W.block_view(0);
+                               auto Xb = X.block_view(0);
                                for (std::size_t i = 0; i < subdomain_boundary.size(); ++i)
                                  if (subdomain_boundary[i] != 0)
                                    for (std::size_t j = 0; j < BMV::blocksize; ++j) Wb(i, j) = Xb(i, j);
@@ -390,36 +593,36 @@ public:
                                      })
                                      .name("Setup harmonic extension");
 
-                             auto compute_harmonic_extension_task = subflow
-                                                                        .emplace([&]() {
-                                                                          // Here we create another map from 'inside ring boundary' to 'ring' to avoid too many hash map lookups below
-                                                                          std::vector<std::size_t> inside_boundary_to_ring(inside_ring_boundary_to_subdomain.size());
-                                                                          for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i)
-                                                                            inside_boundary_to_ring[i] = subdomain_to_ring[inside_ring_boundary_to_subdomain[i]];
+                             auto compute_harmonic_extension_task = //
+                                 subflow
+                                     .emplace([&]() {
+                                       // Here we create another map from 'inside ring boundary' to 'ring' to avoid too many hash map lookups below
+                                       std::vector<std::size_t> inside_boundary_to_ring(inside_ring_boundary_to_subdomain.size());
+                                       for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) inside_boundary_to_ring[i] = subdomain_to_ring[inside_ring_boundary_to_subdomain[i]];
 
-                                                                          Vec zero(A_dir->N());
-                                                                          zero = 0;
-                                                                          std::vector<Vec> combined_vectors(eigenvectors_ring.size(), zero);
+                                       Vec zero(A_dir->N());
+                                       zero = 0;
+                                       std::vector<Vec> combined_vectors(eigenvectors_ring.size(), zero);
 
-                                                                          Vec dirichlet_data(inside_ring_boundary_to_subdomain.size()); // Will be set each iteration
-                                                                          for (std::size_t k = 0; k < eigenvectors_ring.size(); ++k) {
-                                                                            const auto& evec = eigenvectors_ring[k];
+                                       Vec dirichlet_data(inside_ring_boundary_to_subdomain.size()); // Will be set each iteration
+                                       for (std::size_t k = 0; k < eigenvectors_ring.size(); ++k) {
+                                         const auto& evec = eigenvectors_ring[k];
 
-                                                                            for (std::size_t i = 0; i < inside_boundary_to_ring.size(); ++i) dirichlet_data[i] = evec[inside_boundary_to_ring[i]];
+                                         for (std::size_t i = 0; i < inside_boundary_to_ring.size(); ++i) dirichlet_data[i] = evec[inside_boundary_to_ring[i]];
 
-                                                                            auto interior_vec = ext->extend(dirichlet_data);
+                                         auto interior_vec = ext->extend(dirichlet_data);
 
-                                                                            // First set the values in the ring
-                                                                            for (std::size_t i = 0; i < evec.N(); ++i) combined_vectors[k][ring_to_subdomain[i]] = evec[i];
+                                         // First set the values in the ring
+                                         for (std::size_t i = 0; i < evec.N(); ++i) combined_vectors[k][ring_to_subdomain[i]] = evec[i];
 
-                                                                            // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
-                                                                            for (std::size_t i = 0; i < interior_vec.N(); ++i) combined_vectors[k][extended_interior_to_subdomain[i]] = interior_vec[i];
-                                                                          }
+                                         // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
+                                         for (std::size_t i = 0; i < interior_vec.N(); ++i) combined_vectors[k][extended_interior_to_subdomain[i]] = interior_vec[i];
+                                       }
 
-                                                                          this->basis_ = std::move(combined_vectors);
-                                                                          detail::finalize_eigenvectors(this->basis_, *pou);
-                                                                        })
-                                                                        .name("Compute harmonic extension");
+                                       this->basis_ = std::move(combined_vectors);
+                                       detail::finalize_eigenvectors(this->basis_, *pou);
+                                     })
+                                     .name("Compute harmonic extension");
 
                              setup_ring_data_task.precede(solve_eigenproblem_task, setup_harmonic_extension_task);
                              compute_harmonic_extension_task.succeed(solve_eigenproblem_task, setup_harmonic_extension_task);
@@ -455,6 +658,9 @@ private:
  */
 template <class Mat, class MaskVec1, class MaskVec2, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
 class MsGFEMCoarseSpace : public CoarseSpaceBuilder<Vec> {
+  template <class M, class MV1, class MV2, class V>
+  friend class AlgebraicMsGFEMCoarseSpace;
+
 public:
   /**
    * @brief Construct MsGFEM coarse space.
@@ -476,7 +682,7 @@ public:
 
     this->setup_task = taskflow
                            .emplace([A, pou, &dirichlet_mask, &subdomain_boundary_mask, eig_ptree, this] {
-                             logger::info("Setting up MsGFEM coarse space");
+                             setup_msgfem_impl(A, pou, dirichlet_mask, subdomain_boundary_mask, eig_ptree);
 
                              if (dirichlet_mask.N() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the Dirichlet mask must have the same size");
 
@@ -602,12 +808,200 @@ public:
                                for (std::size_t i = 0; i < A->N(); ++i)
                                  if (dof_partitioning[i] != DOFType::Dirichlet) eigenvectors_actual[k][i] = eigenvectors[k][reordering[i]];
                              }
-
-                             this->basis_ = std::move(eigenvectors_actual);
-                             detail::finalize_eigenvectors(this->basis_, *pou);
                            })
                            .name("MsGFEM coarse space setup");
   }
+
+  /**
+   * @brief Default constructor for deferred task creation.
+   */
+  MsGFEMCoarseSpace() = default;
+
+protected:
+  /**
+   * @brief Core implementation of MsGFEM setup - can be called from any task context.
+   */
+  template <class MV1, class MV2>
+  void setup_msgfem_impl(std::shared_ptr<const Mat> A, std::shared_ptr<const PartitionOfUnity> pou, const MV1& dirichlet_mask, const MV2& subdomain_boundary_mask, const Dune::ParameterTree& eig_ptree)
+  {
+    logger::info("Setting up MsGFEM coarse space");
+
+    if (dirichlet_mask.N() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the Dirichlet mask must have the same size");
+
+    if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
+
+    // Partition the degrees of freedom
+    enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
+    std::vector<DOFType> dof_partitioning(A->N());
+    std::size_t num_interior = 0;
+    std::size_t num_boundary = 0;
+    std::size_t num_dirichlet = 0;
+    for (std::size_t i = 0; i < A->N(); ++i) {
+      if (dirichlet_mask[i] > 0) {
+        dof_partitioning[i] = DOFType::Dirichlet;
+        num_dirichlet++;
+      }
+      else if (subdomain_boundary_mask[i]) {
+        dof_partitioning[i] = DOFType::Boundary;
+        num_boundary++;
+      }
+      else {
+        dof_partitioning[i] = DOFType::Interior;
+        num_interior++;
+      }
+    }
+    logger::debug_all("Partitioned dofs, have {} in interior, {} on subdomain boundary, {} on Dirichlet boundary", num_interior, num_boundary, num_dirichlet);
+
+    // Create a reordered index set: first interior dofs, then boundary dofs, then Dirichlet dofs
+    std::vector<std::size_t> reordering(A->N());
+    std::size_t cnt_interior = 0;
+    std::size_t cnt_boundary = num_interior;
+    std::size_t cnt_dirichlet = num_interior + num_boundary;
+    for (std::size_t i = 0; i < reordering.size(); ++i)
+      if (dof_partitioning[i] == DOFType::Interior) reordering[i] = cnt_interior++;
+      else if (dof_partitioning[i] == DOFType::Boundary) reordering[i] = cnt_boundary++;
+      else reordering[i] = cnt_dirichlet++;
+
+    // Assemble the left-hand side of the eigenproblem
+    auto A_lhs = std::make_shared<Mat>();
+    const auto n_big = num_interior + num_boundary + num_interior; // size of the big eigenproblem, including the harmonicity constraint
+    const auto avg = 2 * (A->nonzeroes() / A->N());
+    A_lhs->setBuildMode(Mat::implicit);
+    A_lhs->setImplicitBuildModeParameters(avg, 0.2);
+    A_lhs->setSize(n_big, n_big);
+
+    // Assemble the part corresponding to the a-harmonic constraint
+    for (auto rit = A->begin(); rit != A->end(); ++rit) {
+      auto ii = rit.index();
+      auto ri = reordering[ii];
+      if (dof_partitioning[ii] != DOFType::Interior) continue;
+
+      for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
+        auto jj = cit.index();
+        auto rj = reordering[jj];
+
+        if (dof_partitioning[jj] != DOFType::Dirichlet) {
+          A_lhs->entry(rj, num_interior + num_boundary + ri) = *cit;
+          A_lhs->entry(num_interior + num_boundary + ri, rj) = *cit;
+        }
+      }
+    }
+
+    // Assemble the remaining part of the matrix
+    for (auto rit = A->begin(); rit != A->end(); ++rit) {
+      auto ii = rit.index();
+      auto ri = reordering[ii];
+      if (dof_partitioning[ii] == DOFType::Dirichlet) // Skip Dirchlet dofs
+        continue;
+
+      for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
+        auto jj = cit.index();
+        auto rj = reordering[jj];
+
+        if (dof_partitioning[jj] != DOFType::Dirichlet) A_lhs->entry(ri, rj) = *cit;
+      }
+    }
+    A_lhs->compress();
+
+    // Next, assemble the right-hand side of the eigenproblem
+    auto B = std::make_shared<Mat>();
+    B->setBuildMode(Mat::implicit);
+    B->setImplicitBuildModeParameters(avg, 0.2);
+    B->setSize(n_big, n_big);
+
+    for (auto rit = A->begin(); rit != A->end(); ++rit) {
+      auto ii = rit.index();
+      auto ri = reordering[ii];
+      if (dof_partitioning[ii] != DOFType::Interior) continue;
+
+      for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
+        auto jj = cit.index();
+        auto rj = reordering[jj];
+
+        if (dof_partitioning[jj] == DOFType::Interior) B->entry(ri, rj) = (*pou)[ii] * (*pou)[jj] * (*cit);
+      }
+    }
+    B->compress();
+
+    // Now we can solve the eigenproblem
+    auto eigenvectors = solve_gevp(A_lhs, B, eig_ptree);
+
+    // Finally, extract the actual eigenvectors
+    Vec v(A->N());
+    v = 0;
+    std::vector<Vec> eigenvectors_actual(eigenvectors.size(), v);
+    for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
+      for (std::size_t i = 0; i < A->N(); ++i)
+        if (dof_partitioning[i] != DOFType::Dirichlet) eigenvectors_actual[k][i] = eigenvectors[k][reordering[i]];
+    }
+
+    this->basis_ = std::move(eigenvectors_actual);
+    detail::finalize_eigenvectors(this->basis_, *pou);
+  }
+};
+#endif
+
+#if DUNE_DDM_HAVE_TASKFLOW
+/**
+ * @brief Algebraic MsGFEM coarse space builder.
+ *
+ * Constructs an algebraic variant of MsGFEM by first building an algebraic Neumann matrix
+ * and then solving the MsGFEM constrained eigenproblem with it. This combines the algebraic
+ * Neumann construction from AlgebraicGenEO with the A-harmonic constraint from MsGFEM.
+ *
+ * @tparam Mat Matrix type
+ * @tparam MaskVec1 Type for Dirichlet mask vector
+ * @tparam MaskVec2 Type for subdomain boundary mask vector
+ * @tparam Vec Vector type for basis vectors
+ */
+template <class Mat, class MaskVec1, class MaskVec2, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
+class AlgebraicMsGFEMCoarseSpace : public CoarseSpaceBuilder<Vec> {
+public:
+  /**
+   * @brief Construct algebraic MsGFEM coarse space.
+   *
+   * @param A_novlp Non-overlapping Dirichlet matrix.
+   * @param A Overlapping Dirichlet matrix.
+   * @param pou Partition of unity vector.
+   * @param dirichlet_mask Mask vector indicating Dirichlet boundary DOFs (>0 means Dirichlet).
+   * @param subdomain_boundary_mask Mask vector indicating subdomain boundary DOFs (>0 means boundary).
+   * @param extids Extended remote indices for communication.
+   * @param ptree ParameterTree containing solver and selection parameters.
+   * @param taskflow Taskflow instance for parallel execution.
+   * @param ptree_prefix Prefix for parameter subtree (default: "algebraic_msgfem").
+   */
+  template <class ExtendedRemoteIndices, class DirichletMask, class BoundaryMask>
+  AlgebraicMsGFEMCoarseSpace(std::shared_ptr<const Mat> A_novlp, std::shared_ptr<const Mat> A, std::shared_ptr<const PartitionOfUnity> pou, const DirichletMask& dirichlet_mask,
+                             const BoundaryMask& subdomain_boundary_mask, const ExtendedRemoteIndices& extids, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow,
+                             const std::string& ptree_prefix = "algebraic_msgfem")
+  {
+    const auto& subtree = ptree.sub(ptree_prefix);
+    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+
+    // Use a subflow to handle the sequential dependencies
+    this->setup_task =
+        taskflow
+            .emplace([A_novlp, A, pou, &extids, &dirichlet_mask, &subdomain_boundary_mask, eig_ptree, this](tf::Subflow& subflow) {
+              // Task 1: Build the Neumann matrix
+              auto build_neumann_task = subflow.emplace([A_novlp, A, &extids, &dirichlet_mask, this] { Aneu_matrix = detail::build_algebraic_neumann(*A_novlp, *A, extids, dirichlet_mask); })
+                                            .name("Build algebraic Neumann matrix");
+
+              // Task 2: Run MsGFEM setup with the Neumann matrix
+              auto msgfem_setup_task =
+                  subflow.emplace([pou, &dirichlet_mask, &subdomain_boundary_mask, eig_ptree, this] { msgfem.setup_msgfem_impl(Aneu_matrix, pou, dirichlet_mask, subdomain_boundary_mask, eig_ptree); })
+                      .name("MsGFEM eigenproblem solve");
+              msgfem_setup_task.succeed(build_neumann_task);
+
+              // Task 3: Copy basis vectors
+              auto copy_basis_task = subflow.emplace([this] { this->basis_ = std::move(msgfem.basis_); }).name("Copy MsGFEM basis");
+              copy_basis_task.succeed(msgfem_setup_task);
+            })
+            .name("Algebraic MsGFEM coarse space setup");
+  }
+
+private:
+  std::shared_ptr<Mat> Aneu_matrix;
+  MsGFEMCoarseSpace<Mat, MaskVec1, MaskVec2, Vec> msgfem;
 };
 #endif
 
@@ -937,30 +1331,47 @@ public:
     detail::finalize_eigenvectors(this->basis_, pou);
   }
 
-  POUCoarseSpace(const std::vector<Vec>& template_vecs, const PartitionOfUnity& pou)
+  POUCoarseSpace(std::vector<Vec>&& template_vecs, const PartitionOfUnity& pou)
   {
-    this->basis_ = template_vecs;
+    this->basis_ = std::forward<std::vector<Vec>>(template_vecs); // Move if the caller allows it, otherwise just copy
     detail::finalize_eigenvectors(this->basis_, pou);
   }
 };
 
-/*
- * ====================================
- * USAGE EXAMPLES FOR CLASS-BASED INTERFACE
- * ====================================
- *
- * // Example 1: GenEO coarse space
- * GenEOCoarseSpace<MatrixType> geneo(A, B, pou, ptree, taskflow);
- * auto basis_vectors = geneo.get_basis();
- * std::size_t num_vectors = geneo.size();
- *
- * // Example 2: MsGFEM coarse space
- * MsGFEMCoarseSpace<MatrixType, MaskType1, MaskType2> msgfem(A, pou, dirichlet_mask, boundary_mask, ptree);
- * auto msgfem_basis = msgfem.get_basis();
- *
- * // Example 3: POU coarse space
- * POUCoarseSpace<> pou_cs(pou);
- * auto pou_basis = pou_cs.get_basis();
+template <class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
+class HarmonicExtensionCoarseSpace : public CoarseSpaceBuilder<Vec> {
+public:
+  template <class Mat, class MaskVec>
+  HarmonicExtensionCoarseSpace(std::shared_ptr<Mat> A_ovlp, std::shared_ptr<PartitionOfUnity> pou, std::shared_ptr<std::vector<Vec>> boundary_data, const MaskVec& subdomain_boundary_mask,
+                               tf::Taskflow& taskflow)
+  {
+    this->setup_task = taskflow.emplace([&subdomain_boundary_mask, boundary_data, A_ovlp, pou, this]() {
+      logger::info("Setting up coarse space with energy-minimal extension");
+
+      std::vector<std::size_t> interior_to_subdomain;
+      std::vector<std::size_t> boundary_to_subdomain;
+      interior_to_subdomain.reserve(subdomain_boundary_mask.size());
+      boundary_to_subdomain.reserve(subdomain_boundary_mask.size());
+      for (std::size_t i = 0; i < subdomain_boundary_mask.size(); ++i)
+        if (subdomain_boundary_mask[i]) boundary_to_subdomain.push_back(i);
+        else interior_to_subdomain.push_back(i);
+
+      EnergyMinimalExtension<Mat, Vec> ext(*A_ovlp, interior_to_subdomain, boundary_to_subdomain);
+
+      this->basis_.resize(boundary_data->size());
+      for (std::size_t i = 0; i < boundary_data->size(); ++i) {
+        this->basis_[i].resize(A_ovlp->N());
+        for (std::size_t j = 0; j < (*boundary_data)[i].size(); ++j) this->basis_[i][boundary_to_subdomain[j]] = (*boundary_data)[i][j];
+
+        auto interior_solution = ext.extend((*boundary_data)[i]);
+
+        for (std::size_t j = 0; j < interior_solution.size(); ++j) this->basis_[i][interior_to_subdomain[j]] = interior_solution[j];
+      }
+
+      detail::finalize_eigenvectors(this->basis_, *pou);
+    });
+  }
+};
  *
  * // Example 4: Using polymorphism
  * std::unique_ptr<CoarseSpaceBuilder<>> coarse_space;
