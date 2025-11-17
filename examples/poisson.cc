@@ -330,155 +330,61 @@ int main(int argc, char* argv[])
       using DGF = Dune::PDELab::DiscreteGridFunction<P::GFS, P::Vec>;
       using VTKF = Dune::PDELab::VTKGridFunctionAdapter<DGF>;
 
+      auto debug_rank = ptree.get("debug_rank", 0);
+      if (debug_rank > helper.size() - 1) debug_rank = 0;
+
+      const auto write_overlapping_vector = [&](const auto& vec, const std::string& name) {
+        AddVectorDataHandle<Native<Vec>> advdh;
+        auto vec_vis = vec;
+        if (helper.rank() != debug_rank) vec_vis = 0;
+        advdh.setVec(vec_vis);
+        ext_indices.get_overlapping_communicator().forward(advdh);
+
+        auto vec_small = std::make_shared<Native<Vec>>(problem.getX().N());
+        for (std::size_t i = 0; i < vec_small->N(); ++i) (*vec_small)[i] = vec_vis[i];
+        auto gf = std::make_shared<P::Vec>(problem.getGFS());
+        gf->attach(vec_small);
+        auto dgf = std::make_shared<DGF>(problem.getGFS(), gf);
+        writer.addVertexData(std::make_shared<VTKF>(dgf, name));
+      };
+
       // Write solution
-      Dune::PDELab::addSolutionToVTKWriter(writer, problem.getGFS(), problem.getXVec());
+      Dune::PDELab::addSolutionToVTKWriter(writer, *problem.getGFS(), problem.getXVec());
+
+      // Write the rhs
+      DGF dgfb(*problem.getGFS(), problem.getDVec());
+      writer.addVertexData(std::make_shared<VTKF>(dgfb, "RHS"));
 
       // Write MPI partitioning
       std::vector<int> rankVec(gv.size(0), helper.rank());
       Dune::P0VTKFunction rankFunc(gv, rankVec, "Rank");
       writer.addCellData(Dune::stackobject_to_shared_ptr(rankFunc));
 
-      // // Write interior cells
-      // auto dof_mask = interior_dof_mask;
-      // Dune::P1VTKFunction interiorFunc(gv, dof_mask, "Interior");
-      // writer.addVertexData(Dune::stackobject_to_shared_ptr(interiorFunc));
-
-      // Plot the rhs
-      DGF dgfb(problem.getGFS(), problem.getDVec());
-      writer.addVertexData(std::make_shared<VTKF>(dgfb, "RHS"));
-
       // Write some additional output
-      AttributeSet allAttributes{Attribute::owner, Attribute::copy};
-      Dune::Interface all_all_interface;
-      all_all_interface.build(ext_indices.get_remote_indices(), allAttributes, allAttributes);
-      Dune::VariableSizeCommunicator all_all_comm(all_all_interface);
-      AddVectorDataHandle<Native<Vec>> advdh;
+      write_overlapping_vector(pou->vector(), "POU");
+      write_overlapping_vector(debug_vector, "Correction dofs");
 
-      // Plot the partition of unity
-      auto pou_vis = pou->vector();
-      if (helper.rank() != ptree.get("debug_rank", 0)) pou_vis = 0;
-      advdh.setVec(pou_vis);
-      all_all_comm.forward(advdh);
-
-      Native<Vec> pou_vec_small(problem.getX().N());
-      for (std::size_t i = 0; i < pou_vec_small.N(); ++i) pou_vec_small[i] = pou_vis[i];
-      P::Vec pougf(problem.getGFS(), pou_vec_small);
-      DGF dgfpou(problem.getGFS(), pougf);
-      writer.addVertexData(std::make_shared<VTKF>(dgfpou, "POU"));
-
-      // Overlapping subdomain
       Native<Vec> ovlp_subdomain(ext_indices.size());
-      ovlp_subdomain = helper.rank() == ptree.get("debug_rank", 0) ? 1 : 0;
-      advdh.setVec(ovlp_subdomain);
-      all_all_comm.forward(advdh);
-      Native<Vec> ovlp_subdomain_small(problem.getX().N());
-      for (std::size_t i = 0; i < ovlp_subdomain_small.size(); ++i) ovlp_subdomain_small[i] = ovlp_subdomain[i];
-      P::Vec ovlpgf(problem.getGFS(), ovlp_subdomain_small);
-      DGF dgfovlp(problem.getGFS(), ovlpgf);
-      writer.addVertexData(std::make_shared<VTKF>(dgfovlp, "Ovlp. subdm."));
+      ovlp_subdomain = helper.rank() == debug_rank ? 1 : 0;
+      write_overlapping_vector(ovlp_subdomain, "Ovlp. subdomain");
 
-      // Basis vectors. We need to take into account that the ranks might have a different number of basis vectors
+      // Write coarse space basis vectors. We need to take into account that the ranks might have a different number of basis vectors
       auto n_basis = basis.size();
-      auto debug_rank = ptree.get("debug_rank", 0);
       auto bcast_root = debug_rank;
-      if (debug_rank >= helper.size()) {
-        bcast_root = 0;
-        if (helper.rank() == 0) logger::warn("debug_rank ({}) >= number of processes ({}), using rank 0 for broadcast", debug_rank, helper.size());
-      }
       MPI_Bcast(&n_basis, 1, MPI_UNSIGNED_LONG, bcast_root, helper.getCommunicator());
-      std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> small_basis_vecs(n_basis); // The need to be allocated here so that they are not freed before visualising
       for (std::size_t k = 0; k < n_basis; ++k) {
         auto bvec_vis = basis[0];
         if (helper.rank() != bcast_root) bvec_vis = 0;
         else bvec_vis = basis[k];
-        advdh.setVec(bvec_vis);
-        all_all_comm.forward(advdh);
-
-        small_basis_vecs[k].resize(problem.getX().N());
-        for (std::size_t i = 0; i < problem.getX().N(); ++i) small_basis_vecs[k][i] = bvec_vis[i];
-        auto pougf = std::make_shared<P::Vec>(problem.getGFS(), small_basis_vecs[k]);
-        auto dgfpou = std::make_shared<DGF>(Dune::stackobject_to_shared_ptr(problem.getGFS()), pougf);
-        writer.addVertexData(std::make_shared<VTKF>(dgfpou, "Basis vec " + std::format("{:04}", k)));
+        write_overlapping_vector(bvec_vis, "Basis vec " + std::format("{:04}", k));
       }
 
-      // Ring region
+      // Write ring region (might be all zero for non-ring coarse spaces)
       Native<Vec> ring_region(ext_indices.size());
       ring_region = 0;
       if (helper.rank() == ptree.get("debug_rank", 0))
         for (const auto& idx : problem.get_neumann_region_to_subdomain()) ring_region[idx] = 1;
-      advdh.setVec(ring_region);
-      all_all_comm.forward(advdh);
-      Native<Vec> ring_region_small(problem.getX().N());
-      for (std::size_t i = 0; i < ring_region_small.size(); ++i) ring_region_small[i] = ring_region[i];
-      P::Vec ring_gf(problem.getGFS(), ring_region_small);
-      DGF ring_dgf(problem.getGFS(), ring_gf);
-      writer.addVertexData(std::make_shared<VTKF>(ring_dgf, "Ring region"));
-
-      // // Inner ring corrections
-      // Native<Vec> inner_ring_corrections(dof_mask.size());
-      // inner_ring_corrections = 0;
-      // for (const auto &triple : own_ncorr_triples) {
-      //   inner_ring_corrections[triple.row] = 1;
-      //   inner_ring_corrections[triple.col] = 1;
-      // }
-      // Dune::P1VTKFunction inner_ring_corrections_function(gv, inner_ring_corrections, "Our corrections");
-      // writer.addVertexData(Dune::stackobject_to_shared_ptr(inner_ring_corrections_function));
-
-      // // Remote ring correction for rank `debug_rank`
-      // Native<Vec> remote_ring_corrections(ext_indices.size());
-      // remote_ring_corrections = 0;
-
-      // for (const auto &triple : remote_ncorr_triples) {
-      //   if (triple.rank == ptree.get("debug_rank", 0)) {
-      //     auto lrow = ext_indices.get_parallel_index_set()[triple.row].local();
-      //     auto lcol = ext_indices.get_parallel_index_set()[triple.col].local();
-
-      //     remote_ring_corrections[lrow] = 1;
-      //     remote_ring_corrections[lcol] = 1;
-      //   }
-      // }
-      // advdh.setVec(remote_ring_corrections);
-      // all_all_comm.forward(advdh);
-      // Native<Vec> remote_ring_corrections_small(paridxs.size());
-      // for (std::size_t i = 0; i < remote_ring_corrections_small.size(); ++i) {
-      //   remote_ring_corrections_small[i] = remote_ring_corrections[i];
-      // }
-      // Dune::P1VTKFunction remote_ring_corrections_function(gv, remote_ring_corrections_small, "Other corrections");
-      // writer.addVertexData(Dune::stackobject_to_shared_ptr(remote_ring_corrections_function));
-
-      // // Visualise pou
-      // auto pou_vis = *pou;
-      // if (helper.rank() != ptree.get("debug_rank", 0)) {
-      //   pou_vis = 0;
-      // }
-      // advdh.setVec(pou_vis);
-      // all_all_comm.forward(advdh);
-
-      // Native<Vec> pou_vec_small(problem.getX().N());
-      // for (std::size_t i = 0; i < pou_vec_small.N(); ++i) {
-      //   pou_vec_small[i] = pou_vis[i];
-      // }
-      // Dune::P1VTKFunction pouFunc(gv, pou_vec_small, "POU");
-      // writer.addVertexData(Dune::stackobject_to_shared_ptr(pouFunc));
-
-      // // Add a vector with the dof numbering for debugging
-      // Native<Vec> dof_numbers(problem.getX().N());
-      // dof_numbers = 0;
-      // if (helper.rank() == ptree.get("debug_rank", 0)) {
-      //   std::iota(dof_numbers.begin(), dof_numbers.end(), 0);
-      // }
-      // Dune::P1VTKFunction dofFunc(gv, dof_numbers, "DOFs");
-      // writer.addVertexData(Dune::stackobject_to_shared_ptr(dofFunc));
-
-      // // Visualise one of the basis vectors extracted after setup of the coarse space
-      // if (helper.rank() != ptree.get("debug_rank", 0)) {
-      //   visuvec = 0;
-      // }
-      // advdh.setVec(visuvec);
-      // all_all_comm.forward(advdh);
-      // visuvec.resize(problem.getX().N());
-      // Dune::P1VTKFunction basisFunc(gv, visuvec, "Basis function");
-      // writer.addVertexData(Dune::stackobject_to_shared_ptr(basisFunc));
+      write_overlapping_vector(ring_region, "Ring region");
 
       writer.write(ptree.get("filename", "Poisson"));
     }
