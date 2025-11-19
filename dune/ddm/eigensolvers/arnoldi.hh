@@ -72,7 +72,7 @@ public:
       // Step 1: v_{i+1} = A v_i
       evp->apply_block(i, V);
 
-      // Step 2: v_{i+1} -= v_i * T(i,i-1)
+      // Step 2: v_{i+1} -= v_{i-1} * T(i,i-1)^T
       if (i > 0) {
         auto vprev = V.block_view(i - 1);
         vprev.mult_transpose(beta, w);
@@ -83,79 +83,12 @@ public:
       auto Tii = T.block_view(i, i);
       evp->get_inner_product()->dot(vi, vi1, Tii);
 
-      // Step 4: Compute v_{i+1} -= v_i * T(i,i)
+      // Step4: Orthogonalise v_{i+1} -= v_i * T(i,i)
       vi.mult(Tii, w);
       vi1 -= w;
 
-      // Orthonormalise the current block
-      orth->call_muscle(vi1, vi1, beta);
-
-      // In exact arithmetic, the above would be sufficient to maintain orthogonality.
-      // However, due to numerical errors, we need to reorthogonalise.
-      {
-        // Compute the block-wise inner product between v_{i+1} and V_i
-        const auto needs_orthogonalisation = [&]() {
-          Real max_ortho_error = 0;
-          for (std::size_t j = 0; j <= i; ++j) {
-            auto vj = V.block_view(j);
-            evp->get_inner_product()->dot(vj, vi1, z00);
-            auto error = z00.frobenius_norm();
-            if (error > max_ortho_error) max_ortho_error = error;
-          }
-          // logger::trace_all("Block Lanczos: orthogonalisation error {}, tolerance {}", max_ortho_error, eps * beta.frobenius_norm());
-          return max_ortho_error > eps * beta.frobenius_norm();
-        };
-
-        int count = 0;
-        while (count++ < 5 and needs_orthogonalisation()) {
-          // logger::trace_all("Block Lanczos: orthogonalisation loop {}", count - 1);
-
-          if (beta.frobenius_norm() < beta_threshold) {
-            breakdown = true;
-            std::cout << "########################################\n";
-            std::cout << "BREAKDOWN DETECTED\n";
-            std::cout << "########################################\n";
-            break;
-          }
-
-          // Perform a block modified Gram Schmidt step
-          w = vi1;
-          for (std::size_t j = 0; j <= i; ++j) {
-            auto vj = V.block_view(j);
-            evp->get_inner_product()->dot(vj, vi1, z00);
-            vj.mult(z00, y);
-            w -= y;
-
-            if (j == i - 1) {
-              auto Ti_i1 = T.block_view(i, i - 1);
-              auto Ti1_i = T.block_view(i - 1, i);
-              Ti_i1 += z00;
-
-              Ti1_i = Ti_i1;
-              Ti1_i.transpose();
-            }
-            else if (j == i) {
-              Tii += z00;
-            }
-          }
-
-          z00 = beta;
-          orth->call_muscle(w, vi1, beta);
-          beta *= z00;
-        }
-      }
-      /* z00.set_zero();
-      // orth->orthonormalise_block_against_previous(V, i + 1, &z00, &beta);
-      // orth->call_muscle(vi1, vi1, beta);
+      // Step 5: Full reorthogonalization
       orth->orthonormalise_block_against_previous(V, i + 1, nullptr, &beta);
-      // Tii += z00;
-
-      // Step 5: Write the new off-diagonal blocks T(i+1,i) and T(i,i+1)
-      std::cout << "m_beta = " << beta.frobenius_norm() << "\n";
-      if (beta.frobenius_norm() < beta_threshold) {
-        logger::warn("BlockLanczos: breakdown detected at step {} (||beta||_F = {})", i, beta.frobenius_norm());
-        // break; // Stop extension upon breakdown
-      } */
 
       // Put the computed beta into T
       if (i + 1 < T.block_rows()) {
@@ -173,7 +106,7 @@ public:
   BMV& get_basis() { return V; }
   typename BMV::BlockMatrixBlockView get_beta() { return B.block_view(0, 0); }
 
-private:  
+private:
   std::shared_ptr<EVP> evp;
   std::shared_ptr<Ortho> orth;
 

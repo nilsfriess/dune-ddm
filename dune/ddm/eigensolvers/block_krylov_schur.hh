@@ -64,7 +64,7 @@ public:
 
       // Update number of converged blocks
       update_nconv();
-      debug_print();
+      if (logger::get_level() <= logger::Level::trace) debug_print();
 
       // After the restart, we need to keep the residual block (it becomes the new residual block).
       // Therefore, we save it here, before computing the Ritz vectors.
@@ -80,7 +80,8 @@ public:
       std::swap(Q, W);
 
       if (nconv * blocksize >= nev) {
-        logger::info_all("Converged target {} eigenpairs after {} restarts. Stopping.", nev, its);
+        logger::debug_all("KrylovSchur: Converged target {} eigenpairs after {} restarts. Smallest: {}, largest: {}", nev, its, evp->transform_eigenvalue(ritz_values[0]),
+                          evp->transform_eigenvalue(ritz_values[nev - 1]));
         break;
       }
 
@@ -166,7 +167,7 @@ public:
       lanczos.extend(k + 1, ncv / blocksize);
     }
     if (its >= max_restarts) {
-      if (nconv * blocksize >= nev) logger::info_all("Converged target {} eigenpairs after {} restarts. Stopping.", nev, its);
+      if (nconv * blocksize >= nev) logger::debug_all("Converged target {} eigenpairs after {} restarts. Stopping.", nev, its);
       else logger::warn_all("Maximum number of restarts reached ({}). Converged {} out of {} requested eigenpairs.", its, nconv * blocksize, nev);
     }
   }
@@ -231,7 +232,7 @@ private:
       if (block_converged) new_nconv++;
       else break;
     }
-    logger::info("Computed residuals, converged blocks before {}, converged blocks now {}", nconv, nconv + new_nconv);
+    logger::debug_all("KrylovSchur: Computed residuals, converged blocks before {}, converged blocks now {}", nconv, nconv + new_nconv);
     nconv += new_nconv;
   }
 
@@ -272,8 +273,11 @@ private:
     const int thr_w = 14;
     const int conv_w = 10;
 
-    std::cout << std::left << std::setw(idx_w) << "#" << std::right << std::setw(val_w) << "Ritz value" << std::setw(res_w) << "Residual" << std::setw(thr_w) << "Threshold" << std::setw(conv_w)
-              << "Converged" << std::endl;
+    std::stringstream ss;
+
+    ss << "KrylovSchur: iteration " << its << "\n"
+       << std::left << std::setw(idx_w) << "#" << std::right << std::setw(val_w) << "Ritz value" << std::setw(res_w) << "Residual" << std::setw(thr_w) << "Threshold" << std::setw(conv_w)
+       << "Converged" << std::endl;
 
     for (std::size_t i = 0; i < nev; i++) {
       // Choose notation: use fixed for moderately sized numbers, scientific otherwise
@@ -284,18 +288,20 @@ private:
       auto print_num = [&](Real x, int width) {
         // small/large magnitudes -> scientific with 6 sig figs, otherwise fixed with 6 decimals
         const Real ax = std::abs(x);
-        if (ax != Real(0) && (ax < Real(1e-4) || ax >= Real(1e6))) std::cout << std::scientific << std::setprecision(6) << std::setw(width) << x;
-        else std::cout << std::fixed << std::setprecision(6) << std::setw(width) << x;
+        if (ax != Real(0) && (ax < Real(1e-4) || ax >= Real(1e6))) ss << std::scientific << std::setprecision(6) << std::setw(width) << x;
+        else ss << std::fixed << std::setprecision(6) << std::setw(width) << x;
         // restore default float format to avoid carrying formatting to next outputs
-        std::cout << std::defaultfloat;
+        ss << std::defaultfloat;
       };
 
-      std::cout << std::left << std::setw(idx_w) << i;
+      ss << std::left << std::setw(idx_w) << i;
       print_num(v, val_w);
       print_num(r, res_w);
       print_num(t, thr_w);
-      std::cout << std::right << std::setw(conv_w) << ((r < t) ? "Yes" : "No") << std::endl;
+      ss << std::right << std::setw(conv_w) << ((r < t) ? "Yes" : "No") << std::endl;
     }
+
+    logger::trace_all(ss.str());
   }
 
   std::shared_ptr<Ortho> orth;
