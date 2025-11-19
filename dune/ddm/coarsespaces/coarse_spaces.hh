@@ -1370,13 +1370,3 @@ public:
     });
   }
 };
- *
- * // Example 4: Using polymorphism
- * std::unique_ptr<CoarseSpaceBuilder<>> coarse_space;
- * if (method == "geneo") {
- *   coarse_space = std::make_unique<GenEOCoarseSpace<MatrixType>>(A, B, pou, ptree, taskflow);
- * } else if (method == "msgfem") {
- *   coarse_space = std::make_unique<MsGFEMCoarseSpace<MatrixType, MaskType1, MaskType2>>(A, pou, dir_mask, bd_mask, ptree);
- * }
- * auto basis = coarse_space->get_basis();
- */
