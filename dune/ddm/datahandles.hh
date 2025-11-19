@@ -77,7 +77,7 @@ private:
 template <class Vec>
 class CopyVectorDataHandleWithRank {
 public:
-  using DataType = std::pair<int, typename Vec::block_type>;
+  using DataType = std::pair<int, typename Vec::value_type>;
 
   explicit CopyVectorDataHandleWithRank(const Vec& v, int rank)
       : sourcevec(&v)
@@ -103,7 +103,7 @@ public:
 
     if (not copied_vecs.contains(from_rank)) {
       copied_vecs.emplace(from_rank, *sourcevec);
-      copied_vecs[from_rank] = 0;
+      std::fill(copied_vecs[from_rank].begin(), copied_vecs[from_rank].end(), 0);
     }
     copied_vecs[from_rank][i] = vec;
   }
