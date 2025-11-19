@@ -16,9 +16,10 @@
 template <class Mat>
 class UMFPackMultivecSolver {
 public:
-  explicit UMFPackMultivecSolver(const Mat& A)
+  explicit UMFPackMultivecSolver(const Mat& A, int max_refinement_iter = 3)
       : A(A)
       , A_norm(A.infinity_norm())
+      , max_refinement_iter(max_refinement_iter)
   {
     solver.setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
     solver.setMatrix(A);
@@ -43,13 +44,11 @@ public:
   {
     auto bbefore = bb;
 
-    // Maximum number of refinement iterations
-    const int max_iter = 3;
     const double tol = 1e-14; // More reasonable tolerance than machine epsilon
     double omega_prev = std::numeric_limits<double>::infinity();
 
     solve(xx, bb, block_from, block_to);
-    for (int iter = 0; iter < max_iter; ++iter) {
+    for (int iter = 0; iter < max_refinement_iter; ++iter) {
       auto resid = xx;
 
       // Compute block-wise backward errors and take maximum
@@ -76,10 +75,6 @@ public:
         omega_max = std::max(omega_max, omega_block);
       }
 
-      // logger::debug("Iter {}: omega_max = {}, tol = {}", iter, omega_max, tol);
-
-      // Check stopping criteria (following UMFPACK's approach)
-
       // Stop if backward error is essentially zero (UMFPACK criterion)
       if (omega_max < tol) {
         // logger::debug("Converged: omega_max < machine epsilon");
@@ -92,7 +87,7 @@ public:
         break;
       }
 
-      // Stop if insufficient improvement (UMFPACK requires 2x improvement)
+      // Stop if insufficient improvement (UMFPACK requires 2x improvement, we do the same)
       if (iter > 0 && omega_max > omega_prev / 2.0) {
         logger::debug("Insufficient improvement, stopping refinement");
         break;
@@ -334,4 +329,5 @@ private:
   Dune::UMFPack<Mat> solver;
   const Mat& A;
   double A_norm{};
+  int max_refinement_iter;
 };
