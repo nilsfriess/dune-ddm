@@ -21,6 +21,7 @@ struct EigensolverParams {
     if (ptree.hasKey("shift")) shift = ptree.get<double>("shift");
     if (ptree.hasKey("seed")) seed = ptree.get<std::size_t>("seed");
     if (ptree.hasKey("blocksize")) blocksize = ptree.get<std::size_t>("blocksize");
+
     const auto& typestr = ptree.get<std::string>("type");
     if (typestr == "Spectra") type = Type::Spectra;
     else if (typestr == "SubspaceIteration") type = Type::SubspaceIteration;

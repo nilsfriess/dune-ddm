@@ -7,13 +7,12 @@
 #include "dune/ddm/eigensolvers/orthogonalisation.hh"
 #include "dune/ddm/logger.hh"
 #include "eigensolver_params.hh"
+#include "helpers.hh"
 #include "lapacke.hh"
-#include "spectra.hh" // for to_string_with_precision
 
 #include <algorithm>
 #include <dune/istl/bvector.hh>
 #include <experimental/simd>
-#include <lapacke.h>
 #include <memory>
 #include <numeric>
 #include <sstream>

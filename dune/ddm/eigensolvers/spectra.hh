@@ -1,8 +1,11 @@
 #pragma once
 
+#ifdef DUNE_DDM_HAVE_SPECTRA
+
 #include "../logger.hh"
 #include "../strumpack.hh"
 #include "eigensolver_params.hh"
+#include "helpers.hh"
 
 #include <Eigen/SparseCore>
 #include <Spectra/MatOp/SparseSymMatProd.h>
@@ -21,15 +24,6 @@
 #include <mpi.h>
 #include <umfpack.h>
 #include <vector>
-
-// Helper to convert floats to string because std::to_string outputs with low precision
-template <typename T>
-std::string to_string_with_precision(const T a_value)
-{
-  std::ostringstream out;
-  out << a_value;
-  return std::move(out).str();
-}
 
 class SymShiftInvert {
 public:
@@ -252,3 +246,5 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> spectra_gevp(const 
 
   return eigenvectors;
 }
+
+#endif

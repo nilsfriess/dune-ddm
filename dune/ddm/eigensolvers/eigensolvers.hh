@@ -30,11 +30,13 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solve_gevp(std::sha
 
   EigensolverParams params(ptree);
 
-  constexpr std::size_t blocksize = 4;
+  constexpr std::size_t blocksize = 1;
   auto evp = std::make_shared<ShiftInvertEigenproblem<Mat, blocksize>>(*A, B, params.shift);
 
   if (params.type == EigensolverParams::Type::SubspaceIteration) return subspace_iteration(*evp, params);
+#ifdef DUNE_DDM_HAVE_SPECTRA
   else if (params.type == EigensolverParams::Type::Spectra) return spectra_gevp(*A, *B, params);
+#endif
   else if (params.type == EigensolverParams::Type::SRRIT) return srrit(evp, params);
   else if (params.type == EigensolverParams::Type::KrylovSchur) return block_krylov_schur(evp, params);
   else DUNE_THROW(Dune::NotImplemented, "Eigensolver not implemented");
@@ -53,11 +55,13 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solve_gevp(std::sha
 
   EigensolverParams params(ptree);
 
-  constexpr std::size_t blocksize = 4;
+  constexpr std::size_t blocksize = 1;
   auto evp = std::make_shared<ShiftInvertEigenproblem<Mat, blocksize, Callback>>(*A, B, params.shift, std::forward<Callback>(callback));
 
   if (params.type == EigensolverParams::Type::SubspaceIteration) return subspace_iteration(*evp, params);
+#ifdef DUNE_DDM_HAVE_SPECTRA
   else if (params.type == EigensolverParams::Type::Spectra) return spectra_gevp(*A, *B, params);
+#endif
   else if (params.type == EigensolverParams::Type::SRRIT) return srrit(evp, params);
   else if (params.type == EigensolverParams::Type::KrylovSchur) return block_krylov_schur(evp, params);
   else DUNE_THROW(Dune::NotImplemented, "Eigensolver not implemented");
