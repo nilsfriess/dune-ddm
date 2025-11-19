@@ -331,6 +331,7 @@ public:
       fem = std::make_unique<FEM>();
     }
     gfs = std::make_unique<GFS>(es, *fem);
+    gfs = std::make_shared<GFS>(es, *fem);
     gfs->name("Solution");
     x = std::make_unique<Vec>(*gfs, 0.0);
     x0 = std::make_unique<Vec>(*gfs, 0.);
@@ -814,9 +815,9 @@ public:
    */
 
   /** @brief Get the grid function space
-   *  @return Reference to the PDELab grid function space
+   *  @return Shared pointer to the PDELab grid function space
    */
-  const GFS &getGFS() const { return *gfs; }
+  std::shared_ptr<GFS> getGFS() const { return gfs; }
 
   /** @brief Get the entity set
    *  @return Reference to the overlapping entity set used for assembly
@@ -939,7 +940,7 @@ private:
   /** @name Core DUNE/PDELab objects */
   ES es;                    ///< Overlapping entity set for local assembly
   std::unique_ptr<FEM> fem; ///< Finite element map
-  std::unique_ptr<GFS> gfs; ///< Grid function space
+  std::shared_ptr<GFS> gfs; ///< Grid function space
 
   BC bc;                     ///< Boundary condition adapter
   CC cc;                     ///< Constraints container
