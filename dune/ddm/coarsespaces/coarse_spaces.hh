@@ -13,7 +13,6 @@
 
 #include <numeric>
 #include <random>
-#define HAVE_MPI
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/indexset.hh>
 #include <dune/common/parallel/interface.hh>
@@ -355,8 +354,7 @@ public:
    */
   // Note: We intentionally pass shared_ptrs by value to capture them safely in the taskflow lambda
   template <class ExtendedRemoteIndices, class DirichletMask>
-  AlgebraicGenEOCoarseSpace(Vec& debug_vector, // for visualisation
-                            std::shared_ptr<const Mat> A_novlp, std::shared_ptr<const Mat> A, std::shared_ptr<const PartitionOfUnity> pou, const DirichletMask& dirichlet_mask,
+  AlgebraicGenEOCoarseSpace(std::shared_ptr<const Mat> A_novlp, std::shared_ptr<const Mat> A, std::shared_ptr<const PartitionOfUnity> pou, const DirichletMask& dirichlet_mask,
                             const ExtendedRemoteIndices& extids, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow, const std::string& ptree_prefix = "algebraic_geneo")
   {
     const auto& subtree = ptree.sub(ptree_prefix);

@@ -194,7 +194,7 @@ int main(int argc, char* argv[])
     auto coarsespace = coarsespace_subtree.get("type", "geneo");
     if (coarsespace == "geneo" or coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
     else if (coarsespace == "msgfem") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
-    else if (coarsespace == "pou" or coarsespace == "harmonic_extension" or coarsespace == "algebraic_geneo" or coarsespace == "algebraic_msgfem" or coarsespace == "gdsw" or coarsespace == "none")
+    else if (coarsespace == "pou" or coarsespace == "harmonic_extension" or coarsespace == "algebraic_geneo" or coarsespace == "algebraic_msgfem" or coarsespace == "none")
       problem.assemble_dirichlet_matrix_only(ext_indices);
     else if (coarsespace == "geneo_ring") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, false);
     else if (coarsespace == "msgfem_ring") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::Overlap, NeumannRegion::Overlap, false);
@@ -249,7 +249,7 @@ int main(int argc, char* argv[])
     }
     else if (coarsespace == "algebraic_geneo") {
       coarse_space =
-          std::make_unique<AlgebraicGenEOCoarseSpace<Native<Mat>>>(debug_vector, problem.getA().storage(), A_dir, pou, problem.get_overlapping_dirichlet_mask(), ext_indices, ptree, taskflow);
+          std::make_unique<AlgebraicGenEOCoarseSpace<Native<Mat>>>(problem.getA().storage(), A_dir, pou, problem.get_overlapping_dirichlet_mask(), ext_indices, ptree, taskflow);
     }
     else if (coarsespace == "algebraic_msgfem") {
       coarse_space = std::make_unique<AlgebraicMsGFEMCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>,
@@ -362,7 +362,6 @@ int main(int argc, char* argv[])
 
       // Write some additional output
       write_overlapping_vector(pou->vector(), "POU");
-      write_overlapping_vector(debug_vector, "Correction dofs");
 
       Native<Vec> ovlp_subdomain(ext_indices.size());
       ovlp_subdomain = helper.rank() == debug_rank ? 1 : 0;
