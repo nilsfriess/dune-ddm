@@ -281,7 +281,7 @@ public:
                                  std::conditional_t<USEDG,                                                                                                        // and discretisation is DG
                                                     Dune::PDELab::QkDGLocalFiniteElementMap<typename GridView::Grid::ctype, double, degree, GridView::dimension>, // then use Qk DG
                                                     Dune::PDELab::QkLocalFiniteElementMap<ES, DF, RF, degree>>,                                                   // otherwise use Qk CG
-                                 Dune::PDELab::QkLocalFiniteElementMap<ES, DF, RF, degree>>;                                                                      // and in case of another grid, just use Pk CG
+                                 Dune::PDELab::PkLocalFiniteElementMap<ES, DF, RF, degree>>;                                                                      // and in case of another grid, just use Pk CG
   // clang-format on
   using LOP = std::conditional_t<USEDG, Dune::PDELab::ConvectionDiffusionDG<ModelProblem, FEM>, Dune::PDELab::ConvectionDiffusionFEM<ModelProblem, FEM>>;
 

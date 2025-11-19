@@ -4,7 +4,7 @@
 
 #define EIGEN_DEFAULT_DENSE_INDEX_TYPE std::int64_t
 
-#define USE_UGGRID 0 // Set to zero to use YASPGrid
+#define USE_UGGRID 1 // Set to zero to use YASPGrid
 #define GRID_DIM 2
 
 #include <algorithm>

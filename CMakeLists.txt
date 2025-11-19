@@ -27,6 +27,8 @@ include(DuneMacros)
 
 # start a dune project with information from dune.module
 dune_project()
+dune_enable_all_packages()
+
 if (dune-common_VERSION VERSION_GREATER_EQUAL 2.10)
   dune_add_library(duneddm INTERFACE EXPORT_NAME DDM)
 else()
