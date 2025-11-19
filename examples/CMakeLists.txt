@@ -8,6 +8,9 @@ if (${dune-pdelab_FOUND})
     add_dune_blas_lapack_flags(poisson)
     add_dune_mpi_flags(poisson)
     add_dune_suitesparse_flags(poisson)
+    if (TARGET Eigen3::Eigen)
+      add_dune_eigen_flags(poisson)
+    endif()
     
     dune_symlink_to_source_files(FILES poisson.ini)
   
