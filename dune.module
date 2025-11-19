@@ -9,4 +9,4 @@ Maintainer: nils.friess@iwr.uni-heidelberg.de
 # Required build dependencies
 Depends: dune-common dune-istl
 # Optional build dependencies
-Suggests: dune-pdelab
+Suggests: dune-pdelab dune-grid dune-uggrid
