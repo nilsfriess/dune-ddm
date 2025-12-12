@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <dune/common/parallel/mpitraits.hh>
+#include <dune/common/parametertree.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/scalarproducts.hh>
 #include <iostream>
@@ -372,3 +373,21 @@ private:
 
   Logger::Event* dot_event;
 };
+
+/** The prefix_ parameter of a Dune::ParameterTree is protected, this function allows to get it
+ *  anyway by creating a class that derives from ParameterTree and the exposes the prefix.
+ */
+inline std::string get_parameter_tree_prefix(const Dune::ParameterTree& ptree)
+{
+  struct P : Dune::ParameterTree {
+    P(const Dune::ParameterTree& p)
+        : Dune::ParameterTree(p)
+    {
+    }
+
+    std::string get_prefix() const { return this->prefix_; }
+  };
+
+  P p(ptree);
+  return p.get_prefix();
+}

@@ -141,8 +141,6 @@ public:
     register_log_events();
     build_communication_interfaces(remoteids);
 
-    const auto& subtree = subtree_name.size() == 0 ? ptree : ptree.sub(subtree_name);
-
     if (ts.size() == 0) DUNE_THROW(Dune::Exception, "Must at least pass one template vector");
 
     if (ts[0].N() != A.N()) DUNE_THROW(Dune::Exception, "Template vectors must match size of matrix");
@@ -157,7 +155,7 @@ public:
 
     logger::debug("Setting up GalerkinPreconditioner with {} template vector{} (max. one rank has is {})", num_t, (num_t == 1 ? "" : "s"), max_num_t);
 
-    build_solver(A, remoteids, subtree);
+    build_solver(A, remoteids, ptree, subtree_name);
   }
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
@@ -254,7 +252,7 @@ private:
   // TODO: Remove some of the logging, this was just added to find out where the most time is spent,
   //       because this function can become the bottleneck for large simulations.
   template <class Mat, class RemoteIndices>
-  void build_solver(const Mat& A, const RemoteIndices& remoteids, const Dune::ParameterTree& subtree)
+  void build_solver(const Mat& A, const RemoteIndices& remoteids, const Dune::ParameterTree& ptree, const std::string &subtree_name)
   {
     Logger::ScopedLog se(build_solver_event);
 
@@ -413,6 +411,11 @@ private:
       using Op = Dune::MatrixAdapter<Mat, Vec, Vec>;
       Dune::initSolverFactories<Op>();
       auto op = std::make_shared<Op>(a0);
+
+      // Since the error message that Dune gives us when there is no 'type' key in the solver subtree
+      // is useless, we check ourselves first and tell the user what they need to do.
+      const auto& subtree = subtree_name.size() == 0 ? ptree : ptree.sub(subtree_name);
+      if (not subtree.hasKey("type")) DUNE_THROW(Dune::Exception, "You must specify the solver in the subtree " << get_parameter_tree_prefix(ptree) << subtree_name << " using the key 'type'");
       solver = Dune::getSolverFromFactory(op, subtree);
     }
     Logger::get().endEvent(factor_A0);

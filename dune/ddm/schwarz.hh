@@ -149,7 +149,12 @@ public:
 
     Dune::initSolverFactories<Op>();
     auto op = std::make_shared<Op>(this->Aovlp);
-    solver = Dune::getSolverFromFactory(op, subtree.sub(solver_subtree_name));
+    // Since the error message that Dune gives us when there is no 'type' key in the solver_subtree
+    // is useless, we check ourselves first and tell the user what they need to do.
+    const auto& solver_subtree = subtree.sub(solver_subtree_name);
+    if (not solver_subtree.hasKey("type"))
+      DUNE_THROW(Dune::Exception, "You must specify the solver in the subtree " << get_parameter_tree_prefix(ptree) << subtree_name << "." << solver_subtree_name << " using the key 'type'");
+    solver = Dune::getSolverFromFactory(op, solver_subtree);
     init(remoteids);
   }
 

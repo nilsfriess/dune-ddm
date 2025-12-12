@@ -2,8 +2,6 @@
 
 #include "coarsespaces/coarse_spaces.hh"
 #include "combined_preconditioner.hh"
-#include "dune/common/exceptions.hh"
-#include "dune/ddm/datahandles.hh"
 #include "galerkin_preconditioner.hh"
 #include "helpers.hh"
 #include "nonoverlapping_operator.hh"
@@ -12,7 +10,6 @@
 
 #include <dune/common/parametertree.hh>
 #include <dune/istl/preconditioner.hh>
-
 #include <memory>
 
 #if HAVE_DUNE_PDELAB
@@ -28,8 +25,8 @@ class TwoLevelSchwarz : public Dune::Preconditioner<X, Y> {
   struct CopyGatherScatter {
     using DataType = double;
 
-    static DataType gather(const Vec &x, std::size_t i) { return x[i]; }
-    static void scatter(Vec &x, DataType v, std::size_t i) { x[i] = v; }
+    static DataType gather(const Vec& x, std::size_t i) { return x[i]; }
+    static void scatter(Vec& x, DataType v, std::size_t i) { x[i] = v; }
   };
 
 public:
@@ -37,11 +34,11 @@ public:
   using CoarseLevel = GalerkinPreconditioner<X>;
 
   template <class Vec, class RemoteIndices>
-  TwoLevelSchwarz(std::shared_ptr<Mat> A_novlp, const RemoteIndices &remote_ids, const std::vector<Vec> &template_vecs, const Dune::ParameterTree &ptree,
-                  const std::string &subtree_name = "twolevelschwarz")
+  TwoLevelSchwarz(std::shared_ptr<Mat> A_novlp, const RemoteIndices& remote_ids, const std::vector<Vec>& template_vecs, const Dune::ParameterTree& ptree,
+                  const std::string& subtree_name = "twolevelschwarz")
       : prec(ptree, subtree_name)
   {
-    const auto &subtree = ptree.sub(subtree_name);
+    const auto& subtree = ptree.sub(subtree_name);
 
     int overlap = subtree.get("overlap", 1);
 
@@ -60,9 +57,7 @@ public:
     std::vector<Vec> extended_template_vecs(template_vecs.size(), Vec(A->N()));
     for (std::size_t i = 0; i < template_vecs.size(); ++i) {
       extended_template_vecs[i] = 0;
-      for (std::size_t j = 0; j < template_vecs[i].N(); ++j) {
-        extended_template_vecs[i][j] = template_vecs[i][j];
-      }
+      for (std::size_t j = 0; j < template_vecs[i].N(); ++j) extended_template_vecs[i][j] = template_vecs[i][j];
       owner_copy_comm.forward<CopyGatherScatter<Vec>>(extended_template_vecs[i]);
     }
 
@@ -77,9 +72,10 @@ public:
   }
 
   template <class RemoteIndices>
-  TwoLevelSchwarz(std::shared_ptr<Mat> A_novlp, const RemoteIndices &remote_ids, const Dune::ParameterTree &ptree, const std::string &subtree_name = "twolevelschwarz") : prec(ptree, subtree_name)
+  TwoLevelSchwarz(std::shared_ptr<Mat> A_novlp, const RemoteIndices& remote_ids, const Dune::ParameterTree& ptree, const std::string& subtree_name = "twolevelschwarz")
+      : prec(ptree, subtree_name)
   {
-    const auto &subtree = ptree.sub(subtree_name);
+    const auto& subtree = ptree.sub(subtree_name);
 
     int overlap = subtree.get("overlap", 1);
 
@@ -99,10 +95,10 @@ public:
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
 
-  void pre(X &, Y &) override {}
-  void post(X &) override {}
+  void pre(X&, Y&) override {}
+  void post(X&) override {}
 
-  void apply(X &v, const Y &d) override { prec.apply(v, d); }
+  void apply(X& v, const Y& d) override { prec.apply(v, d); }
 
 private:
   std::shared_ptr<Mat> A; /// The overlapping matrix
@@ -115,7 +111,7 @@ private:
 #if HAVE_DUNE_PDELAB
 
 template <class GFS>
-auto make_remote_indices(const GFS &gfs, const Dune::MPIHelper &helper)
+auto make_remote_indices(const GFS& gfs, const Dune::MPIHelper& helper)
 {
   using Dune::PDELab::Backend::native;
 
@@ -125,9 +121,7 @@ auto make_remote_indices(const GFS &gfs, const Dune::MPIHelper &helper)
   // bits.
   using GlobalIndexVec = Dune::PDELab::Backend::Vector<GFS, std::uint64_t>;
   GlobalIndexVec giv(gfs);
-  for (std::size_t i = 0; i < giv.N(); ++i) {
-    native(giv)[i] = (static_cast<std::uint64_t>(i + 1) << 32ULL) + helper.rank();
-  }
+  for (std::size_t i = 0; i < giv.N(); ++i) native(giv)[i] = (static_cast<std::uint64_t>(i + 1) << 32ULL) + helper.rank();
 
   // Now we have a unique global indexing scheme in the interior of each process
   // subdomain; at the process boundary we take the smallest among all
@@ -165,14 +159,14 @@ auto make_remote_indices(const GFS &gfs, const Dune::MPIHelper &helper)
   gfs.gridView().communicate(nbdh, Dune::All_All_Interface, Dune::ForwardCommunication);
   std::vector<int> neighbours(neighboursset.begin(), neighboursset.end());
 
-  auto *remoteindices = new RemoteIndices(*paridxs, *paridxs, helper.getCommunicator(), neighbours);
+  auto* remoteindices = new RemoteIndices(*paridxs, *paridxs, helper.getCommunicator(), neighbours);
   remoteindices->rebuild<false>();
 
   // RemoteIndices store a reference to the paridxs that are passed to the constructor.
   // In order to avoid dangling references, we capture the paridxs shared_ptr in the lambda
   // to increase the reference count which ensures that it will be deleted as soon as the
   // remoteindices are deleted.
-  return std::shared_ptr<RemoteIndices>(remoteindices, [paridxs](auto *ptr) mutable { delete ptr; });
+  return std::shared_ptr<RemoteIndices>(remoteindices, [paridxs](auto* ptr) mutable { delete ptr; });
 }
 
 // Wrapper for usage in PDELab's Newton solver
@@ -193,14 +187,16 @@ class TwoLevelSchwarzSolver : public Dune::PDELab::LinearResultStorage {
   struct CopyGatherScatter {
     using DataType = double;
 
-    static DataType gather(const NativeVec &x, std::size_t i) { return x[i]; }
-    static void scatter(NativeVec &x, DataType v, std::size_t i) { x[i] = v; }
+    static DataType gather(const NativeVec& x, std::size_t i) { return x[i]; }
+    static void scatter(NativeVec& x, DataType v, std::size_t i) { x[i] = v; }
   };
 
 public:
   template <class GFS, class CC>
-  explicit TwoLevelSchwarzSolver(const GFS &gfs, const CC &cc, const Dune::MPIHelper &helper, const Dune::ParameterTree &ptree, const std::string &subtree_name = "twolevelschwarz")
-      : remoteids(make_remote_indices(gfs, helper)), comm(*this->remoteids), subtree(ptree.sub(subtree_name))
+  explicit TwoLevelSchwarzSolver(const GFS& gfs, const CC& cc, const Dune::MPIHelper& helper, const Dune::ParameterTree& ptree, const std::string& subtree_name = "twolevelschwarz")
+      : remoteids(make_remote_indices(gfs, helper))
+      , comm(*this->remoteids)
+      , subtree(ptree.sub(subtree_name))
   {
     using Dune::PDELab::Backend::Native;
     using Dune::PDELab::Backend::native;
@@ -211,20 +207,20 @@ public:
 
     std::vector<Vec> template_vecs(1, gfs);
     int cnt = 0;
-    Dune::PDELab::interpolate([](auto &&) { return 1; }, gfs, template_vecs[cnt++]);
+    Dune::PDELab::interpolate([](auto&&) { return 1; }, gfs, template_vecs[cnt++]);
     // Dune::PDELab::interpolate([](auto &&x) { return x[0]; }, gfs, template_vecs[cnt++]);
     // Dune::PDELab::interpolate([](auto &&x) { return x[1]; }, gfs, template_vecs[cnt++]);
     // Dune::PDELab::interpolate([](auto &&x) { return x[0] * x[0]; }, gfs, template_vecs[cnt++]);
     // Dune::PDELab::interpolate([](auto &&x) { return x[1] * x[1]; }, gfs, template_vecs[cnt++]);
     // Dune::PDELab::interpolate([](auto &&x) { return x[0] * x[1]; }, gfs, template_vecs[cnt++]);
-    std::for_each(template_vecs.begin(), template_vecs.end(), [&](auto &&v) { Dune::PDELab::set_constrained_dofs(cc, 0., v); }); // ensure they're zero on the Dirichlet boundary
+    std::for_each(template_vecs.begin(), template_vecs.end(), [&](auto&& v) { Dune::PDELab::set_constrained_dofs(cc, 0., v); }); // ensure they're zero on the Dirichlet boundary
 
     native_template_vecs.resize(template_vecs.size(), NativeVec(template_vecs[0].N()));
-    std::transform(template_vecs.begin(), template_vecs.end(), native_template_vecs.begin(), [](auto &&v) { return native(v); });
+    std::transform(template_vecs.begin(), template_vecs.end(), native_template_vecs.begin(), [](auto&& v) { return native(v); });
   }
 
   template <class M, class V, class W>
-  void apply(M &A, V &z, W &r, typename Dune::template FieldTraits<typename W::ElementType>::real_type reduction)
+  void apply(M& A, V& z, W& r, typename Dune::template FieldTraits<typename W::ElementType>::real_type reduction)
   {
     using Dune::PDELab::Backend::Native;
     using Dune::PDELab::Backend::native;
@@ -233,8 +229,6 @@ public:
 
     // If it's the first time this function is called, create the overlapping matrix.
     // In the subsequent calls, we only update the matrix.
-    // TODO: Currently, updating the matrix is actually the expensive part (due to inefficiencies in
-    //       Dune's VariableSizeCommunicator. We should try to improve this.
     if (!ext_ids) {
       Dune::initSolverFactories<Op>();
 
@@ -256,9 +250,7 @@ public:
       std::vector<NativeVec> extended_template_vecs(native_template_vecs.size(), NativeVec(A_ovlp->N()));
       for (std::size_t i = 0; i < native_template_vecs.size(); ++i) {
         extended_template_vecs[i] = 0;
-        for (std::size_t j = 0; j < native_template_vecs[i].N(); ++j) {
-          extended_template_vecs[i][j] = native_template_vecs[i][j];
-        }
+        for (std::size_t j = 0; j < native_template_vecs[i].N(); ++j) extended_template_vecs[i][j] = native_template_vecs[i][j];
         owner_copy_comm.forward<CopyGatherScatter>(extended_template_vecs[i]);
       }
       native_template_vecs = std::move(extended_template_vecs);
@@ -281,9 +273,7 @@ public:
     int rank{};
     MPI_Comm_rank(remoteids->communicator(), &rank);
     Dune::ParameterTree solver_subtree;
-    if (subtree.hasSub("solver")) {
-      solver_subtree = subtree.sub("solver");
-    }
+    if (subtree.hasSub("solver")) { solver_subtree = subtree.sub("solver"); }
     else {
       solver_subtree["type"] = "restartedgmressolver";
       solver_subtree["restart"] = "30";
@@ -312,7 +302,7 @@ public:
   }
 
   template <class V>
-  typename V::ElementType norm(const V &v) const
+  typename V::ElementType norm(const V& v) const
   {
     using Dune::PDELab::Backend::Native;
     using Dune::PDELab::Backend::native;

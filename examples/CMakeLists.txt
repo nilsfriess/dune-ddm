@@ -1,18 +1,42 @@
 if (${dune-pdelab_FOUND})
   option(DUNE_DDM_BUILD_EXAMPLES "Try to build the examples" On)
-  if (${DUNE_DDM_BUILD_EXAMPLES})    
+  if (${DUNE_DDM_BUILD_EXAMPLES})
+    # find_package(Lua)
+    if(Lua_FOUND AND NOT TARGET Lua::Lua)
+      add_library(Lua::Lua INTERFACE IMPORTED)
+      set_target_properties(
+        Lua::Lua
+        PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${LUA_INCLUDE_DIR}"
+        INTERFACE_LINK_LIBRARIES "${LUA_LIBRARIES}"
+      )
+    endif()
+
+    # Poisson example
     add_executable(poisson EXCLUDE_FROM_ALL poisson.cc)
-    target_link_libraries(poisson PUBLIC duneddm libluajit-5.1.so)
-    target_link_libraries(poisson PUBLIC duneddm lapacke)
-    # add_dune_blas_lapack_flags(poisson)
-    # add_dune_mpi_flags(poisson)
-    # add_dune_suitesparse_flags(poisson)
-    # if (TARGET Eigen3::Eigen)
-    #   add_dune_eigen_flags(poisson)
-    # endif()
+    target_link_libraries(poisson PUBLIC duneddm)
+    add_dune_blas_lapack_flags(poisson)
     target_link_dune_default_libraries(poisson)
-    
     dune_symlink_to_source_files(FILES poisson.ini)
+
+    # Linear elasticity example
+    add_executable(linearelasticity EXCLUDE_FROM_ALL linearelasticity.cc)
+    target_link_libraries(linearelasticity PUBLIC duneddm)
+    if (${Lua_FOUND})
+      target_link_libraries(linearelasticity PUBLIC Lua::Lua)
+      target_compile_definitions(linearelasticity PUBLIC DUNE_DDM_HAVE_LUA)
+      dune_symlink_to_source_files(FILES coefficient.lua)
+    endif()
+    add_dune_blas_lapack_flags(linearelasticity)
+    target_link_dune_default_libraries(linearelasticity)
+    dune_symlink_to_source_files(FILES linearelasticity.ini)
+
+    # Nonlinear Poisson example
+    add_executable(nonlinearpoisson EXCLUDE_FROM_ALL nonlinearpoisson.cc)
+    target_link_libraries(nonlinearpoisson PUBLIC duneddm)
+    add_dune_blas_lapack_flags(nonlinearpoisson)
+    target_link_dune_default_libraries(nonlinearpoisson)
+    dune_symlink_to_source_files(FILES nonlinearpoisson.ini)
   
     # add_executable(pdelab_example EXCLUDE_FROM_ALL pdelab_example.cc)
     # target_link_dune_default_libraries(pdelab_example)
@@ -23,12 +47,3 @@ if (${dune-pdelab_FOUND})
 else()
   message(WARNING "PDELab not found, not building examples")
 endif()
-
-# add_executable(solve_matrix_market EXCLUDE_FROM_ALL solve_matrix_market.cc)
-# target_link_dune_default_libraries(solve_matrix_market)
-# target_link_libraries(solve_matrix_market PUBLIC duneddm)
-
-# add_executable(gpu_solvers gpu_solvers.cc)
-# target_link_libraries(gpu_solvers PUBLIC dune-ddm Dune::PDELab)
-# add_dune_all_flags(gpu_solvers)
-

@@ -23,7 +23,8 @@ class ExtendedRemoteIndices {
 public:
   using ParallelIndexSet = typename RemoteIndices::ParallelIndexSet;
 
-  ExtendedRemoteIndices(const RemoteIndices &remoteids, const Mat &A, int overlap) : overlap(overlap)
+  ExtendedRemoteIndices(const RemoteIndices& remoteids, const Mat& A, int overlap)
+      : overlap(overlap)
   {
     assert(remoteids.sourceIndexSet().size() == A.N() && "Index set must match size of matrix");
 
@@ -36,7 +37,7 @@ public:
 
     // Initialise the local-to-global and global-to-local maps
     ltg.resize(remoteids.sourceIndexSet().size());
-    for (const auto &it : remoteids.sourceIndexSet()) {
+    for (const auto& it : remoteids.sourceIndexSet()) {
       ltg[it.local().local()] = it.global();
       gis.insert(it.global());
     }
@@ -44,22 +45,17 @@ public:
     // Initialise the "boundary distance map"
     IdentifyBoundaryDataHandle ibdh(A, remoteids.sourceIndexSet());
     varcomm->forward(ibdh);
-    const auto &boundary_mask = ibdh.get_boundary_mask();
+    const auto& boundary_mask = ibdh.get_boundary_mask();
 
     boundary_distance.resize(remoteids.sourceIndexSet().size(), std::numeric_limits<int>::max() - 1);
-    for (std::size_t i = 0; i < boundary_distance.size(); ++i) {
-      if (boundary_mask[i]) {
-        boundary_distance[i] = 0;
-      }
-    }
+    for (std::size_t i = 0; i < boundary_distance.size(); ++i)
+      if (boundary_mask[i]) boundary_distance[i] = 0;
 
-    for (int round = 0; round < overlap + 2; ++round) {
+    for (int round = 0; round <= overlap; ++round) {
       for (std::size_t i = 0; i < boundary_distance.size(); ++i) {
         for (auto cit = A[i].begin(); cit != A[i].end(); ++cit) {
           auto nb_dist_plus_one = boundary_distance[cit.index()] + 1;
-          if (nb_dist_plus_one < boundary_distance[i]) {
-            boundary_distance[i] = nb_dist_plus_one;
-          }
+          if (nb_dist_plus_one < boundary_distance[i]) boundary_distance[i] = nb_dist_plus_one;
         }
       }
     }
@@ -73,26 +69,24 @@ public:
     // When we're done, we create a boundary mask on the overlapping index set
     ovlp_boundary_mask.resize(size(), false);
     auto n_indices_last_added = index_set_sizes[index_set_sizes.size() - 1] - index_set_sizes[index_set_sizes.size() - 2];
-    for (std::size_t i = size() - n_indices_last_added; i < size(); ++i) {
-      ovlp_boundary_mask[i] = true;
-    }
+    for (std::size_t i = size() - n_indices_last_added; i < size(); ++i) ovlp_boundary_mask[i] = true;
   }
 
-  const RemoteIndices &get_remote_indices() const { return *ext_indices.first; }
-  const ParallelIndexSet &get_parallel_index_set() const { return *ext_indices.second; }
+  const RemoteIndices& get_remote_indices() const { return *ext_indices.first; }
+  const ParallelIndexSet& get_parallel_index_set() const { return *ext_indices.second; }
   RemoteParallelIndices<RemoteIndices> get_remote_par_indices() { return ext_indices; }
   int get_overlap() const { return overlap; }
   std::size_t size() const { return get_parallel_index_set().size(); }
-  const std::vector<bool> &get_overlapping_boundary_mask() const { return ovlp_boundary_mask; }
+  const std::vector<bool>& get_overlapping_boundary_mask() const { return ovlp_boundary_mask; }
 
-  Dune::VariableSizeCommunicator<> &get_overlapping_communicator() const { return *varcomm; }
+  Dune::VariableSizeCommunicator<>& get_overlapping_communicator() const { return *varcomm; }
 
-  const std::vector<std::size_t> &get_index_set_sizes() const { return index_set_sizes; }
+  const std::vector<std::size_t>& get_index_set_sizes() const { return index_set_sizes; }
 
-  Mat create_overlapping_matrix(const Mat &A) const
+  Mat create_overlapping_matrix(const Mat& A) const
   {
-    auto *create_matrix_event = Logger::get().registerOrGetEvent("OverlapExtension", "create Matrix");
-    auto *add_matrix_event = Logger::get().registerOrGetEvent("OverlapExtension", "add Matrix");
+    auto* create_matrix_event = Logger::get().registerOrGetEvent("OverlapExtension", "create Matrix");
+    auto* add_matrix_event = Logger::get().registerOrGetEvent("OverlapExtension", "add Matrix");
 
     Logger::get().startEvent(create_matrix_event);
     CreateMatrixDataHandle cmdh(A, get_parallel_index_set(), ltg, gis);
@@ -115,9 +109,9 @@ public:
    *  create_overlapping_matrix(). This can be used in nonlinear problems, for
    *  instance, to avoid re-creating the matrix from scratch everytime.
    */
-  Mat update_overlapping_matrix(const Mat &A, Mat &Aovlp) const
+  Mat update_overlapping_matrix(const Mat& A, Mat& Aovlp) const
   {
-    auto *add_matrix_event = Logger::get().registerOrGetEvent("OverlapExtension", "add Matrix");
+    auto* add_matrix_event = Logger::get().registerOrGetEvent("OverlapExtension", "add Matrix");
 
     Logger::get().startEvent(add_matrix_event);
     Aovlp = 0;
@@ -133,18 +127,16 @@ private:
   // will be modified according to the functor isPublic(int local_index) -> bool. Note that indices that were public in the old index set will
   // also be set as public in the returned one.
   template <class ParallelIndexSet, class IsPublic>
-  ParallelIndexSet modify_parindexset_public_state(const ParallelIndexSet &indexSet, IsPublic &&isPublic)
+  ParallelIndexSet modify_parindexset_public_state(const ParallelIndexSet& indexSet, IsPublic&& isPublic)
   {
     ParallelIndexSet newIndexSet;
     newIndexSet.beginResize();
-    for (const auto &idx : indexSet) {
-      newIndexSet.add(idx.global(), {idx.local().local(), idx.local().attribute(), idx.local().isPublic() or isPublic(idx.local().local())});
-    }
+    for (const auto& idx : indexSet) newIndexSet.add(idx.global(), {idx.local().local(), idx.local().attribute(), idx.local().isPublic() or isPublic(idx.local().local())});
     newIndexSet.endResize();
     return newIndexSet;
   }
 
-  void extend_overlap(const RemoteIndices &remoteids, const Mat &A)
+  void extend_overlap(const RemoteIndices& remoteids, const Mat& A)
   {
     Logger::ScopedLog sl{extend_event};
 
@@ -163,12 +155,10 @@ private:
 
     // Store all neighbours in one set
     std::set<int> nbs_set;
-    for (const auto &ranks : rt.rankmap) {
-      nbs_set.insert(ranks.begin(), ranks.end());
-    }
+    for (const auto& ranks : rt.rankmap) nbs_set.insert(ranks.begin(), ranks.end());
 
     // Next, create a new parallel index set. This will be extended in each overlap extension round
-    auto ext_pidxs = modify_parindexset_public_state(remoteids.sourceIndexSet(), [&](int li) { return boundary_distance[li] <= overlap; });
+    auto ext_pidxs = modify_parindexset_public_state(remoteids.sourceIndexSet(), [&](int li) { return boundary_distance[li] <= overlap + 1; });
 
     // Create the remote indices
     std::vector<int> nbs(nbs_set.begin(), nbs_set.end());
@@ -202,28 +192,22 @@ private:
       varcomm->forward(uprdh);
 
       std::map<int, std::set<int>> new_nbs;
-      for (const auto &ranks : extdh.updated_rankmap) {
-        for (const auto &p : ranks) {
-          for (const auto &q : ranks) {
-            if (p != q and nbs_set.count(p)) {
-              new_nbs[p].insert(q);
-            }
-          }
+      for (const auto& ranks : extdh.updated_rankmap) {
+        for (const auto& p : ranks) {
+          for (const auto& q : ranks)
+            if (p != q and nbs_set.count(p)) new_nbs[p].insert(q);
         }
       }
 
-      for (const auto &p : nbs_set) {
-        if (not new_nbs.count(p)) {
-          new_nbs[p].insert(p);
-        }
-      }
+      for (const auto& p : nbs_set)
+        if (not new_nbs.contains(p)) new_nbs[p].insert(p);
 
       reqs.resize(2 * new_nbs.size());
       sendcount.resize(new_nbs.size());
       recvcount.resize(new_nbs.size());
       std::size_t i = 0; // Counter for reqs
       std::size_t j = 0; // Counter for send/recvcount
-      for (const auto &[p, pnbs] : new_nbs) {
+      for (const auto& [p, pnbs] : new_nbs) {
         sendcount[j] = pnbs.size();
         MPI_Irecv(&(recvcount[j]), 1, Dune::MPITraits<std::size_t>::getType(), p, 1, comm, &(reqs[i++]));
         MPI_Isend(&(sendcount[j++]), 1, Dune::MPITraits<std::size_t>::getType(), p, 1, comm, &(reqs[i++]));
@@ -234,7 +218,7 @@ private:
       new_nbs_data_recv.resize(new_nbs.size());
       i = 0;
       j = 0;
-      for (const auto &[p, pnbs] : new_nbs) {
+      for (const auto& [p, pnbs] : new_nbs) {
         new_nbs_data[j].assign(pnbs.begin(), pnbs.end());
         new_nbs_data_recv[j].resize(recvcount[j]);
 
@@ -245,19 +229,14 @@ private:
       MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
 
       j = 0;
-      for (const auto &[p, pnbs] : new_nbs) {
+      for (const auto& [p, pnbs] : new_nbs) {
         (void)p; // Silence warning
-        for (const auto &q : new_nbs_data_recv[j++]) {
-          if (q != rank) {
-            nbs_set.insert(q);
-          }
-        }
+        for (const auto& q : new_nbs_data_recv[j++])
+          if (q != rank) nbs_set.insert(q);
       }
 
       ext_pidxs.beginResize();
-      for (std::size_t i = index_set_sizes[round]; i < index_set_sizes[round + 1]; ++i) {
-        ext_pidxs.add(ltg[i], {i, Attribute::copy, true});
-      }
+      for (std::size_t i = index_set_sizes[round]; i < index_set_sizes[round + 1]; ++i) ext_pidxs.add(ltg[i], {i, Attribute::copy, true});
       ext_pidxs.endResize();
 
       ext_rids->setNeighbours(nbs_set);
@@ -290,7 +269,7 @@ private:
 
   std::vector<bool> ovlp_boundary_mask; // A mask for the dofs at the overlapping subdomain boundary
 
-  Logger::Event *extend_event;
+  Logger::Event* extend_event;
 
   RemoteParallelIndices<RemoteIndices> ext_indices;
 };

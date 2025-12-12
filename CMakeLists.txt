@@ -37,7 +37,7 @@ endif()
 
 find_package(BLAS REQUIRED)
 find_package(LAPACK REQUIRED)
-# find_package(OpenMP REQUIRED)
+find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED)
 find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK CHOLMOD)
 
@@ -56,18 +56,22 @@ endif()
 
 option(DUNE_DDM_WITH_TASKFLOW "Download the taskflow library for asynchronous execution" On)
 if (${DUNE_DDM_WITH_TASKFLOW})
-   include(FetchContent)
-   message(STATUS "Trying to download Taskflow (C++ Parallel Programming Library)")
-   set(TF_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-   set(TF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-   FetchContent_Declare(
-     Taskflow
-     GIT_REPOSITORY https://github.com/taskflow/taskflow.git
-     GIT_TAG        v3.8.0
-   )
-   FetchContent_MakeAvailable(Taskflow)
-   target_link_libraries(duneddm PUBLIC INTERFACE Taskflow)
-   target_compile_definitions(duneddm PUBLIC INTERFACE DUNE_DDM_HAVE_TASKFLOW=1)
+  find_package(Taskflow)
+
+  if(NOT ${FOUND_Taskflow})
+    include(FetchContent)
+    message(STATUS "Trying to download Taskflow (C++ Parallel Programming Library)")
+    set(TF_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(TF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+      Taskflow
+      GIT_REPOSITORY https://github.com/taskflow/taskflow.git
+      GIT_TAG        v3.8.0
+    )
+    FetchContent_MakeAvailable(Taskflow)
+  endif()
+  target_link_libraries(duneddm PUBLIC INTERFACE Taskflow::Taskflow)
+  target_compile_definitions(duneddm PUBLIC INTERFACE DUNE_DDM_HAVE_TASKFLOW=1)
 endif()
 
 add_subdirectory(examples)

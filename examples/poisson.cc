@@ -11,6 +11,9 @@
 #include <bitset>
 #include <cmath>
 #include <cstddef>
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Weverything"
 #include <dune/common/densevector.hh>
 #include <dune/common/exceptions.hh>
 #include <dune/common/fmatrix.hh>
@@ -60,6 +63,7 @@
 
 #include "pdelab_helper.hh"
 #include "poisson.hh"
+#pragma clang diagnostic pop
 
 #include <dune/ddm/coarsespaces/coarse_spaces.hh>
 #include <dune/ddm/combined_preconditioner.hh>
@@ -115,8 +119,6 @@ auto make_grid(const Dune::ParameterTree& ptree, [[maybe_unused]] const Dune::MP
   auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0, 1.0}, {gridsize, gridsize, gridsize}, std::bitset<3>(0ULL), 0, Grid::Communication(), &partitioner));
 #endif
 #endif
-
-  grid->globalRefine(ptree.get("serial_refine", 0));
 
 #if USE_UGGRID
   auto gv = grid->leafGridView();
@@ -192,7 +194,7 @@ int main(int argc, char* argv[])
     // on the overlapping subdomains. Now we can assemble the overlapping matrices.
     const auto& coarsespace_subtree = ptree.sub("coarsespace");
     auto coarsespace = coarsespace_subtree.get("type", "geneo");
-    if (coarsespace == "geneo" or coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
+    if (coarsespace == "geneo" or coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::Overlap, true);
     else if (coarsespace == "msgfem") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
     else if (coarsespace == "pou" or coarsespace == "harmonic_extension" or coarsespace == "algebraic_geneo" or coarsespace == "algebraic_msgfem" or coarsespace == "none")
       problem.assemble_dirichlet_matrix_only(ext_indices);
@@ -248,8 +250,7 @@ int main(int argc, char* argv[])
           A_dir, A_neu, overlap, pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), problem.get_neumann_region_to_subdomain(), ptree, taskflow);
     }
     else if (coarsespace == "algebraic_geneo") {
-      coarse_space =
-          std::make_unique<AlgebraicGenEOCoarseSpace<Native<Mat>>>(problem.getA().storage(), A_dir, pou, problem.get_overlapping_dirichlet_mask(), ext_indices, ptree, taskflow);
+      coarse_space = std::make_unique<AlgebraicGenEOCoarseSpace<Native<Mat>>>(problem.getA().storage(), A_dir, pou, problem.get_overlapping_dirichlet_mask(), ext_indices, ptree, taskflow);
     }
     else if (coarsespace == "algebraic_msgfem") {
       coarse_space = std::make_unique<AlgebraicMsGFEMCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>,
@@ -385,7 +386,7 @@ int main(int argc, char* argv[])
         for (const auto& idx : problem.get_neumann_region_to_subdomain()) ring_region[idx] = 1;
       write_overlapping_vector(ring_region, "Ring region");
 
-      writer.write(ptree.get("filename", "Poisson"));
+      writer.write(ptree.get("filename", "Poisson"), Dune::VTK::appendedraw);
     }
 
     Logger::get().endEvent(total);
