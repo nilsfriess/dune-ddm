@@ -11,8 +11,6 @@
 #include "../logger.hh"
 #include "dune/ddm/helpers.hh"
 
-#include <numeric>
-#include <random>
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/indexset.hh>
 #include <dune/common/parallel/interface.hh>
@@ -20,6 +18,8 @@
 #include <dune/istl/bvector.hh>
 #include <dune/istl/matrixmarket.hh>
 #include <mpi.h>
+#include <numeric>
+#include <random>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -1329,9 +1329,9 @@ public:
     detail::finalize_eigenvectors(this->basis_, pou);
   }
 
-  POUCoarseSpace(std::vector<Vec>&& template_vecs, const PartitionOfUnity& pou)
+  POUCoarseSpace(std::vector<Vec>& template_vecs, const PartitionOfUnity& pou)
   {
-    this->basis_ = std::forward<std::vector<Vec>>(template_vecs); // Move if the caller allows it, otherwise just copy
+    this->basis_ = template_vecs;
     detail::finalize_eigenvectors(this->basis_, pou);
   }
 };
