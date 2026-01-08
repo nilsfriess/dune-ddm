@@ -20,198 +20,211 @@
  */
 
 #include <chrono>
+#include <cstdlib>
 #include <deque>
+#include <dune/common/parallel/mpitraits.hh>
 #include <iomanip>
 #include <iostream>
 #include <mpi.h>
+#include <mutex>
 #include <ostream>
 #include <ratio>
+#include <sstream>
 #include <string>
 #include <vector>
-#include <sstream>
-#include <mutex>
-#include <cstdlib>
-
-#include <dune/common/parallel/mpitraits.hh>
 
 /**
  * @brief Simple logging namespace to replace spdlog dependency
- * 
+ *
  * Provides basic logging functionality with MPI rank awareness.
  * Supports format strings and different log levels.
  */
 namespace logger {
 
-enum class Level {
-  trace = 0,
-  debug = 1,
-  info = 2,
-  warn = 3,
-  error = 4,
-  off = 5
-};
+enum class Level { trace = 0, debug = 1, info = 2, warn = 3, error = 4, off = 5 };
 
 namespace detail {
-  // Global logging state
-  static Level current_level = Level::info;
-  static int mpi_rank = 0;
-  static bool initialized = false;
-  static std::mutex log_mutex;
+// Global logging state
+static Level current_level = Level::info;
+static int mpi_rank = 0;
+static bool initialized = false;
+static std::mutex log_mutex;
 
-  inline void ensure_initialized() {
-    if (!initialized) {
-      MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-      const char* env_level = std::getenv("LOG_LEVEL");
-      if (env_level) {
-        std::string level_str(env_level);
-        if (level_str == "trace") current_level = Level::trace;
-        else if (level_str == "debug") current_level = Level::debug;
-        else if (level_str == "info") current_level = Level::info;
-        else if (level_str == "warn") current_level = Level::warn;
-        else if (level_str == "error") current_level = Level::error;
-        else if (level_str == "off") current_level = Level::off;
-      }
-      initialized = true;
+inline void ensure_initialized()
+{
+  if (!initialized) {
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    const char* env_level = std::getenv("LOG_LEVEL");
+    if (env_level) {
+      std::string level_str(env_level);
+      if (level_str == "trace") current_level = Level::trace;
+      else if (level_str == "debug") current_level = Level::debug;
+      else if (level_str == "info") current_level = Level::info;
+      else if (level_str == "warn") current_level = Level::warn;
+      else if (level_str == "error") current_level = Level::error;
+      else if (level_str == "off") current_level = Level::off;
     }
-  }
-
-  inline const char* level_name(Level level) {
-    switch (level) {
-      case Level::trace: return "trace";
-      case Level::debug: return "debug";
-      case Level::info: return "info";
-      case Level::warn: return "warn";
-      case Level::error: return "error";
-      case Level::off: return "off";
-    }
-    return "unknown";
-  }
-
-  // Simple format string replacement for {} placeholders
-  template<typename T>
-  std::string format_string(const std::string& fmt, T&& value) {
-    std::ostringstream oss;
-    oss << value;
-    std::string result = fmt;
-    size_t pos = result.find("{}");
-    if (pos != std::string::npos) {
-      result.replace(pos, 2, oss.str());
-    }
-    return result;
-  }
-
-  template<typename T, typename... Args>
-  std::string format_string(const std::string& fmt, T&& first, Args&&... args) {
-    std::ostringstream oss;
-    oss << first;
-    std::string result = fmt;
-    size_t pos = result.find("{}");
-    if (pos != std::string::npos) {
-      result.replace(pos, 2, oss.str());
-      return format_string(result, std::forward<Args>(args)...);
-    }
-    return result;
-  }
-
-  inline std::string format_string(const std::string& fmt) {
-    return fmt;
-  }
-
-  template<typename... Args>
-  void log_impl(Level level, bool all_ranks, const std::string& message, Args&&... args) {
-    ensure_initialized();
-    
-    if (level < current_level) return;
-    if (!all_ranks && mpi_rank != 0) return;
-
-    std::lock_guard<std::mutex> lock(log_mutex);
-    
-    std::string formatted_msg;
-    if (sizeof...(args) > 0) {
-      formatted_msg = format_string(message, std::forward<Args>(args)...);
-    } else {
-      formatted_msg = message;
-    }
-
-    std::cout << "[" << level_name(level) << ":" << mpi_rank << "] " << formatted_msg << std::endl;
+    initialized = true;
   }
 }
+
+inline const char* level_name(Level level)
+{
+  switch (level) {
+    case Level::trace: return "trace";
+    case Level::debug: return "debug";
+    case Level::info: return "info";
+    case Level::warn: return "warn";
+    case Level::error: return "error";
+    case Level::off: return "off";
+  }
+  return "unknown";
+}
+
+// Overload for std::vector types
+template <class T>
+std::ostream& operator<<(std::ostream& out, const std::vector<T>& data)
+{
+  out << "[ ";
+  for (std::size_t i = 0; i < data.size(); ++i) {
+    out << data[i];
+    if (i + 1 != data.size()) out << ", ";
+  }
+  out << " ]";
+  return out;
+}
+
+// Simple format string replacement for {} placeholders
+template <typename T>
+std::string format_string(const std::string& fmt, T&& value)
+{
+  std::ostringstream oss;
+  oss << value;
+  std::string result = fmt;
+  size_t pos = result.find("{}");
+  if (pos != std::string::npos) result.replace(pos, 2, oss.str());
+  return result;
+}
+
+template <typename T, typename... Args>
+std::string format_string(const std::string& fmt, T&& first, Args&&... args)
+{
+  std::ostringstream oss;
+  oss << first;
+  std::string result = fmt;
+  size_t pos = result.find("{}");
+  if (pos != std::string::npos) {
+    result.replace(pos, 2, oss.str());
+    return format_string(result, std::forward<Args>(args)...);
+  }
+  return result;
+}
+
+inline std::string format_string(const std::string& fmt) { return fmt; }
+
+template <typename... Args>
+void log_impl(Level level, bool all_ranks, const std::string& message, Args&&... args)
+{
+  ensure_initialized();
+
+  if (level < current_level) return;
+  if (!all_ranks && mpi_rank != 0) return;
+
+  std::lock_guard<std::mutex> lock(log_mutex);
+
+  std::string formatted_msg;
+  if (sizeof...(args) > 0) formatted_msg = format_string(message, std::forward<Args>(args)...);
+  else formatted_msg = message;
+
+  std::cout << "[" << level_name(level) << ":" << mpi_rank << "] " << formatted_msg << std::endl;
+}
+} // namespace detail
 
 // Set log level
-inline void set_level(Level level) {
-  detail::current_level = level;
-}
+inline void set_level(Level level) { detail::current_level = level; }
 
 // Get current log level
-inline Level get_level() {
+inline Level get_level()
+{
   detail::ensure_initialized();
   return detail::current_level;
 }
 
 // Initialize with MPI rank (optional, auto-initialized on first use)
-inline void init(int rank) {
+inline void init(int rank)
+{
   detail::mpi_rank = rank;
   detail::initialized = true;
 }
 
 // Logging functions for rank 0 only
-template<typename... Args>
-void trace(const std::string& message, Args&&... args) {
+template <typename... Args>
+void trace(const std::string& message, Args&&... args)
+{
   detail::log_impl(Level::trace, false, message, std::forward<Args>(args)...);
 }
 
-template<typename... Args>
-void debug(const std::string& message, Args&&... args) {
+template <typename... Args>
+void debug(const std::string& message, Args&&... args)
+{
   detail::log_impl(Level::debug, false, message, std::forward<Args>(args)...);
 }
 
-template<typename... Args>
-void info(const std::string& message, Args&&... args) {
+template <typename... Args>
+void info(const std::string& message, Args&&... args)
+{
   detail::log_impl(Level::info, false, message, std::forward<Args>(args)...);
 }
 
-template<typename... Args>
-void warn(const std::string& message, Args&&... args) {
+template <typename... Args>
+void warn(const std::string& message, Args&&... args)
+{
   detail::log_impl(Level::warn, false, message, std::forward<Args>(args)...);
 }
 
-template<typename... Args>
-void error(const std::string& message, Args&&... args) {
+template <typename... Args>
+void error(const std::string& message, Args&&... args)
+{
   detail::log_impl(Level::error, false, message, std::forward<Args>(args)...);
 }
 
 // Logging functions for all ranks
-template<typename... Args>
-void trace_all(const std::string& message, Args&&... args) {
+template <typename... Args>
+void trace_all(const std::string& message, Args&&... args)
+{
   detail::log_impl(Level::trace, true, message, std::forward<Args>(args)...);
 }
 
-template<typename... Args>
-void debug_all(const std::string& message, Args&&... args) {
+template <typename... Args>
+void debug_all(const std::string& message, Args&&... args)
+{
   detail::log_impl(Level::debug, true, message, std::forward<Args>(args)...);
 }
 
-template<typename... Args>
-void info_all(const std::string& message, Args&&... args) {
+template <typename... Args>
+void info_all(const std::string& message, Args&&... args)
+{
   detail::log_impl(Level::info, true, message, std::forward<Args>(args)...);
 }
 
-template<typename... Args>
-void warn_all(const std::string& message, Args&&... args) {
+template <typename... Args>
+void warn_all(const std::string& message, Args&&... args)
+{
   detail::log_impl(Level::warn, true, message, std::forward<Args>(args)...);
 }
 
-template<typename... Args>
-void error_all(const std::string& message, Args&&... args) {
+template <typename... Args>
+void error_all(const std::string& message, Args&&... args)
+{
   detail::log_impl(Level::error, true, message, std::forward<Args>(args)...);
 }
 
 } // namespace logger
 
-#include <sstream>
-#include <mutex>
 #include <cstdlib>
+#include <mutex>
 #include <regex>
+#include <sstream>
 
 /**
  * @brief A simple logger to log timings for different events in an MPI parallel program.
@@ -266,17 +279,17 @@ public:
   /**
    * Get the Logger singleton which can be used to register logging events and create reports.
    */
-  static Logger &get()
+  static Logger& get()
   {
     static Logger instance;
     return instance;
   }
 
   Logger() = default;
-  Logger(const Logger &) = delete;
-  Logger(Logger &&) = delete;
-  Logger &operator=(const Logger &) = delete;
-  Logger &operator=(Logger &&) = delete;
+  Logger(const Logger&) = delete;
+  Logger(Logger&&) = delete;
+  Logger& operator=(const Logger&) = delete;
+  Logger& operator=(Logger&&) = delete;
   ~Logger() = default;
 
   struct Event {
@@ -313,24 +326,28 @@ public:
    * \endcode
    */
   struct ScopedLog {
-    explicit ScopedLog(Event *event) : event(event) { Logger::get().startEvent(event); }
+    explicit ScopedLog(Event* event)
+        : event(event)
+    {
+      Logger::get().startEvent(event);
+    }
     ~ScopedLog() { Logger::get().endEvent(event); }
 
-    ScopedLog(const ScopedLog &) = delete;
-    ScopedLog(ScopedLog &&) = delete;
-    ScopedLog &operator=(const ScopedLog &) = delete;
-    ScopedLog &operator=(ScopedLog &&) = delete;
+    ScopedLog(const ScopedLog&) = delete;
+    ScopedLog(ScopedLog&&) = delete;
+    ScopedLog& operator=(const ScopedLog&) = delete;
+    ScopedLog& operator=(ScopedLog&&) = delete;
 
   private:
-    Event *event;
+    Event* event;
   };
 
   /**
    * Register a new family for the logger
    */
-  Family *registerFamily(const std::string &name)
+  Family* registerFamily(const std::string& name)
   {
-    auto &new_family = families.emplace_back();
+    auto& new_family = families.emplace_back();
     new_family.events.reserve(100);
     new_family.name = name;
     return &new_family;
@@ -339,22 +356,19 @@ public:
   /**
    * Register a new family or return a pointer to one with the given name if it already exists.
    */
-  Family *registerOrGetFamily(const std::string &name)
+  Family* registerOrGetFamily(const std::string& name)
   {
-    for (auto &family : families) {
-      if (family.name == name) {
-        return &family;
-      }
-    }
+    for (auto& family : families)
+      if (family.name == name) return &family;
     return registerFamily(name);
   }
 
   /**
    * Register a new event for a given family that has been created with registerFamily() or registerOrGetFamily().
    */
-  Event *registerEvent(Family *family, const std::string &event)
+  Event* registerEvent(Family* family, const std::string& event)
   {
-    auto &new_event = family->events.emplace_back();
+    auto& new_event = family->events.emplace_back();
     new_event.name = event;
     return &new_event;
   }
@@ -368,7 +382,7 @@ public:
    *   registerEvent(registerOrGetFamily(family_name), event_name);
    * \endcode
    */
-  Event *registerEvent(const std::string &family_name, const std::string &event_name) { return registerEvent(registerOrGetFamily(family_name), event_name); }
+  Event* registerEvent(const std::string& family_name, const std::string& event_name) { return registerEvent(registerOrGetFamily(family_name), event_name); }
 
   /**
    * Register a new event or get it if it already exists.
@@ -376,26 +390,22 @@ public:
    * If the family does not yet exist, it is registered as a new family. Same for the event.
    * Note that this performs a linear search over the families and a linear search over the events in the family.
    */
-  Event *registerOrGetEvent(const std::string &family_name, const std::string &event_name)
+  Event* registerOrGetEvent(const std::string& family_name, const std::string& event_name)
   {
-    auto *family = registerOrGetFamily(family_name);
-    Event *found_event = nullptr;
-    for (auto &event : family->events) {
+    auto* family = registerOrGetFamily(family_name);
+    Event* found_event = nullptr;
+    for (auto& event : family->events) {
       if (event.name == event_name) {
         found_event = &event;
         break;
       }
     }
 
-    if (found_event != nullptr) {
-      return found_event;
-    }
-    else {
-      return registerEvent(family_name, event_name);
-    }
+    if (found_event != nullptr) return found_event;
+    else return registerEvent(family_name, event_name);
   }
 
-  void startEvent(Event *event)
+  void startEvent(Event* event)
   {
     if (event->is_running) {
       logger::error("Event '{}' was already started", event->name);
@@ -405,7 +415,7 @@ public:
     event->is_running = true;
   }
 
-  void endEvent(Event *event)
+  void endEvent(Event* event)
   {
     if (not event->is_running) {
       logger::error("Event '{}' was not started yet", event->name);
@@ -425,7 +435,7 @@ public:
    * over all ranks in the communicator, all events that were logged /must/ be created on all MPI
    * ranks in \p comm.
    */
-  void report(MPI_Comm comm, std::ostream &out = std::cout) const
+  void report(MPI_Comm comm, std::ostream& out = std::cout) const
   {
     using namespace std::literals;
 
@@ -447,11 +457,9 @@ public:
       out << "------------------------------------------------------------------------------------------\n";
     }
 
-    for (const auto &family : families) {
-      if (rank == 0) {
-        out << std::left << std::setw(22) << family.name << '|' << '\n';
-      }
-      for (const auto &event : family.events) {
+    for (const auto& family : families) {
+      if (rank == 0) out << std::left << std::setw(22) << family.name << '|' << '\n';
+      for (const auto& event : family.events) {
         const auto [mean, min, max] = meanMinMaxTime(comm, event);
         if (rank == 0) {
           out << "  " << std::left << std::setw(20) << event.name;
@@ -464,13 +472,11 @@ public:
         }
       }
     }
-    if (rank == 0) {
-      out << "------------------------------------------------------------------------------------------\n";
-    }
+    if (rank == 0) out << "------------------------------------------------------------------------------------------\n";
   }
 
 private:
-  std::tuple<Duration, Duration, Duration> meanMinMaxTime(MPI_Comm comm, const Event &event) const
+  std::tuple<Duration, Duration, Duration> meanMinMaxTime(MPI_Comm comm, const Event& event) const
   {
     auto val = event.total_time.count();
     std::size_t mean{};
@@ -495,9 +501,7 @@ private:
   int num_digits(T number) const
   {
     int digits = 0;
-    if (number < 0) {
-      digits = 1;
-    }
+    if (number < 0) digits = 1;
     while (number) {
       number /= 10;
       digits++;
@@ -550,11 +554,11 @@ private:
  * ./myprogram --log-level=debug
  * @endcode
  */
-inline void setup_loggers(int rank, int &argc, char **&argv)
+inline void setup_loggers(int rank, int& argc, char**& argv)
 {
   // Initialize the logger with the MPI rank
   logger::init(rank);
-  
+
   // Process command line arguments for log level
   for (int i = 1; i < argc; ++i) {
     std::string arg(argv[i]);
@@ -566,11 +570,9 @@ inline void setup_loggers(int rank, int &argc, char **&argv)
       else if (level_str == "warn") logger::set_level(logger::Level::warn);
       else if (level_str == "error") logger::set_level(logger::Level::error);
       else if (level_str == "off") logger::set_level(logger::Level::off);
-      
+
       // Remove this argument from argv
-      for (int j = i; j < argc - 1; ++j) {
-        argv[j] = argv[j + 1];
-      }
+      for (int j = i; j < argc - 1; ++j) argv[j] = argv[j + 1];
       argc--;
       i--; // Check this position again
     }
