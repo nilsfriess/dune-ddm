@@ -8,9 +8,9 @@
 #define GRID_DIM 2
 
 #include <algorithm>
-#include <bitset>
 #include <cmath>
 #include <cstddef>
+#include <type_traits>
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Weverything"
@@ -38,6 +38,7 @@
 #include <dune/istl/basearray.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/bvector.hh>
+#include <dune/istl/novlpschwarz.hh>
 #include <dune/istl/scalarproducts.hh>
 #include <dune/istl/solver.hh>
 #include <dune/istl/solvercategory.hh>
@@ -51,6 +52,7 @@
 #include <dune/pdelab/ordering/transformations.hh>
 #include <iostream>
 #include <mpi.h>
+#include <sstream>
 #include <string>
 
 #if USE_UGGRID
@@ -73,6 +75,7 @@
 #include <dune/ddm/logger.hh>
 #include <dune/ddm/nonoverlapping_operator.hh>
 #include <dune/ddm/overlap_extension.hh>
+#include <dune/ddm/pdelab_helper.hh>
 #include <dune/ddm/pou.hh>
 #include <dune/ddm/schwarz.hh>
 
@@ -102,7 +105,7 @@ auto make_grid(const Dune::ParameterTree& ptree, [[maybe_unused]] const Dune::MP
       auto grid_sqrt = static_cast<int>(std::pow(helper.size(), 1. / GRID_DIM)); // This is okay because Yaspgrid will complain if the gridsize is not a power of GRID_DIM
       gridsize = ptree.get<int>("gridsize_per_rank") * grid_sqrt;
     }
-    grid = Dune::StructuredGridFactory<Grid>::createSimplexGrid({0, 0}, {1, 1}, {gridsize, gridsize});
+    grid = Dune::StructuredGridFactory<Grid>::createCubeGrid({0, 0}, {1, 1}, {gridsize, gridsize});
   }
 #else
   using Grid = Dune::YaspGrid<GRID_DIM>;
@@ -112,8 +115,9 @@ auto make_grid(const Dune::ParameterTree& ptree, [[maybe_unused]] const Dune::MP
     gridsize = ptree.get<int>("gridsize_per_rank") * grid_sqrt;
   }
 #if GRID_DIM == 2
+  const int grid_overlap = ptree.get("grid_overlap", 0);
   Dune::Yasp::PowerDPartitioning<GRID_DIM> partitioner;
-  auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0}, {gridsize, gridsize}, std::bitset<2>(0ULL), 0, Grid::Communication(), &partitioner));
+  auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0}, {gridsize, gridsize}, std::bitset<2>(0ULL), grid_overlap, Grid::Communication(), &partitioner));
 #elif GRID_DIM == 3
   Dune::Yasp::PowerDPartitioning<GRID_DIM> partitioner;
   auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0, 1.0}, {gridsize, gridsize, gridsize}, std::bitset<3>(0ULL), 0, Grid::Communication(), &partitioner));
@@ -137,15 +141,18 @@ auto make_grid(const Dune::ParameterTree& ptree, [[maybe_unused]] const Dune::MP
 template <class Vec, class RemoteIndices>
 bool is_pou(const Vec& pou, const RemoteIndices& remote_indices)
 {
-  AttributeSet allAttributes{Attribute::owner, Attribute::copy};
+  using AttributeSet = Dune::OwnerOverlapCopyAttributeSet::AttributeSet;
+  using AllSet = Dune::AllSet<AttributeSet>;
+  const static AllSet all_att;
+
   Dune::Interface all_all_interface;
-  all_all_interface.build(remote_indices, allAttributes, allAttributes);
+  all_all_interface.build(remote_indices, all_att, all_att);
   Dune::VariableSizeCommunicator all_all_comm(all_all_interface);
   AddVectorDataHandle<Vec> advdh;
   Vec v = pou;
   advdh.setVec(v);
   all_all_comm.forward(advdh);
-  return std::all_of(v.begin(), v.end(), [](auto val) { return std::abs(val - 1.0) < 1e10; });
+  return std::all_of(v.begin(), v.end(), [](auto val) { return std::abs(val - 1.0) < 1e-10; });
 }
 } // namespace
 
@@ -176,30 +183,32 @@ int main(int argc, char* argv[])
     // Create the grid view
     auto grid = make_grid(ptree, helper);
     auto gv = grid->leafGridView();
+    using GridView = decltype(gv);
 
     // Set up the finite element problem. This also assembles the sparsity pattern of the matrix.
-    PoissonProblem problem(gv, helper);
+    // Toggle between conforming (false) and DG (true) discretization
+    constexpr bool use_dg = true; // Set to true for DG, false for conforming FEM
+    PoissonProblem<GridView, use_dg> problem(gv, helper);
     using Vec = decltype(problem)::Vec;
     using Mat = decltype(problem)::Mat;
 
     // Get the overlap from the config file
     const int overlap = ptree.get("overlap", 1);
 
-    // Using the sparsity pattern of the matrix, create the overlapping subdomains by extending this index set
-    auto remoteids = make_remote_indices(*problem.getGFS(), helper);
-    using RemoteIndices = std::remove_cvref_t<decltype(*remoteids)>;
-    ExtendedRemoteIndices ext_indices(*remoteids, native(problem.getA()), overlap);
+    auto novlp_comm = make_communication(*problem.getGFS());
+    auto [ovlp_comm, boundary_mask] = make_overlapping_communication(*novlp_comm, native(problem.getA()), overlap);
+    using Communication = std::decay_t<decltype(*ovlp_comm)>;
 
     // The nonzero pattern of the non-overlapping matrix is now set up, and we have a parallel index set
     // on the overlapping subdomains. Now we can assemble the overlapping matrices.
     const auto& coarsespace_subtree = ptree.sub("coarsespace");
     auto coarsespace = coarsespace_subtree.get("type", "geneo");
-    if (coarsespace == "geneo" or coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::Overlap, true);
-    else if (coarsespace == "msgfem") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::All, NeumannRegion::All, true);
+    if (coarsespace == "geneo" or coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(*ovlp_comm, NeumannRegion::All, NeumannRegion::Overlap, overlap, true, novlp_comm.get());
+    else if (coarsespace == "msgfem") problem.assemble_overlapping_matrices(*ovlp_comm, NeumannRegion::All, NeumannRegion::All, overlap, true, novlp_comm.get());
     else if (coarsespace == "pou" or coarsespace == "harmonic_extension" or coarsespace == "algebraic_geneo" or coarsespace == "algebraic_msgfem" or coarsespace == "none")
-      problem.assemble_dirichlet_matrix_only(ext_indices);
-    else if (coarsespace == "geneo_ring") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, false);
-    else if (coarsespace == "msgfem_ring") problem.assemble_overlapping_matrices(ext_indices, NeumannRegion::Overlap, NeumannRegion::Overlap, false);
+      problem.assemble_dirichlet_matrix_only(*novlp_comm, *ovlp_comm);
+    else if (coarsespace == "geneo_ring") problem.assemble_overlapping_matrices(*ovlp_comm, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, overlap, false, novlp_comm.get());
+    else if (coarsespace == "msgfem_ring") problem.assemble_overlapping_matrices(*ovlp_comm, NeumannRegion::Overlap, NeumannRegion::Overlap, overlap, false, novlp_comm.get());
     else DUNE_THROW(Dune::NotImplemented, "Unknown coarse space");
 
     // Extract the three matrices that have been assembled
@@ -207,20 +216,20 @@ int main(int argc, char* argv[])
     auto A_neu = problem.get_first_neumann_matrix();
     auto B_neu = problem.get_second_neumann_matrix();
 
-    MPI_Barrier(MPI_COMM_WORLD);
+    helper.getCommunication().barrier();
     Logger::get().endEvent(matrix_setup);
 
     // Next, create a partition of unity
-    auto pou = std::make_shared<PartitionOfUnity>(*A_dir, ext_indices, ptree);
-    if (!is_pou(pou->vector(), ext_indices.get_remote_indices())) logger::warn("POU does not add up to 1");
+    auto pou = std::make_shared<PartitionOfUnity>(*A_dir, *ovlp_comm, ptree, overlap);
+    if (!is_pou(pou->vector(), ovlp_comm->remoteIndices())) logger::warn("POU does not add up to 1");
     else logger::debug("POU adds up to 1");
 
     // Now we can create the preconditioner. First the fine level overlapping Schwarz method
     logger::info("Setting up tasks");
-    auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Vec>, Native<Mat>>>(A_dir, ext_indices.get_remote_indices(), pou, ptree);
+    auto schwarz = std::make_shared<SchwarzPreconditioner<Native<Mat>, Native<Vec>, Communication>>(A_dir, ovlp_comm, pou, ptree);
     logger::info("After schwarz");
 
-    using CoarseLevel = GalerkinPreconditioner<Native<Vec>>;
+    using CoarseLevel = GalerkinPreconditioner<Native<Vec>, Communication>;
     std::shared_ptr<CoarseLevel> coarse;
 
     const auto zero_at_dirichlet = [&](auto&& x) {
@@ -232,31 +241,29 @@ int main(int argc, char* argv[])
 
     if (coarsespace == "geneo") { coarse_space = std::make_unique<GenEOCoarseSpace<Native<Mat>>>(A_neu, B_neu, pou, ptree, taskflow); }
     else if (coarsespace == "constraint_geneo") {
-      coarse_space = std::make_unique<ConstraintGenEOCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(ext_indices.get_overlapping_boundary_mask())>>>(
-          A_dir, A_neu, B_neu, pou, ext_indices.get_overlapping_boundary_mask(), ptree, taskflow);
+      coarse_space = std::make_unique<ConstraintGenEOCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(boundary_mask)>>>(A_dir, A_neu, B_neu, pou, boundary_mask, ptree, taskflow);
     }
     else if (coarsespace == "geneo_ring") {
       coarse_space = std::make_unique<GenEORingCoarseSpace<Native<Mat>>>(A_dir, A_neu, pou, problem.get_neumann_region_to_subdomain(), ptree, taskflow);
     }
     else if (coarsespace == "msgfem") {
       // We only pass one matrix here, because the oversampling is simulated using the partition of unity
-      coarse_space = std::make_unique<
-          MsGFEMCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>, std::remove_reference_t<decltype(ext_indices.get_overlapping_boundary_mask())>>>(
-          A_neu, pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), ptree, taskflow);
+      coarse_space = std::make_unique<MsGFEMCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>, std::remove_reference_t<decltype(boundary_mask)>>>(
+          A_neu, pou, problem.get_overlapping_dirichlet_mask(), boundary_mask, ptree, taskflow);
     }
     else if (coarsespace == "msgfem_ring") {
-      coarse_space = std::make_unique<MsGFEMRingCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>,
-                                                            std::remove_reference_t<decltype(ext_indices.get_overlapping_boundary_mask())>>>(
-          A_dir, A_neu, overlap, pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), problem.get_neumann_region_to_subdomain(), ptree, taskflow);
+      coarse_space =
+          std::make_unique<MsGFEMRingCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>, std::remove_reference_t<decltype(boundary_mask)>>>(
+              A_dir, A_neu, overlap, pou, problem.get_overlapping_dirichlet_mask(), boundary_mask, problem.get_neumann_region_to_subdomain(), ptree, taskflow);
     }
-    else if (coarsespace == "algebraic_geneo") {
-      coarse_space = std::make_unique<AlgebraicGenEOCoarseSpace<Native<Mat>>>(problem.getA().storage(), A_dir, pou, problem.get_overlapping_dirichlet_mask(), ext_indices, ptree, taskflow);
-    }
-    else if (coarsespace == "algebraic_msgfem") {
-      coarse_space = std::make_unique<AlgebraicMsGFEMCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>,
-                                                                 std::remove_reference_t<decltype(ext_indices.get_overlapping_boundary_mask())>>>(
-          problem.getA().storage(), A_dir, pou, problem.get_overlapping_dirichlet_mask(), ext_indices.get_overlapping_boundary_mask(), ext_indices, ptree, taskflow);
-    }
+    // else if (coarsespace == "algebraic_geneo") {
+    //   coarse_space = std::make_unique<AlgebraicGenEOCoarseSpace<Native<Mat>>>(problem.getA().storage(), A_dir, pou, problem.get_overlapping_dirichlet_mask(), ext_indices, ptree, taskflow);
+    // }
+    // else if (coarsespace == "algebraic_msgfem") {
+    //   coarse_space = std::make_unique<AlgebraicMsGFEMCoarseSpace<Native<Mat>, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>,
+    //                                                              std::remove_reference_t<decltype(boundary_mask)>>>(
+    //       problem.getA().storage(), A_dir, pou, problem.get_overlapping_dirichlet_mask(), boundary_mask, ext_indices, ptree, taskflow);
+    // }
     else if (coarsespace == "pou") {
       coarse_space = std::make_unique<POUCoarseSpace<>>(pou, taskflow);
     }
@@ -273,7 +280,7 @@ int main(int argc, char* argv[])
       prec_setup_task = taskflow.emplace([&]() {
         basis = coarse_space->get_basis();
         std::ranges::for_each(basis, zero_at_dirichlet);
-        coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_indices(), ptree, "coarse_solver");
+        coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ovlp_comm, ptree, "coarse_solver");
       });
 
       prec_setup_task.name("Build coarse preconditioner");
@@ -283,26 +290,16 @@ int main(int argc, char* argv[])
     Logger::get().startEvent(prec_setup);
     logger::info("Starting taskflow execution");
     tf::Executor executor(ptree.get("taskflow_executor_threads", 2));
-    std::shared_ptr<tf::TFProfObserver> observer;
-    if (helper.rank() == 0) observer = executor.make_observer<tf::TFProfObserver>();
     executor.run(taskflow).get();
-
-    if (helper.rank() == 0) {
-      std::ofstream dot_file("poisson.dot");
-      taskflow.dump(dot_file);
-
-      std::ofstream json_file("poisson.json");
-      observer->dump(json_file);
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
+    helper.getCommunication().barrier();
     Logger::get().endEvent(prec_setup);
 
     // Build the parallel operator
-    using Op = NonOverlappingOperator<Native<Mat>, Native<Vec>>;
+    using Op = NonOverlappingOperator<Native<Mat>, Native<Vec>, Native<Vec>, Communication>;
     Dune::initSolverFactories<Op>(); // register all DUNE solvers so we can choose them via the command line
 
     auto prec = std::make_shared<CombinedPreconditioner<Native<Vec>>>(ptree);
-    auto op = std::make_shared<Op>(problem.getA().storage(), *remoteids);
+    auto op = std::make_shared<Op>(problem.getA().storage(), novlp_comm);
 
     prec->set_op(op);
     prec->add(schwarz);
@@ -334,12 +331,10 @@ int main(int argc, char* argv[])
       auto debug_rank = ptree.get("debug_rank", 0);
       if (debug_rank > helper.size() - 1) debug_rank = 0;
 
-      const auto write_overlapping_vector = [&](const auto& vec, const std::string& name) {
-        AddVectorDataHandle<Native<Vec>> advdh;
+      const auto write_overlapping_vector = [&](const auto& vec, const std::string& name, bool zero_if_not_debug_rank = true) {
         auto vec_vis = vec;
-        if (helper.rank() != debug_rank) vec_vis = 0;
-        advdh.setVec(vec_vis);
-        ext_indices.get_overlapping_communicator().forward(advdh);
+        if (zero_if_not_debug_rank and (helper.rank() != debug_rank)) vec_vis = 0;
+        if (zero_if_not_debug_rank) ovlp_comm->addOwnerCopyToAll(vec_vis, vec_vis);
 
         auto vec_small = std::make_shared<Native<Vec>>(problem.getX().N());
         for (std::size_t i = 0; i < vec_small->N(); ++i) (*vec_small)[i] = vec_vis[i];
@@ -361,10 +356,11 @@ int main(int argc, char* argv[])
       Dune::P0VTKFunction rankFunc(gv, rankVec, "Rank");
       writer.addCellData(Dune::stackobject_to_shared_ptr(rankFunc));
 
-      // Write some additional output
+      // Write POU
       write_overlapping_vector(pou->vector(), "POU");
 
-      Native<Vec> ovlp_subdomain(ext_indices.size());
+      // Write overlapping subdomain
+      Native<Vec> ovlp_subdomain(ovlp_comm->indexSet().size());
       ovlp_subdomain = helper.rank() == debug_rank ? 1 : 0;
       write_overlapping_vector(ovlp_subdomain, "Ovlp. subdomain");
 
@@ -380,7 +376,7 @@ int main(int argc, char* argv[])
       }
 
       // Write ring region (might be all zero for non-ring coarse spaces)
-      Native<Vec> ring_region(ext_indices.size());
+      Native<Vec> ring_region(ovlp_comm->indexSet().size());
       ring_region = 0;
       if (helper.rank() == ptree.get("debug_rank", 0))
         for (const auto& idx : problem.get_neumann_region_to_subdomain()) ring_region[idx] = 1;

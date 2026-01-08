@@ -1,12 +1,17 @@
 #pragma once
 
+#include "dune/ddm/datahandles.hh"
 #include "dune/ddm/helpers.hh"
-#include "dune/ddm/overlap_extension.hh"
+#include "dune/ddm/pdelab_helper.hh"
 
 #include <dune/common/parallel/mpihelper.hh>
+#include <dune/common/parallel/variablesizecommunicator.hh>
 #include <dune/grid/common/gridenums.hh>
 #include <dune/istl/io.hh>
+#include <dune/istl/owneroverlapcopy.hh>
 #include <dune/pdelab.hh>
+#include <dune/pdelab/backend/istl/parallelhelper.hh>
+#include <type_traits>
 
 /** @brief Determines the region where the "restricted Neumann" matrix is defined (to be used with the function PoissonProblem#assemble_overlapping_matrices()).
  */
@@ -15,67 +20,6 @@ enum class NeumannRegion : std::uint8_t {
   ExtendedOverlap, ///< Restricted Neumann matrix is defined in the overlap + one additional layer of finite elements towards the interior
   All              ///< Restricted Neumann matrix is defined on the whole subdomain
 };
-
-template <class GFS>
-auto make_remote_indices(const GFS& gfs, const Dune::MPIHelper& helper)
-{
-  using Dune::PDELab::Backend::native;
-
-  // Using the grid function space, we can generate a globally unique numbering
-  // of the dofs. This is done by taking the local index, shifting it to the
-  // upper 32 bits of a 64 bit number and taking our MPI rank as the lower 32
-  // bits.
-  using GlobalIndexVec = Dune::PDELab::Backend::Vector<GFS, std::uint64_t>;
-  GlobalIndexVec giv(gfs);
-  for (std::size_t i = 0; i < giv.N(); ++i) native(giv)[i] = (static_cast<std::uint64_t>(i + 1) << 32ULL) + helper.rank();
-
-  // Now we have a unique global indexing scheme in the interior of each process
-  // subdomain; at the process boundary we take the smallest among all
-  // processes.
-  GlobalIndexVec giv_before(gfs);
-  giv_before = giv; // Copy the vector so that we can find out if we are the
-                    // owner of a border index after communication
-  Dune::PDELab::MinDataHandle mindh(gfs, giv);
-  gfs.gridView().communicate(mindh, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
-
-  using BooleanVec = Dune::PDELab::Backend::Vector<GFS, bool>;
-  BooleanVec isPublic(gfs);
-  isPublic = false;
-  Dune::PDELab::SharedDOFDataHandle shareddh(gfs, isPublic);
-  gfs.gridView().communicate(shareddh, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
-
-  using AttributeLocalIndex = Dune::ParallelLocalIndex<Attribute>;
-  using GlobalIndex = std::uint64_t;
-  using ParallelIndexSet = Dune::ParallelIndexSet<GlobalIndex, AttributeLocalIndex>;
-  using RemoteIndices = Dune::RemoteIndices<ParallelIndexSet>;
-
-  auto paridxs = std::make_shared<ParallelIndexSet>();
-  paridxs->beginResize();
-  int public_count = 0;
-  for (std::size_t i = 0; i < giv.N(); ++i) {
-    paridxs->add(native(giv)[i],
-                 {i,                                                                            // Local index is just i
-                  native(giv)[i] == native(giv_before)[i] ? Attribute::owner : Attribute::copy, // If the index didn't change above, we own it
-                  native(isPublic)[i]}                                                          // SharedDOFDataHandle determines if an index is public
-    );
-    if (native(isPublic)[i]) ++public_count;
-  }
-  paridxs->endResize();
-
-  std::set<int> neighboursset;
-  Dune::PDELab::GFSNeighborDataHandle nbdh(gfs, helper.rank(), neighboursset);
-  gfs.gridView().communicate(nbdh, Dune::All_All_Interface, Dune::ForwardCommunication);
-  std::vector<int> neighbours(neighboursset.begin(), neighboursset.end());
-
-  auto* remoteindices = new RemoteIndices(*paridxs, *paridxs, helper.getCommunicator(), neighbours);
-  remoteindices->rebuild<false>();
-
-  // RemoteIndices store a reference to the paridxs that are passed to the constructor.
-  // In order to avoid dangling references, we capture the paridxs shared_ptr in the lambda
-  // to increase the reference count which ensures that it will be deleted as soon as the
-  // remoteindices are deleted.
-  return std::shared_ptr<RemoteIndices>(remoteindices, [paridxs](auto* ptr) mutable { delete ptr; });
-}
 
 /** @brief Symmetrically eliminate Dirichlet degrees of freedom from a matrix
  *
@@ -151,61 +95,63 @@ void eliminate_dirichlet(Mat& A, const Vec& dirichlet_mask, const std::vector<st
 
      @see NeumannRegion for the options that can be used for \p first_neumann_region and \p second_neumann_region.
   */
-template <class RemoteIndices, class PDELabMat, class PDELabVec, class Vec, class GO>
+template <class PDELabMat, class PDELabVec, class Vec, class GO, class Communication>
 [[nodiscard]] std::tuple<std::shared_ptr<Dune::PDELab::Backend::Native<PDELabMat>>, // The dirichlet matrix
                          std::shared_ptr<Dune::PDELab::Backend::Native<PDELabMat>>, // The "first" Neumann matrix
                          std::shared_ptr<Dune::PDELab::Backend::Native<PDELabMat>>, // The "second" Neumann matrix
                          std::shared_ptr<Vec>,                                      // The dirichlet mask extended to the overlapping subdomain
                          std::vector<std::size_t>>                                  // Mapping from the Neumann region to the whole subdomain (might be empty)
-assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const Vec& dirichlet_mask, const ExtendedRemoteIndices<RemoteIndices, Dune::PDELab::Backend::Native<PDELabMat>>& extids,
-                              NeumannRegion first_neumann_region, NeumannRegion second_neumann_region, bool neumann_size_as_dirichlet = true)
+assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const Vec& dirichlet_mask, Communication& comm, NeumannRegion first_neumann_region, NeumannRegion second_neumann_region,
+                              int overlap, bool neumann_size_as_dirichlet = true, bool use_dg = false, const Communication* novlp_comm = nullptr)
 {
   using Dune::PDELab::Backend::native;
   using Dune::PDELab::Backend::Native;
   using Mat = Native<PDELabMat>;
   logger::info("Assembling overlapping Dirichlet and Neumann matrices");
 
-  int ownrank{};
-  MPI_Comm_rank(extids.get_remote_indices().communicator(), &ownrank);
-  auto ovlp_paridxs = extids.get_parallel_index_set();
-  auto varcomm_ext = extids.get_overlapping_communicator();
+  int ownrank = comm.communicator().rank();
+  const auto& paridxs = comm.indexSet();
+
+  // Create variable size communicator for the overlapping index sets
+  typename Communication::AllSet allset;
+  Dune::Interface interface_ext;
+  interface_ext.build(comm.remoteIndices(), allset, allset);
+  Dune::VariableSizeCommunicator varcomm(interface_ext);
 
   // Create the (at this point still empty) overlapping subdomain matrix
   const auto& nAs = native(As);
-  auto A_dir = std::make_shared<Mat>(extids.create_overlapping_matrix(nAs));
+  CreateMatrixDataHandle cmdh(nAs, comm.indexSet());
+  varcomm.forward(cmdh);
+  auto A_dir = std::make_shared<Mat>(cmdh.getOverlappingMatrix());
 
   // Identify the boundary of the overlapping subdomain
-  const auto& paridxs = extids.get_parallel_index_set();
   IdentifyBoundaryDataHandle ibdh(*A_dir, paridxs);
-  varcomm_ext.forward(ibdh);
+  varcomm.forward(ibdh);
 
   // Now we know *our* subdomain boundary. We'll now create a vector on the overlapping
   // subdomain that contains the value 1 on the subdomain boundary and the value 2 one
   // layer into the subdomain. We'll communicate this vector with our neighbours so
   // that they can find out which elements they have to integrate separately in order
   // to send us the "Neumann correction terms".
-  // const auto& boundary_mask = ibdh.get_boundary_mask();
-  const auto& boundary_mask = extids.get_overlapping_boundary_mask();
+  const auto& boundary_mask = ibdh.get_boundary_mask();
+  // const auto& boundary_mask = extids.get_overlapping_boundary_mask();
 
   std::vector<int> boundary_dst(boundary_mask.size(), std::numeric_limits<int>::max() - 1);
   for (std::size_t i = 0; i < boundary_dst.size(); ++i)
     if (boundary_mask[i]) boundary_dst[i] = 0;
 
-  int overlap = extids.get_overlap();
-  for (int round = 0; round <= overlap; ++round) {
+  for (int round = 0; round <= 4 * overlap; ++round) {
     for (std::size_t i = 0; i < boundary_dst.size(); ++i)
       for (auto cit = (*A_dir)[i].begin(); cit != (*A_dir)[i].end(); ++cit) boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cit.index()] + 1); // Increase distance from boundary by one
   }
 
-  std::vector<std::uint8_t> boundary_indicator(extids.size(), 0);
-  for (std::size_t i = 0; i < extids.size(); ++i)
+  std::vector<std::uint8_t> boundary_indicator(A_dir->N(), 0);
+  for (std::size_t i = 0; i < boundary_indicator.size(); ++i)
     if (boundary_dst[i] == 0) boundary_indicator[i] = 1;
-    else if (boundary_dst[i] == 1) boundary_indicator[i] = 2;
+    else boundary_indicator[i] = 2;
 
-  int rank{};
-  MPI_Comm_rank(extids.get_remote_indices().communicator(), &rank);
-  CopyVectorDataHandleWithRank cvdh(boundary_indicator, rank);
-  varcomm_ext.forward(cvdh);
+  CopyVectorDataHandleWithRank cvdh(boundary_indicator, ownrank);
+  varcomm.forward(cvdh);
 
   // Next, we turn this vector into two boolean masks for each rank.
   std::map<int, std::vector<bool>> on_boundary_mask_for_rank;
@@ -243,7 +189,13 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   wrapper.set_masks(nAs, &on_boundary_mask_for_rank, &inside_boundary_mask_for_rank, &on_boundary_mask, &outside_boundary_mask);
   go.jacobian(x, As);
 
-  Dune::GlobalLookupIndexSet glis(extids.get_parallel_index_set());
+  if (use_dg) {
+    if (novlp_comm == nullptr) DUNE_THROW(Dune::Exception, "Need non-overlapping communicator for DG assembly");
+    make_additive(As, *novlp_comm);
+  }
+
+  comm.buildGlobalLookup();
+  const auto& glis = comm.globalLookup();
   auto triples_for_rank = wrapper.get_correction_triples(glis);
 
   // Now we have a set of {row, col, value} triples that represent corrections that remote ranks have to apply after overlap extension to turn
@@ -269,7 +221,7 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
       continue;
     }
 
-    MPI_Isend(triples.data(), triples.size(), triple_type, rank, 0, extids.get_remote_indices().communicator(), &requests.emplace_back());
+    MPI_Isend(triples.data(), triples.size(), triple_type, rank, 0, comm.communicator(), &requests.emplace_back());
   }
 
   std::map<int, std::vector<TripleWithRank>> remote_triples;
@@ -282,18 +234,24 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
     MPI_Status status;
     int count{};
 
-    MPI_Probe(rank, 0, extids.get_remote_indices().communicator(), &status);
+    MPI_Probe(rank, 0, comm.communicator(), &status);
     MPI_Get_count(&status, triple_type, &count);
 
     remote_triples[rank].resize(count);
-    MPI_Recv(remote_triples[rank].data(), count, triple_type, rank, 0, extids.get_remote_indices().communicator(), MPI_STATUS_IGNORE);
+    MPI_Recv(remote_triples[rank].data(), count, triple_type, rank, 0, comm.communicator(), MPI_STATUS_IGNORE);
   }
   MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE);
 
+  // Log correction statistics before communication
+  logger::debug_all("Rank {}: Sending corrections to {} ranks", ownrank, triples_for_rank.size() - 1);
+  for (const auto& [rank, triples] : triples_for_rank)
+    if (rank >= 0) logger::debug_all("Rank {}: Sending {} correction entries to rank {}", ownrank, triples.size(), rank);
+    else logger::debug_all("Rank {}: {} local correction entries", ownrank, triples.size());
+
   // Now we can assemble the overlapping matrix
 
-  AddMatrixDataHandle amdh(nAs, *A_dir, extids.get_parallel_index_set());
-  extids.get_overlapping_communicator().forward(amdh);
+  AddMatrixDataHandle amdh(nAs, *A_dir, comm.indexSet());
+  varcomm.forward(amdh);
 
   // Next, make sure that Dirichlet dofs are eliminated symmetrically
   auto dirichlet_mask_ovlp = std::make_shared<Vec>(A_dir->N());
@@ -301,61 +259,9 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   for (std::size_t i = 0; i < dirichlet_mask.N(); ++i) (*dirichlet_mask_ovlp)[i] = dirichlet_mask[i];
   AddVectorDataHandle<Vec> advdh;
   advdh.setVec(*dirichlet_mask_ovlp);
-  varcomm_ext.forward(advdh);
-
-  // Check A_dir before Dirichlet elimination
-  double max_diag = 0.0, min_diag = 1e100;
-  int zero_diags = 0, zero_rows = 0;
-  std::vector<std::size_t> zero_row_indices_before;
-  for (auto ri = A_dir->begin(); ri != A_dir->end(); ++ri) {
-    bool row_is_zero = true;
-    for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-      if (std::abs((*ci)[0][0]) > 1e-14) {
-        row_is_zero = false;
-        break;
-      }
-    }
-    if (row_is_zero) {
-      ++zero_rows;
-      if (zero_rows <= 10) zero_row_indices_before.push_back(ri.index());
-    }
-
-    if (ri->find(ri.index()) != ri->end()) {
-      auto diag_val = (*ri)[ri.index()][0][0];
-      if (std::abs(diag_val) < 1e-14) ++zero_diags;
-      max_diag = std::max(max_diag, std::abs(diag_val));
-      min_diag = std::min(min_diag, std::abs(diag_val));
-    }
-  }
+  varcomm.forward(advdh);
 
   eliminate_dirichlet(*A_dir, *dirichlet_mask_ovlp);
-
-  // Check A_dir after Dirichlet elimination
-  max_diag = 0.0;
-  min_diag = 1e100;
-  zero_diags = 0;
-  zero_rows = 0;
-  std::vector<std::size_t> zero_row_indices;
-  for (auto ri = A_dir->begin(); ri != A_dir->end(); ++ri) {
-    bool row_is_zero = true;
-    for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-      if (std::abs((*ci)[0][0]) > 1e-14) {
-        row_is_zero = false;
-        break;
-      }
-    }
-    if (row_is_zero) {
-      ++zero_rows;
-      if (zero_rows <= 10) zero_row_indices.push_back(ri.index());
-    }
-
-    if (ri->find(ri.index()) != ri->end()) {
-      auto diag_val = (*ri)[ri.index()][0][0];
-      if (std::abs(diag_val) < 1e-14) ++zero_diags;
-      max_diag = std::max(max_diag, std::abs(diag_val));
-      min_diag = std::min(min_diag, std::abs(diag_val));
-    }
-  }
 
   // Next, assemble the Neumann matrices
   std::shared_ptr<Mat> A_neu;
@@ -370,9 +276,9 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
     double sum_abs_corrections = 0.0;
     for (const auto& [rank, triples] : remote_triples) {
       for (const auto& triple : triples) {
-        if (ovlp_paridxs.exists(triple.row) && ovlp_paridxs.exists(triple.col)) {
-          auto lrow = ovlp_paridxs[triple.row].local();
-          auto lcol = ovlp_paridxs[triple.col].local();
+        if (paridxs.exists(triple.row) && paridxs.exists(triple.col)) {
+          auto lrow = paridxs[triple.row].local();
+          auto lcol = paridxs[triple.col].local();
 
           (*A_neu)[lrow][lcol] -= triple.val;
           ++corrections_applied;
@@ -409,9 +315,9 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
       // Then apply the outer and inner Neumann corrections
       for (const auto& [rank, triples] : remote_triples) {
         for (const auto& triple : triples) {
-          if (ovlp_paridxs.exists(triple.row) && ovlp_paridxs.exists(triple.col)) {
-            auto lrow = ovlp_paridxs[triple.row].local();
-            auto lcol = ovlp_paridxs[triple.col].local();
+          if (paridxs.exists(triple.row) && paridxs.exists(triple.col)) {
+            auto lrow = paridxs[triple.row].local();
+            auto lcol = paridxs[triple.col].local();
 
             (*A_neu)[lrow][lcol] -= triple.val;
           }
@@ -457,9 +363,9 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
       // Then apply the outer and inner Neumann corrections
       for (const auto& [rank, triples] : remote_triples) {
         for (const auto& triple : triples) {
-          if (ovlp_paridxs.exists(triple.row) && ovlp_paridxs.exists(triple.col)) {
-            auto lrow = ovlp_paridxs[triple.row].local();
-            auto lcol = ovlp_paridxs[triple.col].local();
+          if (paridxs.exists(triple.row) && paridxs.exists(triple.col)) {
+            auto lrow = paridxs[triple.row].local();
+            auto lcol = paridxs[triple.col].local();
 
             assert(subdomain_to_neumann_region.contains(lrow) && subdomain_to_neumann_region.contains(lcol) && "Remote corrections should be applicable to ring matrix");
 

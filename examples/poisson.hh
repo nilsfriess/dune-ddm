@@ -1,9 +1,7 @@
 #pragma once
 
-#include <array>
 #include <cmath>
 #include <cstddef>
-#include <dune/common/version.hh>
 #include <mpi.h>
 
 #pragma GCC diagnostic push
@@ -21,6 +19,7 @@
 #include <dune/pdelab/common/partitionviewentityset.hh>
 #include <dune/pdelab/constraints/common/constraints.hh>
 #include <dune/pdelab/constraints/conforming.hh>
+#include <dune/pdelab/constraints/noconstraints.hh>
 #include <dune/pdelab/constraints/p0ghost.hh>
 #include <dune/pdelab/finiteelementmap/pkfem.hh>
 #include <dune/pdelab/finiteelementmap/qkdg.hh>
@@ -39,7 +38,6 @@
 #include "dune/ddm/helpers.hh"
 #include "pdelab_helper.hh"
 
-#include <limits>
 #include <map>
 #include <memory>
 #include <type_traits>
@@ -226,10 +224,11 @@ public:
   using Grid = typename GridView::Grid;
   using DF = typename Grid::ctype;
 
-  using ES = Dune::PDELab::OverlappingEntitySet<GridView>; // Even though we're in a non-overlapping setting, we tell PDELab that we're in an overlapping setting, because
-                                                           // we handle everything ourselves; PDELab should just assemble locally and not attempt to distribute any data
-                                                           // (which it would do if we put 'NonOverlappingEntitySet' here). Note that this still skips ghost elements,
-                                                           // only AllEntitySet would also include them.
+  using ES = std::conditional_t<USEDG, Dune::PDELab::AllEntitySet<GridView>,
+                                Dune::PDELab::OverlappingEntitySet<GridView>>; // Even though we're in a non-overlapping setting, we tell PDELab that we're in an overlapping setting, because
+                                                                               // we handle everything ourselves; PDELab should just assemble locally and not attempt to distribute any data
+                                                                               // (which it would do if we put 'NonOverlappingEntitySet' here). Note that this still skips ghost elements,
+                                                                               // only AllEntitySet would also include them.
 
   // using ModelProblem = PoissonModelProblem<ES, RF>;
   using ModelProblem = IslandsModelProblem<ES, RF>;
@@ -237,19 +236,14 @@ public:
   using BC = Dune::PDELab::ConvectionDiffusionBoundaryConditionAdapter<ModelProblem>;
 
   static constexpr int degree = 1;
-  // clang-format off
-  using FEM = std::conditional_t<isYASPGrid<Grid>(),                                                                                                              // If YASP grid
-                                 std::conditional_t<USEDG,                                                                                                        // and discretisation is DG
-                                                    Dune::PDELab::QkDGLocalFiniteElementMap<typename GridView::Grid::ctype, double, degree, GridView::dimension>, // then use Qk DG
-                                                    Dune::PDELab::QkLocalFiniteElementMap<ES, DF, RF, degree>>,                                                   // otherwise use Qk CG
-                                 Dune::PDELab::PkLocalFiniteElementMap<ES, DF, RF, degree>>;                                                                      // and in case of another grid, just use Pk CG
-  // clang-format on
+  using FEM = std::conditional_t<USEDG, Dune::PDELab::QkDGLocalFiniteElementMap<typename GridView::Grid::ctype, double, degree, GridView::dimension>,
+                                 Dune::PDELab::QkLocalFiniteElementMap<ES, DF, RF, degree>>;
+
   using LOP = std::conditional_t<USEDG, Dune::PDELab::ConvectionDiffusionDG<ModelProblem, FEM>, Dune::PDELab::ConvectionDiffusionFEM<ModelProblem, FEM>>;
 
-  using CON = std::conditional_t<USEDG, Dune::PDELab::P0ParallelGhostConstraints, Dune::PDELab::ConformingDirichletConstraints>;
+  using CON = std::conditional_t<USEDG, Dune::PDELab::NoConstraints, Dune::PDELab::ConformingDirichletConstraints>;
 
-  using VBE = std::conditional_t<USEDG, Dune::PDELab::ISTL::VectorBackend<Dune::PDELab::ISTL::Blocking::none, Dune::QkStuff::QkSize<degree, GridView::dimension>::value>,
-                                 Dune::PDELab::ISTL::VectorBackend<Dune::PDELab::ISTL::Blocking::none>>;
+  using VBE = std::conditional_t<USEDG, Dune::PDELab::ISTL::VectorBackend<Dune::PDELab::ISTL::Blocking::none>, Dune::PDELab::ISTL::VectorBackend<Dune::PDELab::ISTL::Blocking::none>>;
   using MBE = Dune::PDELab::ISTL::BCRSMatrixBackend<>;
 
   using GFS = Dune::PDELab::GridFunctionSpace<ES, FEM, CON, VBE>;
@@ -324,11 +318,12 @@ public:
     }
   }
 
-  template <class ExtendedRemoteIndices>
-  void assemble_overlapping_matrices(const ExtendedRemoteIndices& extids, NeumannRegion first_neumann_region, NeumannRegion second_neumann_region, bool neumann_size_as_dirichlet = true)
+  template <class Communication>
+  void assemble_overlapping_matrices(Communication& comm, NeumannRegion first_neumann_region, NeumannRegion second_neumann_region, int overlap, bool neumann_size_as_dirichlet = true,
+                                     const Communication* novlp_comm = nullptr)
   {
-    auto [A_dir_, A_neu_, B_neu_, dirichlet_mask_ovlp_, neumann_region_to_subdomain_] =
-        ::assemble_overlapping_matrices(*As, *x, *go, Dune::PDELab::Backend::native(*dirichlet_mask), extids, first_neumann_region, second_neumann_region, neumann_size_as_dirichlet);
+    auto [A_dir_, A_neu_, B_neu_, dirichlet_mask_ovlp_, neumann_region_to_subdomain_] = ::assemble_overlapping_matrices(
+        *As, *x, *go, Dune::PDELab::Backend::native(*dirichlet_mask), comm, first_neumann_region, second_neumann_region, overlap, neumann_size_as_dirichlet, USEDG, novlp_comm);
 
     A_dir = std::move(A_dir_);
     A_neu = std::move(A_neu_);
@@ -345,33 +340,31 @@ public:
 
       The created matrix can be accessed via get_dirichlet_matrix().
    */
-  template <class ExtendedRemoteIndices>
-  void assemble_dirichlet_matrix_only(const ExtendedRemoteIndices& extids)
+  template <class Communication>
+  void assemble_dirichlet_matrix_only(const Communication& novlp_comm, const Communication& comm)
   {
     using Dune::PDELab::Backend::native;
     logger::info("Assembling overlapping Dirichlet matrix");
-
-    const AttributeSet allAttributes{Attribute::owner, Attribute::copy};
-    Dune::Interface interface_ext;
-    interface_ext.build(extids.get_remote_indices(), allAttributes, allAttributes);
-    Dune::VariableSizeCommunicator varcomm_ext(interface_ext);
-
-    // Create the (at this point still empty) overlapping subdomain matrix
-    A_dir = std::make_shared<NativeMat>(extids.create_overlapping_matrix(native(*As)));
-
     jacobian();
 
-    // Assemble the overlapping Dirichlet matrix by adding contributions
-    AddMatrixDataHandle amdh(native(*As), *A_dir, extids.get_parallel_index_set());
-    extids.get_overlapping_communicator().forward(amdh);
+    // Create a communicator on the overlapping index set
+    typename Communication::AllSet allset;
+    Dune::Interface interface_ext;
+    interface_ext.build(comm.remoteIndices(), allset, allset);
+    Dune::VariableSizeCommunicator varcomm(interface_ext);
+
+    CreateMatrixDataHandle cmdh(native(*As), comm.indexSet());
+    varcomm.forward(cmdh);
+    A_dir = std::make_shared<NativeMat>(cmdh.getOverlappingMatrix());
+
+    AddMatrixDataHandle amdh(native(*As), *A_dir, comm.indexSet());
+    varcomm.forward(amdh);
 
     // Set up Dirichlet mask on overlapping subdomain
     dirichlet_mask_ovlp = NativeVec(A_dir->N());
     dirichlet_mask_ovlp = 0;
     for (std::size_t i = 0; i < dirichlet_mask->N(); ++i) dirichlet_mask_ovlp[i] = native(*dirichlet_mask)[i];
-    AddVectorDataHandle<NativeVec> advdh;
-    advdh.setVec(dirichlet_mask_ovlp);
-    varcomm_ext.forward(advdh);
+    comm.addOwnerCopyToAll(dirichlet_mask_ovlp, dirichlet_mask_ovlp);
 
     // Eliminate Dirichlet dofs symmetrically
     eliminate_dirichlet(*A_dir, dirichlet_mask_ovlp);
