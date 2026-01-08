@@ -15,7 +15,6 @@
 #include <cstdint>
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/communicator.hh>
-#include <dune/common/parallel/variablesizecommunicator.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/istl/cholmod.hh>
 #include <dune/istl/io.hh>
@@ -50,78 +49,14 @@ enum class SchwarzType : std::uint8_t {
  *
  * @tparam Vec Vector type for the linear system
  * @tparam Mat Matrix type for the linear system
- * @tparam ExtendedRemoteIndices Index set type for communication
+ * @tparam Communication A communication object, e.g. ISTL's OwnerOverlapCopyCommunication
  */
-template <class Vec, class Mat>
+template <class Mat, class Vec, class Communication>
 class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   using Op = Dune::MatrixAdapter<Mat, Vec, Vec>;
   using Solver = Dune::InverseOperator<Vec, Vec>;
 
-  AttributeSet allAttributes{Attribute::owner, Attribute::copy};
-  AttributeSet ownerAttribute{Attribute::owner};
-  AttributeSet copyAttribute{Attribute::copy};
-
-  struct AddGatherScatter {
-    using DataType = double;
-
-    static DataType gather(const Vec& x, std::size_t i) { return x[i]; }
-    static void scatter(Vec& x, DataType v, std::size_t i) { x[i] += v; }
-  };
-
-  struct CopyGatherScatter {
-    using DataType = double;
-
-    static DataType gather(const Vec& x, std::size_t i) { return x[i]; }
-    static void scatter(Vec& x, DataType v, std::size_t i) { x[i] = v; }
-  };
-
 public:
-  // /**
-  //  * @brief Construct Schwarz preconditioner with explicit parameters.
-  //  *
-  //  * @param Aovlp Shared pointer to the overlapping subdomain matrix
-  //  * @param ext_indices Extended remote indices for communication setup
-  //  * @param pou Shared pointer to partition of unity (can be nullptr for standard Schwarz)
-  //  * @param type Type of Schwarz method (Standard or Restricted)
-  //  * @param factorise_at_first_iteration If true, delay matrix factorization until first apply
-  //  */
-  // SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const ExtendedRemoteIndices &ext_indices, std::shared_ptr<PartitionOfUnity> pou, SchwarzType type = SchwarzType::Restricted,
-  //                       bool factorise_at_first_iteration = false)
-  //     : Aovlp(std::move(Aovlp)), ext_indices(ext_indices), type(type), pou(std::move(pou)), factorise_at_first_iteration(factorise_at_first_iteration)
-  // {
-  //   init();
-  // }
-
-#if DUNE_DDM_HAVE_TASKFLOW
-  /**
-   * @brief Construct Schwarz preconditioner from parameter tree.
-   *
-   * Reads configuration from a parameter tree, supporting the following options:
-   * - type: "standard" or "restricted", default "restricted"
-   *
-   * @param Aovlp Shared pointer to the overlapping subdomain matrix
-   * @param ext_indices Extended remote indices for communication setup
-   * @param pou Shared pointer to partition of unity
-   * @param taskflow Taskflow instance to execute the Schwarz setup asynchronously
-   * @param ptree Parameter tree containing configuration
-   * @param subtree_name Name of the subtree containing Schwarz parameters
-   */
-  template <class RemoteIndices>
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, std::shared_ptr<RemoteIndices> remoteids, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow,
-                        const std::string& subtree_name = "schwarz")
-      : Aovlp(std::move(Aovlp))
-      , pou(std::move(pou))
-  {
-    const auto& subtree = ptree.sub(subtree_name);
-    auto type_string = subtree.get("type", "restricted");
-    if (type_string == "restricted") type = SchwarzType::Restricted;
-    else if (type_string == "standard") type = SchwarzType::Standard;
-    else DUNE_THROW(Dune::NotImplemented, "Unknown Schwarz type '" + type_string + "'");
-
-    setup_task = taskflow.emplace([&, remoteids]() { init(*remoteids); }).name("Init overlapping Schwarz preconditioner");
-  }
-#endif
-
   /**
    * @brief Construct Schwarz preconditioner from parameter tree.
    *
@@ -135,10 +70,10 @@ public:
    * @param ptree Parameter tree containing configuration
    * @param subtree_name Name of the subtree containing Schwarz parameters
    */
-  template <class RemoteIndices>
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const RemoteIndices& remoteids, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree& ptree,
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, std::shared_ptr<Communication> comm, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree& ptree,
                         const std::string& subtree_name = "schwarz", const std::string& solver_subtree_name = "subdomain_solver")
       : Aovlp(std::move(Aovlp))
+      , comm(std::move(comm))
       , pou(std::move(pou))
   {
     const auto& subtree = ptree.sub(subtree_name);
@@ -155,7 +90,7 @@ public:
     if (not solver_subtree.hasKey("type"))
       DUNE_THROW(Dune::Exception, "You must specify the solver in the subtree " << get_parameter_tree_prefix(ptree) << subtree_name << "." << solver_subtree_name << " using the key 'type'");
     solver = Dune::getSolverFromFactory(op, solver_subtree);
-    init(remoteids);
+    init();
   }
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
@@ -187,7 +122,7 @@ public:
     for (std::size_t i = 0; i < d.size(); ++i) (*d_ovlp)[i] = d[i];
 
     // 2. Get remaining values from other ranks
-    owner_copy_comm.forward<CopyGatherScatter>(*d_ovlp);
+    comm->copyOwnerToAll(*d_ovlp, *d_ovlp);
 
     Logger::get().endEvent(get_defect_event);
 
@@ -200,15 +135,16 @@ public:
 
     // 4. Make the solution consistent according to the type of the Schwarz method
     Logger::get().startEvent(add_solution_event);
-    if (type == SchwarzType::Standard) { all_all_comm.forward<AddGatherScatter>(*x_ovlp); }
+    if (type == SchwarzType::Standard) { comm->addOwnerCopyToOwnerCopy(*x_ovlp, *x_ovlp); }
     else if (type == SchwarzType::Restricted) {
       if (pou)
         for (std::size_t i = 0; i < pou->size(); ++i) (*x_ovlp)[i] *= (*pou)[i];
-      all_all_comm.forward<AddGatherScatter>(*x_ovlp);
+      comm->addOwnerCopyToOwnerCopy(*x_ovlp, *x_ovlp);
     }
 
     // 4. Restrict the solution to the non-overlapping subdomain
     for (std::size_t i = 0; i < x.size(); ++i) x[i] = (*x_ovlp)[i];
+
     Logger::get().endEvent(add_solution_event);
   }
 
@@ -226,6 +162,8 @@ public:
   tf::Task& get_setup_task() { return setup_task; }
 #endif
 
+  std::shared_ptr<Communication> novlp_comm;
+
 private:
   /**
    * @brief Initialize the preconditioner.
@@ -233,8 +171,7 @@ private:
    * Sets up communication interfaces, creates solver instance (if not delayed),
    * and allocates working vectors.
    */
-  template <class RemoteIndices>
-  void init(const RemoteIndices& remoteids)
+  void init()
   {
     logger::debug("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
 
@@ -247,7 +184,7 @@ private:
     Logger::ScopedLog sl(init_event);
 
     // Validate that remote indices match the overlapping matrix size
-    const auto remote_indices_size = remoteids.sourceIndexSet().size();
+    const auto remote_indices_size = comm->indexSet().size();
     const auto matrix_size = Aovlp->N();
     if (remote_indices_size != matrix_size)
       DUNE_THROW(Dune::InvalidStateException, "Remote indices size (" << remote_indices_size << ") does not match overlapping matrix size (" << matrix_size << ").");
@@ -255,29 +192,18 @@ private:
     // Validate that partition of unity has the correct size
     if (pou && pou->size() != matrix_size) DUNE_THROW(Dune::InvalidStateException, "Partition of unity size (" << pou->size() << ") does not match overlapping matrix size (" << matrix_size << ").");
 
-    all_all_interface.build(remoteids, allAttributes, allAttributes);
-    all_all_comm.build<Vec>(all_all_interface);
-
-    owner_copy_interface.build(remoteids, ownerAttribute, copyAttribute);
-    owner_copy_comm.build<Vec>(owner_copy_interface);
-
     d_ovlp = std::make_unique<Vec>(Aovlp->N());
     x_ovlp = std::make_unique<Vec>(Aovlp->N());
   }
 
   std::shared_ptr<Mat> Aovlp; ///< Overlapping subdomain matrix
+  std::shared_ptr<Communication> comm;
 
   std::shared_ptr<Solver> solver; ///< Local subdomain solver
   std::unique_ptr<Vec> d_ovlp;    ///< Defect on overlapping index set
   std::unique_ptr<Vec> x_ovlp;    ///< Solution on overlapping index set
 
   std::shared_ptr<PartitionOfUnity> pou{nullptr}; ///< Partition of unity (might be null)
-
-  Dune::Interface all_all_interface;       ///< Interface for all-to-all communication
-  Dune::BufferedCommunicator all_all_comm; ///< Communicator for all-to-all exchange
-
-  Dune::Interface owner_copy_interface;       ///< Interface for owner-to-copy communication
-  Dune::BufferedCommunicator owner_copy_comm; ///< Communicator for owner-to-copy exchange
 
   SchwarzType type; ///< Type of Schwarz method (standard or restricted)
 
