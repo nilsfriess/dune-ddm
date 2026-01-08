@@ -20,7 +20,6 @@
  */
 
 #include <memory>
-#include <type_traits>
 #include <vector>
 
 #include <dune/common/parallel/mpihelper.hh>
@@ -104,7 +103,7 @@ public:
   GenericDDMProblem(const GridView& gv, const Dune::MPIHelper& helper, const ModelProblem& model_problem = ModelProblem())
       : es(gv)
       , modelProblem(model_problem)
-      , bc(es, modelProblem)
+      , bc(gv, modelProblem)
       , lop(modelProblem)
       , wrapper(std::make_unique<AssembleWrapper<LocalOperator>>(&lop))
   {
@@ -209,7 +208,7 @@ public:
    * @param comm Overlapping communication
    */
   template <class Communication>
-  void assemble_dirichlet_matrix_only(const Communication& novlp_comm, const Communication& comm)
+  void assemble_dirichlet_matrix_only([[maybe_unused]] const Communication& novlp_comm, const Communication& comm)
   {
     using Dune::PDELab::Backend::native;
     logger::info("Assembling overlapping Dirichlet matrix");

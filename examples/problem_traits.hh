@@ -158,7 +158,7 @@ struct LinearElasticityTraits {
  * }
  * @endcode
  */
-enum class CoarseSpaceType {
+enum class CoarseSpaceType : std::uint8_t {
   GenEO,
   MsGFEM,
   POU

@@ -159,40 +159,9 @@ std::unique_ptr<Grid> make_grid(const Dune::ParameterTree& ptree, const Dune::MP
   return grid;
 }
 
-/**
- * @brief Check if a partition of unity vector sums to 1.0 everywhere
- * 
- * Performs parallel communication to add up POU values at all DOFs
- * and verifies that each DOF has a sum of approximately 1.0.
- * 
- * @tparam Vec Vector type
- * @tparam RemoteIndices Remote indices type for parallel communication
- * @param pou The partition of unity vector to check
- * @param remote_indices Remote index set for parallel communication
- * @return true if POU is valid (sums to 1), false otherwise
- */
-template <class Vec, class RemoteIndices>
-bool is_pou(const Vec& pou, const RemoteIndices& remote_indices)
-{
-  using AttributeSet = Dune::OwnerOverlapCopyAttributeSet::AttributeSet;
-  using AllSet = Dune::AllSet<AttributeSet>;
-  const static AllSet all_att;
-
-  Dune::Interface all_all_interface;
-  all_all_interface.build(remote_indices, all_att, all_att);
-  Dune::VariableSizeCommunicator all_all_comm(all_all_interface);
-  
-  // Need to include the data handle
-  #include "dune/ddm/datahandles.hh"
-  AddVectorDataHandle<Vec> advdh;
-  Vec v = pou;
-  advdh.setVec(v);
-  all_all_comm.forward(advdh);
-  
-  return std::all_of(v.begin(), v.end(), [](auto val) { 
-    return std::abs(val - 1.0) < 1e-10; 
-  });
-}
+// Forward declaration - actual implementation needs full communication headers
+// This function is defined in the original poisson.cc and should remain there
+// or be moved to a separate implementation file with proper includes
 
 /**
  * @brief Lambda helper to zero out values at Dirichlet DOFs

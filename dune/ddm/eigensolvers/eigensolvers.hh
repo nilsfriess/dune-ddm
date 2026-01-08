@@ -30,7 +30,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solve_gevp(std::sha
 
   EigensolverParams params(ptree);
 
-  constexpr std::size_t blocksize = 1;
+  constexpr std::size_t blocksize = 4;
   auto evp = std::make_shared<ShiftInvertEigenproblem<Mat, blocksize>>(*A, B, params.shift);
 
   if (params.type == EigensolverParams::Type::SubspaceIteration) return subspace_iteration(*evp, params);

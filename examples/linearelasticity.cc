@@ -22,7 +22,6 @@
 #include <dune/istl/io.hh>
 #include <dune/pdelab/gridfunctionspace/gridfunctionspaceutilities.hh>
 #include <dune/pdelab/localoperator/linearelasticityparameter.hh>
-#include <iostream>
 #include <taskflow/core/taskflow.hpp>
 
 int main(int argc, char** argv)
@@ -53,25 +52,24 @@ int main(int argc, char** argv)
   using Vec = decltype(problem)::NativeVec;
 
   // Using the PDELab grid function space, create a globally unqiue numbering of the dofs
-  auto remoteids = make_remote_indices(*problem.gfs(), helper);
-
-  // Create the overlapping index set (this uses the sparsity pattern of A)
   const int overlap = 1;
-  ExtendedRemoteIndices ext_indices(*remoteids, problem.A(), overlap);
+  auto novlp_comm = make_communication(*problem.gfs());
+  auto [ovlp_comm, boundary_mask] = make_overlapping_communication(*novlp_comm, problem.A(), overlap);
+  using Communication = std::decay_t<decltype(*ovlp_comm)>;
 
   // Assemble the overlapping Dirichlet and Neumann matrices
-  auto [A_dir, A_neu, B_neu, dirichlet_mask] = problem.assemble_overlapping_matrices(ext_indices);
+  auto [A_dir, A_neu, B_neu, dirichlet_mask] = problem.assemble_overlapping_matrices(*ovlp_comm, overlap);
 
   // Create fine-level Schwarz preconditioner
-  auto pou = std::make_shared<PartitionOfUnity>(*A_dir, ext_indices, ptree);
-  auto schwarz = std::make_shared<SchwarzPreconditioner<Vec, Mat>>(A_dir, ext_indices.get_remote_indices(), pou, ptree);
+  auto pou = std::make_shared<PartitionOfUnity>(*A_dir, *ovlp_comm, ptree, overlap);
+  auto schwarz = std::make_shared<SchwarzPreconditioner<Mat, Vec, Communication>>(A_dir, ovlp_comm, pou, ptree);
 
   // Compute coarse space basis functions
   tf::Taskflow taskflow("Main taskflow");
   auto coarse_space = std::make_unique<GenEOCoarseSpace<Mat>>(A_neu, B_neu, pou, ptree, taskflow);
 
   // Create coarse level solver
-  using CoarseLevel = GalerkinPreconditioner<Vec>;
+  using CoarseLevel = GalerkinPreconditioner<Vec, Communication>;
   const auto zero_at_dirichlet = [&](auto&& x) {
     for (std::size_t i = 0; i < x.size(); ++i)
       if ((*dirichlet_mask)[i] > 0) x[i] = 0;
@@ -83,7 +81,7 @@ int main(int argc, char** argv)
                         .emplace([&]() {
                           auto basis = coarse_space->get_basis();
                           std::ranges::for_each(basis, zero_at_dirichlet);
-                          coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ext_indices.get_remote_indices(), ptree, "coarse_solver");
+                          coarse = std::make_shared<CoarseLevel>(*A_dir, basis, ovlp_comm, ptree, "coarse_solver");
                         })
                         .name("Build coarse preconditioner")
                         .succeed(coarse_space->get_setup_task());
@@ -93,11 +91,11 @@ int main(int argc, char** argv)
   executor.run(taskflow).get();
 
   // Build the parallel operator and solver objects
-  using Op = NonOverlappingOperator<Mat, Vec>;
+  using Op = NonOverlappingOperator<Mat, Vec, Vec, Communication>;
   Dune::initSolverFactories<Op>(); // register all DUNE solvers so we can choose them via the command line
 
   auto prec = std::make_shared<CombinedPreconditioner<Vec>>(ptree);
-  auto op = std::make_shared<Op>(problem.A_ptr(), *remoteids);
+  auto op = std::make_shared<Op>(problem.A_ptr(), novlp_comm);
 
   prec->set_op(op);
   prec->add(schwarz);
@@ -127,11 +125,9 @@ int main(int argc, char** argv)
 
   std::vector<std::shared_ptr<PVec>> pvecs;
   const auto write_overlapping_vector = [&](const auto& vec, const std::string& name) {
-    AddVectorDataHandle<Vec> advdh;
     auto vec_vis = vec;
     if (helper.rank() != debug_rank) vec_vis = 0;
-    advdh.setVec(vec_vis);
-    ext_indices.get_overlapping_communicator().forward(advdh);
+    ovlp_comm->addOwnerCopyToAll(vec_vis, vec_vis);
 
     auto vec_small = std::make_shared<Vec>(problem.x().N());
     for (std::size_t i = 0; i < vec_small->N(); ++i) (*vec_small)[i] = vec_vis[i];
@@ -155,7 +151,7 @@ int main(int argc, char** argv)
   writer.addCellData(std::make_shared<ParamsVTKGF>(params, "Lambda"));
 
   // Write the overlapping subdomain
-  Vec ovlp_subdomain(ext_indices.size());
+  Vec ovlp_subdomain(ovlp_comm->indexSet().size());
   ovlp_subdomain = helper.rank() == debug_rank ? 1 : 0;
   write_overlapping_vector(ovlp_subdomain, "Ovlp. subdomain");
 
