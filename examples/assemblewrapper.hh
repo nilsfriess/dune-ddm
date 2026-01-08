@@ -8,8 +8,22 @@
 #include <dune/pdelab/gridfunctionspace/lfsindexcache.hh>
 #include <dune/pdelab/localoperator/callswitch.hh>
 #include <map>
+#include <unordered_map>
+#include <vector>
 
 // TODO: Implement the remaining missing functions
+/**
+ * @brief Wrapper for a PDELab LocalOperator to intercept assembly and compute Neumann corrections.
+ *
+ * This class wraps a LocalOperator and forwards all calls to it. However, during `jacobian_volume`,
+ * it additionally computes the contribution of the current element to the global matrix.
+ * If this contribution affects degrees of freedom on the boundary of a neighboring rank's subdomain
+ * (identified via masks), it is stored as a "Neumann correction".
+ *
+ * These corrections are later exchanged between ranks to ensure that each rank's local matrix
+ * correctly reflects the Neumann boundary conditions on the artificial interface in an
+ * overlapping Schwarz method.
+ */
 template <class LocalOperator>
 class AssembleWrapper {
 public:
@@ -170,70 +184,80 @@ public:
   {
     logger::trace("Called jacobian_volume");
 
-    if (on_boundary_mask_for_rank == nullptr) { Dune::PDELab::LocalOperatorApply::jacobianVolume(*lop, eg, lfsu, x, lfsv, mat); }
+    if (on_boundary_mask_for_rank == nullptr) {
+      // Standard assembly if no masks are set (e.g. during initial setup)
+      Dune::PDELab::LocalOperatorApply::jacobianVolume(*lop, eg, lfsu, x, lfsv, mat);
+    }
     else {
+      // Intercept assembly to compute corrections
       auto M_before = mat.container();
       Dune::PDELab::LocalOperatorApply::jacobianVolume(*lop, eg, lfsu, x, lfsv, mat);
-      auto M_after = mat.container();
 
       Dune::PDELab::LFSIndexCache cache(lfsu);
       cache.update();
 
-      int nonzero_corrections = 0;
+      // Pre-calculate global indices to avoid repeated cache lookups
+      std::vector<std::size_t> global_indices(lfsu.size());
       for (std::size_t i = 0; i < lfsu.size(); ++i) {
-        auto gi = cache.containerIndex(i)[0];
-        for (std::size_t j = 0; j < lfsu.size(); ++j) { // TODO: We assume lfsu == lfsv
-          auto gj = cache.containerIndex(j)[0];
-
-          // TODO: Here and below we assume that an unordered_map zero initialises a double when inserting a new entry. Is this true?
-          auto correction = M_after(lfsu, i, lfsv, j) - M_before(lfsu, i, lfsv, j);
-          curr_neumann_corrections[gi][gj] += correction;
-          if (std::abs(correction) > 1e-10) ++nonzero_corrections;
-        }
+        global_indices[i] = cache.containerIndex(i)[0];
+        assert(cache.containerIndex(i).size() == 1);
       }
 
-      // Corrections for other ranks
-      int num_ranks_with_corrections = 0;
+      // Corrections for other ranks:
+      // If an element contributes to a DOF on the boundary of another rank's subdomain,
+      // we record that contribution.
       for (const auto& [rank, mask] : *on_boundary_mask_for_rank) {
         bool hasDofAtBoundary = false;
         bool hasDofInsideBoundary = false;
-        for (std::size_t i = 0; i < cache.size(); ++i) {
-          auto dofidx = cache.containerIndex(i)[0];
+        const auto& inside_mask = (*inside_boundary_mask_for_rank).at(rank);
 
-          if ((*on_boundary_mask_for_rank).at(rank)[dofidx]) hasDofAtBoundary = true;
-
-          if ((*inside_boundary_mask_for_rank).at(rank)[dofidx]) hasDofInsideBoundary = true;
+        bool hasDofOutside = false;
+        for (auto gi : global_indices) {
+          if (mask[gi]) hasDofAtBoundary = true;
+          if (!mask[gi] && !inside_mask[gi]) hasDofOutside = true;
         }
 
-        if (hasDofAtBoundary and not hasDofInsideBoundary) {
-          ++num_ranks_with_corrections;
-          for (const auto& [row, cols] : curr_neumann_corrections) {
-            for (const auto& [col, val] : cols)
-              if ((*on_boundary_mask_for_rank).at(rank)[row] and (*on_boundary_mask_for_rank).at(rank)[col]) {
-                neumann_correction_matrices[rank][row][col] += val;
-              }
+        // We only care if the element touches the boundary but is NOT fully inside the other rank's domain.
+        if (hasDofAtBoundary and hasDofOutside) {
+          auto& An = neumann_correction_matrices[rank];
+          for (std::size_t i = 0; i < lfsu.size(); ++i) {
+            auto gi = global_indices[i];
+            if (!mask[gi]) continue;
+
+            for (std::size_t j = 0; j < lfsu.size(); ++j) { // TODO: We assume lfsu == lfsv
+              auto gj = global_indices[j];
+              if (!mask[gj]) continue;
+
+              // Calculate the contribution of this element
+              double val = mat.container()(lfsu, i, lfsv, j) - M_before(lfsu, i, lfsv, j);
+              An.entry(gi, gj) += val;
+            }
           }
         }
       }
 
-      // Corrections for ourselves
+      // Corrections for ourselves (local Neumann boundaries)
       bool hasDofAtBoundary = false;
       bool hasDofOutsideBoundary = false;
-      for (std::size_t i = 0; i < cache.size(); ++i) {
-        auto dofidx = cache.containerIndex(i)[0];
-
-        if ((*on_boundary_mask)[dofidx]) hasDofAtBoundary = true;
-
-        if ((*outside_boundary_mask)[dofidx]) hasDofOutsideBoundary = true;
+      for (auto gi : global_indices) {
+        if ((*on_boundary_mask)[gi]) hasDofAtBoundary = true;
+        if ((*outside_boundary_mask)[gi]) hasDofOutsideBoundary = true;
       }
       if (hasDofAtBoundary and hasDofOutsideBoundary) {
-        for (const auto& [row, cols] : curr_neumann_corrections) {
-          for (const auto& [col, val] : cols)
-            if ((*on_boundary_mask)[row] and (*on_boundary_mask)[col]) neumann_correction_matrices[-1][row][col] += val; // -1 means our own corrections
+        auto& An = neumann_correction_matrices[-1]; // -1 means our own corrections
+        for (std::size_t i = 0; i < lfsu.size(); ++i) {
+          auto gi = global_indices[i];
+          if (!(*on_boundary_mask)[gi]) continue;
+
+          for (std::size_t j = 0; j < lfsu.size(); ++j) {
+            auto gj = global_indices[j];
+            if (!(*on_boundary_mask)[gj]) continue;
+
+            double val = mat.container()(lfsu, i, lfsv, j) - M_before(lfsu, i, lfsv, j);
+            An.entry(gi, gj) += val;
+          }
         }
       }
-
-      curr_neumann_corrections.clear();
     }
   }
 
@@ -248,16 +272,119 @@ public:
   void jacobian_skeleton(const IG& ig, const LFSU& lfsu_s, const X& x_s, const LFSV& lfsv_s, const LFSU& lfsu_n, const X& x_n, const LFSV& lfsv_n, M& mat_ss, M& mat_sn, M& mat_ns, M& mat_nn) const
   {
     logger::trace("Called jacobian_skeleton");
-    Dune::PDELab::LocalOperatorApply::jacobianSkeleton(*lop, ig, lfsu_s, x_s, lfsv_s, lfsu_n, x_n, lfsv_n, mat_ss, mat_sn, mat_ns, mat_nn);
+
+    if (on_boundary_mask_for_rank == nullptr) { Dune::PDELab::LocalOperatorApply::jacobianSkeleton(*lop, ig, lfsu_s, x_s, lfsv_s, lfsu_n, x_n, lfsv_n, mat_ss, mat_sn, mat_ns, mat_nn); }
+    else {
+      auto M_ss_before = mat_ss.container();
+      auto M_nn_before = mat_nn.container();
+
+      Dune::PDELab::LocalOperatorApply::jacobianSkeleton(*lop, ig, lfsu_s, x_s, lfsv_s, lfsu_n, x_n, lfsv_n, mat_ss, mat_sn, mat_ns, mat_nn);
+
+      // For now, let's assume that this is called in a DG discretisation.
+      // Then all dofs in an element have the same distance. This means we can do the following:
+      // - Check if a dof on the outside element is marked in one of the outside_boundary masks
+      // - Check if a dof on the inside element in marked in one of the on_boundary masks
+      // If both checks are true, we have to assemble a Neumann correction
+
+      Dune::PDELab::LFSIndexCache cache_inside(lfsu_s);
+      std::vector<std::size_t> global_indices_inside(lfsu_s.size());
+      cache_inside.update();
+      for (std::size_t i = 0; i < lfsu_s.size(); ++i) {
+        global_indices_inside[i] = cache_inside.containerIndex(i)[0];
+        assert(cache_inside.containerIndex(i).size() == 1);
+      }
+
+      Dune::PDELab::LFSIndexCache cache_outside(lfsu_n);
+      std::vector<std::size_t> global_indices_outside(lfsu_n.size());
+      cache_outside.update();
+      for (std::size_t i = 0; i < lfsu_n.size(); ++i) {
+        global_indices_outside[i] = cache_outside.containerIndex(i)[0];
+        assert(cache_outside.containerIndex(i).size() == 1);
+      }
+
+      for (const auto& [rank, mask] : *on_boundary_mask_for_rank) {
+        const auto& inside_mask = (*inside_boundary_mask_for_rank).at(rank);
+
+        // Case 1: Inside element is on boundary, outside element is outside boundary.
+        // Then we need to save the contributions from the inside element as Neumann corrections.
+        {
+          bool inside_elem_is_on_boundary = mask[global_indices_inside[0]];
+          bool outside_elem_is_outside_boundary = !mask[global_indices_outside[0]] && !inside_mask[global_indices_outside[0]];
+
+          // If the outside element is a ghost element, we don't need to assemble Neumann corrections for it
+          bool outside_elem_is_ghost = ig.outside().partitionType() == Dune::GhostEntity;
+
+          // Sanity checks: In a DG method, if one dof of an element is on (outside) the subdomain boundary, all of them should be on (outside)
+          if (inside_elem_is_on_boundary) assert(std::all_of(global_indices_inside.begin(), global_indices_inside.end(), [&](auto& gi) { return mask[gi]; }));
+          if (outside_elem_is_outside_boundary) assert(std::all_of(global_indices_outside.begin(), global_indices_outside.end(), [&](auto& gi) { return !mask[gi] && !inside_mask[gi]; }));
+
+          if (inside_elem_is_on_boundary and outside_elem_is_outside_boundary and !outside_elem_is_ghost) {
+            auto& An = neumann_correction_matrices[rank];
+            for (std::size_t i = 0; i < lfsu_s.size(); ++i) {
+              auto gi = global_indices_inside[i];
+
+              for (std::size_t j = 0; j < lfsu_s.size(); ++j) { // TODO: We assume lfsu == lfsv
+                auto gj = global_indices_inside[j];
+
+                // Calculate the contribution of this element
+                double val = mat_ss.container()(lfsu_s, i, lfsv_s, j) - M_ss_before(lfsu_s, i, lfsv_s, j);
+                An.entry(gi, gj) += val;
+              }
+            }
+          }
+        }
+
+        // Case 2: Outside element is on boundary, inside element is outside boundary.
+        // Then we need to save the contributions from the outside element as Neumann correction.
+        {
+          bool outside_elem_is_on_boundary = mask[global_indices_outside[0]];
+          bool inside_elem_is_outside_boundary = !mask[global_indices_inside[0]] && !inside_mask[global_indices_inside[0]];
+
+          // If the inside element is a ghost element, we don't need to assemble Neumann corrections for it
+          bool inside_elem_is_ghost = ig.inside().partitionType() == Dune::GhostEntity;
+
+          // Sanity checks: In a DG method, if one dof of an element is on (outside) the subdomain boundary, all of them should be on (outside)
+          if (outside_elem_is_on_boundary) assert(std::all_of(global_indices_outside.begin(), global_indices_outside.end(), [&](auto& gi) { return mask[gi]; }));
+          if (inside_elem_is_outside_boundary) assert(std::all_of(global_indices_inside.begin(), global_indices_inside.end(), [&](auto& gi) { return !mask[gi] && !inside_mask[gi]; }));
+
+          if (outside_elem_is_on_boundary and inside_elem_is_outside_boundary and !inside_elem_is_ghost) {
+            auto& An = neumann_correction_matrices[rank];
+            for (std::size_t i = 0; i < lfsu_n.size(); ++i) {
+              auto gi = global_indices_outside[i];
+
+              for (std::size_t j = 0; j < lfsu_n.size(); ++j) { // TODO: We assume lfsu == lfsv
+                auto gj = global_indices_outside[j];
+
+                // Calculate the contribution of this element
+                double val = mat_nn.container()(lfsu_n, i, lfsv_n, j) - M_nn_before(lfsu_n, i, lfsv_n, j);
+                An.entry(gi, gj) += val;
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   template <typename IG, typename LFSU, typename X, typename LFSV, typename M>
   void jacobian_boundary(const IG& ig, const LFSU& lfsu_s, const X& x_s, const LFSV& lfsv_s, M& mat_ss) const
   {
     logger::trace("Called jacobian_boundary");
+
     Dune::PDELab::LocalOperatorApply::jacobianBoundary(*lop, ig, lfsu_s, x_s, lfsv_s, mat_ss);
   }
 
+  /**
+   * @brief Sets the masks used to identify DOFs on the boundaries of overlapping subdomains.
+   *
+   * @param A The matrix structure (used to initialize correction matrices).
+   * @param on_boundary_mask_for_rank Map from rank to a boolean mask indicating DOFs on the boundary of that rank's subdomain.
+   * @param inside_boundary_mask_for_rank Map from rank to a boolean mask indicating DOFs strictly inside that rank's subdomain.
+   * @param on_boundary_mask Mask for DOFs on the boundary of the local subdomain (for self-correction).
+   * @param outside_boundary_mask Mask for DOFs outside the local subdomain (for self-correction).
+   *
+   * This method also initializes the `neumann_correction_matrices` for each relevant rank.
+   */
   template <class Mat>
   void set_masks(const Mat& A, const std::map<int, std::vector<bool>>* on_boundary_mask_for_rank, const std::map<int, std::vector<bool>>* inside_boundary_mask_for_rank,
                  const std::vector<bool>* on_boundary_mask, const std::vector<bool>* outside_boundary_mask)
@@ -306,6 +433,13 @@ public:
     outside_boundary_mask = nullptr;
   }
 
+  /**
+   * @brief Extracts the computed Neumann corrections as a list of triples.
+   *
+   * @param glis Global lookup index set (to map local indices to global indices).
+   * @return A map from rank to a vector of {row, col, value} triples representing the corrections to be sent to that rank.
+   *         Rank -1 contains corrections for the local process.
+   */
   template <class GLIS>
   std::unordered_map<int, std::vector<TripleWithRank>> get_correction_triples(const GLIS& glis) const
   {
@@ -318,28 +452,24 @@ public:
           auto grow = glis.pair(ri.index())->global();
           for (auto ci = An[ri.index()].begin(); ci != An[ri.index()].end(); ++ci) {
             auto gcol = glis.pair(ci.index())->global();
-            if (std::abs(*ci) > 0) {
-              triples_for_rank[rank].emplace_back(TripleWithRank{
-                  .rank = rank,
-                  .row = grow,
-                  .col = gcol,
-                  .val = *ci,
-              });
-            }
+            triples_for_rank[rank].emplace_back(TripleWithRank{
+                .rank = rank,
+                .row = grow,
+                .col = gcol,
+                .val = *ci,
+            });
           }
         }
       }
       else {
         for (auto ri = An.begin(); ri != An.end(); ++ri) {
           for (auto ci = An[ri.index()].begin(); ci != An[ri.index()].end(); ++ci) {
-            if (std::abs(*ci) > 0) {
-              triples_for_rank[rank].emplace_back(TripleWithRank{
-                  .rank = rank,
-                  .row = ri.index(),
-                  .col = ci.index(),
-                  .val = *ci,
-              });
-            }
+            triples_for_rank[rank].emplace_back(TripleWithRank{
+                .rank = rank,
+                .row = ri.index(),
+                .col = ci.index(),
+                .val = *ci,
+            });
           }
         }
       }
@@ -353,8 +483,6 @@ private:
   const std::map<int, std::vector<bool>>* inside_boundary_mask_for_rank{nullptr};
   const std::vector<bool>* on_boundary_mask{nullptr}; // Masks for the "inner" corrections
   const std::vector<bool>* outside_boundary_mask{nullptr};
-
-  mutable std::unordered_map<std::size_t, std::unordered_map<std::size_t, double>> curr_neumann_corrections; // maps from row -> col -> value
 
   mutable std::unordered_map<int, Dune::BCRSMatrix<double>> neumann_correction_matrices;
 
