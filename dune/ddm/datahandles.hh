@@ -6,7 +6,8 @@
 #include <cstddef>
 #include <cstring>
 #include <dune/common/parallel/indexset.hh>
-#include <limits>
+#include <dune/istl/io.hh>
+#include <dune/istl/scalarproducts.hh>
 #include <map>
 #include <set>
 #include <unordered_set>
@@ -176,13 +177,6 @@ public:
   const std::vector<bool>& get_boundary_mask() const
   {
     return boundary_mask;
-    // std::vector<bool> boundaryMask(paridxs.size(), false);
-    // for (const auto &[rank, mask] : boundaryMaskForRank) {
-    //   for (std::size_t i = 0; i < boundaryMask.size(); ++i) {
-    //     boundaryMask[i] = boundaryMask[i] || mask[i];
-    //   }
-    // }
-    // return boundaryMask;
   }
 
   const std::map<int, std::vector<bool>>& getBoundaryMaskForRank() const { return boundaryMaskForRank; }
@@ -442,11 +436,10 @@ private:
 template <class Mat, class ParallelIndexSet>
 class CreateMatrixDataHandle {
 public:
-  CreateMatrixDataHandle(const Mat& A, const ParallelIndexSet& paridxs, const std::vector<std::size_t>& ltg, const std::unordered_set<std::size_t>& gis)
+  CreateMatrixDataHandle(const Mat& A, const ParallelIndexSet& paridxs)
       : A(A)
       , paridxs(paridxs)
-      , ltg(ltg)
-      , gis(gis)
+      , glis(paridxs)
       , Aovlp(paridxs.size(), paridxs.size(), static_cast<double>(A.nonzeroes()) / A.N(), 0.6, Mat::implicit)
   {
     for (auto rIt = A.begin(); rIt != A.end(); ++rIt)
@@ -474,7 +467,7 @@ public:
   {
     buffer.write(1); // send dummy data
     if (i < A.N())
-      for (auto cIt = A[i].begin(); cIt != A[i].end(); ++cIt) buffer.write(ltg[cIt.index()]);
+      for (auto cIt = A[i].begin(); cIt != A[i].end(); ++cIt) buffer.write(glis.pair(cIt.index())->global());
   }
 
   template <class Buffer>
@@ -484,7 +477,7 @@ public:
     buffer.read(gi); // read dummy data
     for (int k = 0; k < size - 1; k++) {
       buffer.read(gi); // read global index
-      if (gis.count(gi)) Aovlp.entry(i, paridxs[gi].local()) = 0.0;
+      if (paridxs.exists(gi)) Aovlp.entry(i, paridxs[gi].local()) = 0.0;
     }
   }
 
@@ -497,12 +490,16 @@ public:
 private:
   const Mat& A;
   const ParallelIndexSet& paridxs;
-  const std::vector<std::size_t>& ltg;
-  const std::unordered_set<std::size_t>& gis;
+  Dune::GlobalLookupIndexSet<ParallelIndexSet> glis;
 
   Mat Aovlp;
 };
 
+// TODO: This is a bit cursed currently. We have to send an index and a corresponding matrix entry.
+//       We do this by reinterpeting the entry using memcpy as an index, send both values as the same
+//       type and reinterpret back on the receiver side. We should probably just split the communication
+//       of the indices and the communication of the entries.
+//       We do not send them as std::pairs because that was very inefficient.
 template <class Mat, class ParallelIndexSet>
 class AddMatrixDataHandle {
   using GlobalIndex = typename ParallelIndexSet::GlobalIndex;
@@ -522,14 +519,6 @@ public:
     for (auto rIt = A.begin(); rIt != A.end(); ++rIt)
       for (auto cIt = rIt->begin(); cIt != rIt->end(); ++cIt) Atarget[rIt.index()][cIt.index()] = Asource[rIt.index()][cIt.index()];
 
-    max_count = 0;
-    for (std::size_t i = 0; i < Asource.N(); ++i) {
-      std::size_t count = 0;
-      for (auto cIt = Asource[i].begin(); cIt != Asource[i].end(); ++cIt) count++;
-      if (count > max_count) max_count = count;
-    }
-    logger::trace_all("AddMatrixDataHandle: Max count: {}", max_count);
-
     scatter_event = Logger::get().registerOrGetEvent("OverlapExtension", "add Matrix scatter");
     gather_event = Logger::get().registerOrGetEvent("OverlapExtension", "add Matrix gather");
   }
@@ -539,38 +528,32 @@ public:
   AddMatrixDataHandle& operator=(AddMatrixDataHandle&&) = delete;
   ~AddMatrixDataHandle() = default;
 
-  bool fixedSize() { return true; }
-  std::size_t size(int) { return 2 * max_count; }
+  bool fixedSize() { return false; }
+  std::size_t size(int i)
+  {
+    std::size_t count = 1; // Send some dummy data
+    if (static_cast<std::size_t>(i) < Asource.N())
+      for (auto cIt = Asource[i].begin(); cIt != Asource[i].end(); ++cIt) count += 2; // We send an index and an entry
+    return count;
+  }
 
   template <class Buffer>
   void gather(Buffer& buffer, int i)
   {
     Logger::ScopedLog sl{gather_event};
 
-    std::size_t count = 0;
+    buffer.write(0); // Send dummy data
+
     if (static_cast<std::size_t>(i) < Asource.N())
       for (auto cIt = Asource[i].begin(); cIt != Asource[i].end(); ++cIt) {
         // buffer.write(DataType(glis.pair(cIt.index())->global(), *cIt));
         buffer.write(glis.pair(cIt.index())->global());
-        count++;
 
         GlobalIndex entry;
         double d = (*cIt)[0][0];
         std::memcpy(&entry, &d, sizeof(entry));
         buffer.write(entry);
-        count++;
       }
-
-    while (count < 2 * max_count) {
-      buffer.write(0);
-      count++;
-
-      GlobalIndex entry;
-      auto nan = std::numeric_limits<double>::quiet_NaN();
-      std::memcpy(&entry, &nan, sizeof(entry));
-      buffer.write(entry);
-      count++;
-    }
   }
 
   template <class Buffer>
@@ -579,17 +562,18 @@ public:
     Logger::ScopedLog sl{scatter_event};
 
     DataType idx;
+    buffer.read(idx); // read dummy data
+
     DataType entry;
     MatrixEntry actual_entry;
-    std::size_t count = 0;
+    std::size_t count = 1;
     while (count < size) {
       buffer.read(idx);
       buffer.read(entry);
 
       std::memcpy(&actual_entry, &entry, sizeof(entry));
 
-      if (!std::isnan(actual_entry[0][0]))
-        if (paridxs.exists(idx)) Atarget[i][paridxs[idx].local()] += actual_entry;
+      if (paridxs.exists(idx)) Atarget[i][paridxs[idx].local()] += actual_entry;
 
       count += 2;
     }
@@ -601,8 +585,6 @@ private:
 
   const ParallelIndexSet& paridxs;
   Dune::GlobalLookupIndexSet<ParallelIndexSet> glis;
-
-  std::size_t max_count;
 
   Logger::Event* scatter_event;
   Logger::Event* gather_event;
