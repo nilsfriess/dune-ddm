@@ -1,5 +1,7 @@
 #pragma once
 
+#include "dune/ddm/logger.hh"
+
 #include <dune/common/exceptions.hh>
 #include <dune/common/parametertree.hh>
 
@@ -9,6 +11,8 @@ struct EigensolverParams {
   EigensolverParams()
       : ncv(2 * nev)
   {
+    logger::info("Eigensolver of type '{}' set up with nev = {}, ncv = {}, maxit = {}, seed = {}, blocksize = {}, tolerance = {}, shift = {}", type_to_string(), nev, ncv, maxit, seed, blocksize,
+                 tolerance, shift);
   }
 
   explicit EigensolverParams(const Dune::ParameterTree& ptree)
@@ -22,18 +26,24 @@ struct EigensolverParams {
     if (ptree.hasKey("seed")) seed = ptree.get<std::size_t>("seed");
     if (ptree.hasKey("blocksize")) blocksize = ptree.get<std::size_t>("blocksize");
 
-    const auto& typestr = ptree.get<std::string>("type");
-    if (typestr == "Spectra") type = Type::Spectra;
-    else if (typestr == "SubspaceIteration") type = Type::SubspaceIteration;
-    else if (typestr == "SRRIT") type = Type::SRRIT;
-    else if (typestr == "KrylovSchur") type = Type::KrylovSchur;
-    // else if (typestr == "RAES") {
-    //   type = Type::RAES;
-    // }
-    else DUNE_THROW(Dune::NotImplemented, "Unknown eigensolver type '" + typestr + "'");
+    if (ptree.hasKey("type")) {
+      const auto& typestr = ptree.get<std::string>("type");
+      if (typestr == "Spectra") type = Type::Spectra;
+      else if (typestr == "SubspaceIteration") type = Type::SubspaceIteration;
+      else if (typestr == "SRRIT") type = Type::SRRIT;
+      else if (typestr == "KrylovSchur") type = Type::KrylovSchur;
+      // else if (typestr == "RAES") {
+      //   type = Type::RAES;
+      // }
+      else DUNE_THROW(Dune::NotImplemented, "Unknown eigensolver type '" + typestr + "'");
+    }
+    // else: use default Type::Spectra
+
+    logger::debug("Eigensolver of type '{}' set up with nev = {}, ncv = {}, maxit = {}, seed = {}, blocksize = {}, tolerance = {}, shift = {}", type_to_string(), nev, ncv, maxit, seed, blocksize,
+                  tolerance, shift);
   }
 
-  Type type = Type::KrylovSchur;
+  Type type = Type::Spectra;
   std::size_t nev = 16;
   std::size_t ncv; // Will be set to 2 * nev in the constructor if not given by user
   std::size_t maxit = 1000;
@@ -41,4 +51,15 @@ struct EigensolverParams {
   std::size_t blocksize = 8;
   double tolerance = 1e-5;
   double shift = 1e-3;
+
+private:
+  std::string type_to_string() const
+  {
+    switch (type) {
+      case Type::Spectra: return "Spectra";
+      case Type::SubspaceIteration: return "SubspaceIteration";
+      case Type::SRRIT: return "SRRIT";
+      case Type::KrylovSchur: return "KrylovSchur";
+    }
+  }
 };

@@ -25,7 +25,7 @@ class BlockKrylovSchur {
 
 public:
   BlockKrylovSchur(std::shared_ptr<EVP> evp, const EigensolverParams& params)
-      : orth(std::make_shared<Ortho>(BetweenBlocks::ClassicalGramSchmidt, WithinBlocks::CholQR2, evp->get_inner_product()))
+      : orth(std::make_shared<Ortho>(BetweenBlocks::ClassicalGramSchmidt, WithinBlocks::CholQR, evp->get_inner_product()))
       , evp(std::move(evp))
       , lanczos(this->evp, orth, params)
       , nev(params.nev)
@@ -38,7 +38,7 @@ public:
 
   {
     // Use CGS with a small number of reorthogonalisation passes (twice-is-enough)
-    orth->set_reorthogonalization(true, 10);
+    orth->set_reorthogonalization(false, 10);
     if (nev % blocksize != 0) throw std::invalid_argument("Number of requested eigenvalues must be multiple of blocksize");
     if (ncv % blocksize != 0) throw std::invalid_argument("Number of basis vectors must be multiple of blocksize");
     if (ncv <= nev) throw std::invalid_argument("Number of basis vectors must be larger than number of requested eigenvalues");
@@ -238,12 +238,14 @@ private:
 
   void solve_small()
   {
+    logger::trace_all("KrylovSchur: Solving small system");
+
     T = lanczos.get_T_matrix().to_flat_column_major();
 
     // Diagonalise the T matrix (in general: transform it to Schur form, but in the symmetric case, this means diagonalising it)
     // TODO: We only need to consider the part of T that corresponds to unconverged Ritz values
     std::copy(T.begin(), T.end(), X.begin()); // Copy to X because syev solves in-place, and we want the result in X
-    int info = lapacke::syevd(LAPACK_COL_MAJOR, 'V', 'U', (int)ncv, X.data(), (int)ncv, ritz_values.data());
+    int info = lapacke::syev(LAPACK_COL_MAJOR, 'V', 'U', (int)ncv, X.data(), (int)ncv, ritz_values.data());
     if (info != 0) throw std::runtime_error("FAILED: LAPACK syev failed with info = " + std::to_string(info));
 
     // Sort eigenvalues and eigenvectors
@@ -261,6 +263,8 @@ private:
     }
     ritz_values = std::move(sorted_ritz_values);
     X = std::move(sorted_X);
+
+    logger::trace_all("KrylovSchur: Solving small system done");
   }
 
   void debug_print()

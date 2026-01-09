@@ -51,7 +51,7 @@ public:
       solver = std::make_unique<Solver>();
       // solver->setOption(UMFPACK_STRATEGY, UMFPACK_STRATEGY_SYMMETRIC);
       solver->setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
-      // solver->setOption(UMFPACK_IRSTEP, 0);
+      solver->setOption(UMFPACK_IRSTEP, 0);
       solver->setMatrix(A_minus_sigma_B);
 #else
       solver = std::make_unique<Dune::STRUMPACK<Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>>>(A_minus_sigma_B);

@@ -9,7 +9,6 @@
 */
 
 #include "../logger.hh"
-#include "dune/ddm/helpers.hh"
 
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/indexset.hh>
@@ -18,8 +17,6 @@
 #include <dune/istl/bvector.hh>
 #include <dune/istl/matrixmarket.hh>
 #include <mpi.h>
-#include <numeric>
-#include <random>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -328,6 +325,7 @@ protected:
 #endif
 };
 
+#if 0
 /**
  * @brief GenEO (Generalized Eigenproblems in the Overlaps) coarse space builder.
  *
@@ -384,6 +382,7 @@ private:
   std::shared_ptr<Mat> Aneu_matrix;
   GenEOCoarseSpace<Mat, Vec> geneo;
 };
+#endif
 
 template <class Mat, class MaskVec, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
 class ConstraintGenEOCoarseSpace : public CoarseSpaceBuilder<Vec> {
@@ -681,131 +680,6 @@ public:
     this->setup_task = taskflow
                            .emplace([A, pou, &dirichlet_mask, &subdomain_boundary_mask, eig_ptree, this] {
                              setup_msgfem_impl(A, pou, dirichlet_mask, subdomain_boundary_mask, eig_ptree);
-
-                             if (dirichlet_mask.N() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the Dirichlet mask must have the same size");
-
-                             if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
-
-                             // Partition the degrees of freedom
-                             enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
-                             std::vector<DOFType> dof_partitioning(A->N());
-                             std::size_t num_interior = 0;
-                             std::size_t num_boundary = 0;
-                             std::size_t num_dirichlet = 0;
-                             for (std::size_t i = 0; i < A->N(); ++i) {
-                               if (dirichlet_mask[i] > 0) {
-                                 dof_partitioning[i] = DOFType::Dirichlet;
-                                 num_dirichlet++;
-                               }
-                               else if (subdomain_boundary_mask[i]) {
-                                 dof_partitioning[i] = DOFType::Boundary;
-                                 num_boundary++;
-                               }
-                               else {
-                                 dof_partitioning[i] = DOFType::Interior;
-                                 num_interior++;
-                               }
-                             }
-                             logger::debug_all("Partitioned dofs, have {} in interior, {} on subdomain boundary, {} on Dirichlet boundary", num_interior, num_boundary, num_dirichlet);
-
-                             // Create a reordered index set: first interior dofs, then boundary dofs, then Dirichlet dofs
-                             std::vector<std::size_t> reordering(A->N());
-                             std::size_t cnt_interior = 0;
-                             std::size_t cnt_boundary = num_interior;
-                             std::size_t cnt_dirichlet = num_interior + num_boundary;
-                             for (std::size_t i = 0; i < reordering.size(); ++i)
-                               if (dof_partitioning[i] == DOFType::Interior) reordering[i] = cnt_interior++;
-                               else if (dof_partitioning[i] == DOFType::Boundary) reordering[i] = cnt_boundary++;
-                               else reordering[i] = cnt_dirichlet++;
-
-                             // Assemble the left-hand side of the eigenproblem
-                             auto A_lhs = std::make_shared<Mat>();
-                             const auto n_big = num_interior + num_boundary + num_interior; // size of the big eigenproblem, including the harmonicity constraint
-                             const auto avg = 2 * (A->nonzeroes() / A->N());
-                             A_lhs->setBuildMode(Mat::implicit);
-                             A_lhs->setImplicitBuildModeParameters(avg, 0.2);
-                             A_lhs->setSize(n_big, n_big);
-
-                             // Assemble the part corresponding to the a-harmonic constraint
-                             for (auto rit = A->begin(); rit != A->end(); ++rit) {
-                               auto ii = rit.index();
-                               auto ri = reordering[ii];
-                               if (dof_partitioning[ii] != DOFType::Interior) continue;
-
-                               for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
-                                 auto jj = cit.index();
-                                 auto rj = reordering[jj];
-
-                                 if (dof_partitioning[jj] != DOFType::Dirichlet) {
-                                   A_lhs->entry(rj, num_interior + num_boundary + ri) = *cit;
-                                   A_lhs->entry(num_interior + num_boundary + ri, rj) = *cit;
-                                 }
-                               }
-                             }
-
-                             // Assemble the remaining part of the matrix
-                             for (auto rit = A->begin(); rit != A->end(); ++rit) {
-                               auto ii = rit.index();
-                               auto ri = reordering[ii];
-                               if (dof_partitioning[ii] == DOFType::Dirichlet) // Skip Dirchlet dofs
-                                 continue;
-
-                               for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
-                                 auto jj = cit.index();
-                                 auto rj = reordering[jj];
-
-                                 if (dof_partitioning[jj] != DOFType::Dirichlet) A_lhs->entry(ri, rj) = *cit;
-                               }
-                             }
-                             A_lhs->compress();
-
-                             // Next, assemble the right-hand side of the eigenproblem
-                             auto B = std::make_shared<Mat>();
-                             B->setBuildMode(Mat::implicit);
-                             B->setImplicitBuildModeParameters(avg, 0.2);
-                             B->setSize(n_big, n_big);
-
-                             for (auto rit = A->begin(); rit != A->end(); ++rit) {
-                               auto ii = rit.index();
-                               auto ri = reordering[ii];
-                               if (dof_partitioning[ii] != DOFType::Interior) continue;
-
-                               for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
-                                 auto jj = cit.index();
-                                 auto rj = reordering[jj];
-
-                                 if (dof_partitioning[jj] == DOFType::Interior) B->entry(ri, rj) = (*pou)[ii] * (*pou)[jj] * (*cit);
-                               }
-                             }
-                             B->compress();
-
-                             // {
-                             //   Mat An;
-                             //   Mat Bn;
-
-                             //   int rank{};
-                             //   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-                             //   Dune::storeMatrixMarket(*A_lhs, "A" + std::to_string(rank) + ".mtx", 100);
-                             //   Dune::storeMatrixMarket(*B, "B" + std::to_string(rank) + ".mtx", 100);
-
-                             //   Dune::loadMatrixMarket(An, "A" + std::to_string(rank) + ".mtx");
-                             //   Dune::loadMatrixMarket(Bn, "B" + std::to_string(rank) + ".mtx");
-
-                             //   An.axpy(-1, *A_lhs);
-                             //   logger::error_all("A diff Norm {}", An.frobenius_norm());
-                             // }
-
-                             // Now we can solve the eigenproblem
-                             auto eigenvectors = solve_gevp(A_lhs, B, eig_ptree);
-
-                             // Finally, extract the actual eigenvectors
-                             Vec v(A->N());
-                             v = 0;
-                             std::vector<Vec> eigenvectors_actual(eigenvectors.size(), v);
-                             for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
-                               for (std::size_t i = 0; i < A->N(); ++i)
-                                 if (dof_partitioning[i] != DOFType::Dirichlet) eigenvectors_actual[k][i] = eigenvectors[k][reordering[i]];
-                             }
                            })
                            .name("MsGFEM coarse space setup");
   }
@@ -939,6 +813,7 @@ protected:
 };
 #endif
 
+#if 0
 #if DUNE_DDM_HAVE_TASKFLOW
 /**
  * @brief Algebraic MsGFEM coarse space builder.
@@ -1001,6 +876,7 @@ private:
   std::shared_ptr<Mat> Aneu_matrix;
   MsGFEMCoarseSpace<Mat, MaskVec1, MaskVec2, Vec> msgfem;
 };
+#endif
 #endif
 
 #if DUNE_DDM_HAVE_TASKFLOW

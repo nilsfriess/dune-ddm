@@ -1,7 +1,6 @@
 #pragma once
 
 #include "assemblewrapper.hh"
-#include "dune/ddm/overlap_extension.hh"
 #include "pdelab_helper.hh"
 
 #include <dune/common/parallel/mpihelper.hh>
@@ -138,7 +137,7 @@ public:
   using DF = typename GridView::Grid::ctype;
 
   // Setup types for entity set, finite element map and problem parameters
-  using ES = Dune::PDELab::OverlappingEntitySet<GridView>;
+  using ES = Dune::PDELab::AllEntitySet<GridView>;
   using FEM = Dune::PDELab::PkLocalFiniteElementMap<ES, DF, double, 1>;
 
   template <typename T>
@@ -203,16 +202,16 @@ public:
     gop_->residual(*x_, *r_);
     if (helper.size() > 1) {
       Dune::PDELab::AddDataHandle adddhd(*gfs_, *r_);
-      gv.communicate(adddhd, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
+      gv.communicate(adddhd, Dune::All_All_Interface, Dune::ForwardCommunication);
     }
   }
 
-  template <class RemoteIndices>
+  template <class Communication>
   std::tuple<std::shared_ptr<NativeMat>, std::shared_ptr<NativeMat>, std::shared_ptr<NativeMat>, std::shared_ptr<NativeVec>>
-  assemble_overlapping_matrices(const ExtendedRemoteIndices<RemoteIndices, NativeMat>& ext_ids)
+  assemble_overlapping_matrices(Communication& comm, int overlap = 1)
   {
     auto [A_dir, A_neu, B_neu, dirichlet_mask_ovlp, neumann_region_to_subdomain] =
-        ::assemble_overlapping_matrices(*A_, *x_, *gop_, dirichlet_mask(), ext_ids, NeumannRegion::All, NeumannRegion::All, true);
+        ::assemble_overlapping_matrices(*A_, *x_, *gop_, dirichlet_mask(), comm, NeumannRegion::All, NeumannRegion::All, overlap, true);
 
     return {A_dir, A_neu, B_neu, Dune::PDELab::Backend::native(dirichlet_mask_ovlp)};
   }

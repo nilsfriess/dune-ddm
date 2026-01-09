@@ -9,8 +9,8 @@
 #include <dune/common/parametertree.hh>
 #include <dune/common/parametertreeparser.hh>
 #include <dune/grid/io/file/vtk/subsamplingvtkwriter.hh>
-#include <dune/grid/yaspgrid.hh>
-#include <dune/grid/yaspgrid/partitioning.hh>
+#include <dune/grid/uggrid.hh>
+#include <dune/grid/utility/parmetisgridpartitioner.hh>
 #include <dune/pdelab.hh>
 
 template <typename Number>
@@ -82,25 +82,27 @@ int main(int argc, char** argv)
 
   // Create grid
   constexpr auto dim = 2;
-  using Grid = Dune::YaspGrid<dim>;
-  auto gridsize = ptree.get("gridsize", 32);
+  using Grid = Dune::UGGrid<dim>;
+  unsigned int gridsize = ptree.get("gridsize", 32);
   if (ptree.hasKey("gridsize_per_rank")) {
-    auto grid_sqrt = static_cast<int>(std::pow(helper.size(), 1. / dim)); // This is okay because Yaspgrid will complain if the gridsize is not a power of GRID_DIM
+    auto grid_sqrt = static_cast<int>(std::pow(helper.size(), 1. / dim));
     gridsize = ptree.get<int>("gridsize_per_rank") * grid_sqrt;
   }
-  Dune::Yasp::PowerDPartitioning<dim> partitioner;
-  auto grid = std::unique_ptr<Grid>(new Grid({1.0, 1.0}, {gridsize, gridsize}, std::bitset<2>(0ULL), 0, Grid::Communication(), &partitioner));
-  grid->loadBalance();
-  grid->globalRefine(0);
-  using GridView = Grid::LeafGridView;
+
+  auto grid = Dune::StructuredGridFactory<Grid>::createSimplexGrid({0, 0}, {1, 1}, {gridsize, gridsize});
+
+  using GridView = typename Grid::LeafGridView;
   auto gv = grid->leafGridView();
+  auto part = Dune::ParMetisGridPartitioner<GridView>::partition(gv, helper);
+  grid->loadBalance(part, 0);
+  grid->globalRefine(ptree.get("refine", 0));
 
   // Finite element map
   using EntitySet = Dune::PDELab::OverlappingEntitySet<GridView>;
   using DomainField = GridView::Grid::ctype;
   using RangeType = double;
   const int degree = 2;
-  using FiniteElementMap = Dune::PDELab::QkLocalFiniteElementMap<EntitySet, DomainField, RangeType, degree>;
+  using FiniteElementMap = Dune::PDELab::PkLocalFiniteElementMap<EntitySet, DomainField, RangeType, degree>;
   EntitySet es(gv);
   FiniteElementMap finiteElementMap(es);
 
@@ -121,9 +123,9 @@ int main(int argc, char** argv)
 
   // Local operator (problem is nonlinear and problem class depends on the solution)
   using Problem = NonlinearPoissonProblem<RangeType>;
-  Problem problem(2.0);
+  Problem problem(1.0);
   using LocalOperator = NonlinearPoissonFEM<Problem, FiniteElementMap>;
-  LocalOperator localOperator(problem);
+  LocalOperator localOperator(problem, 1);
 
   // Create constraints map
   using ConstraintsContainer = typename GridFunctionSpace::template ConstraintsContainer<RangeType>::Type;
@@ -147,14 +149,14 @@ int main(int argc, char** argv)
 
   // Create Netwon solver
   using LinearSolver = TwoLevelSchwarzSolver<GridOperator::Jacobian, CoefficientVector>;
-  LinearSolver linearSolver(gridFunctionSpace, constraintsContainer, helper, ptree, "twolevelschwarz");
+  LinearSolver linearSolver(gridFunctionSpace, constraintsContainer, ptree, "twolevelschwarz");
   using Solver = Dune::PDELab::NewtonMethod<GridOperator, LinearSolver>;
   Solver solver(gridOperator, linearSolver);
 
   // Use some nonsense parameters to ensure that setting them explicitly works
   auto& newton_ptree = ptree.sub("newton");
-  if (helper.rank() == 0) newton_ptree["VerbosityLevel"] = "4";
-  else newton_ptree["VerbosityLevel"] = "0";
+  if (not newton_ptree.hasKey("VerbosityLevel")) newton_ptree["VerbosityLevel"] = "4";
+  if (helper.rank() != 0) newton_ptree["VerbosityLevel"] = "0";
   solver.setParameters(newton_ptree);
 
   // Retrieve the terminate interface and set parameters
@@ -170,10 +172,16 @@ int main(int argc, char** argv)
 
   // Visualization
   using VTKWriter = Dune::SubsamplingVTKWriter<GridView>;
-  Dune::RefinementIntervals subint(2);
+  Dune::RefinementIntervals subint(1);
   VTKWriter vtkwriter(gv, subint);
   std::string vtkfile("testnewton");
   Dune::PDELab::addSolutionToVTKWriter(vtkwriter, gridFunctionSpace, coefficientVector, Dune::PDELab::vtk::defaultNameScheme());
+
+  // Write MPI partitioning
+  std::vector<int> rankVec(gv.size(0), helper.rank());
+  Dune::P0VTKFunction rankFunc(gv, rankVec, "Rank");
+  vtkwriter.addCellData(Dune::stackobject_to_shared_ptr(rankFunc));
+
   vtkwriter.write(vtkfile, Dune::VTK::ascii);
 
   Logger::get().report(MPI_COMM_WORLD);
