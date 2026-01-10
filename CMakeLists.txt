@@ -46,10 +46,10 @@ find_package(STRUMPACK CONFIG)
 
 find_package(Eigen3 NO_MODULE)
 if (TARGET Eigen3::Eigen)
-  target_include_directories(duneddm PUBLIC INTERFACE
+  target_include_directories(duneddm INTERFACE
                                      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/extern/spectra-1.2.0/include>
                                      $<INSTALL_INTERFACE:extern/spectra-1.2.0/include>)
-  target_compile_definitions(duneddm PUBLIC INTERFACE DUNE_DDM_HAVE_SPECTRA)
+  target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_SPECTRA)
 else()
   message(STATUS "Eigen not found, Spectra eigensolver will not be available")
 endif()
@@ -70,9 +70,14 @@ if (${DUNE_DDM_WITH_TASKFLOW})
     )
     FetchContent_MakeAvailable(Taskflow)
   endif()
-  target_link_libraries(duneddm PUBLIC INTERFACE Taskflow::Taskflow)
-  target_compile_definitions(duneddm PUBLIC INTERFACE DUNE_DDM_HAVE_TASKFLOW=1)
+  target_link_libraries(duneddm INTERFACE Taskflow::Taskflow)
+  target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_TASKFLOW=1)
 endif()
+
+# Build vendored LuaJIT
+add_subdirectory(extern/luajit)
+target_link_libraries(duneddm INTERFACE luajit)
+target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_LUAJIT)
 
 add_subdirectory(examples)
 add_subdirectory(dune)
