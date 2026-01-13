@@ -2,6 +2,10 @@
 
 Copyright (C) 2025 Nils Friess
 
+The code of this library is licensed under the GNU General Public License which can be found below.
+The LuaJIT library included in the "extern/luajit" folder is licensed under the MIT License, details
+can be found below and in the "extern/luajit" folder.
+
 
 # GNU GENERAL PUBLIC LICENSE
 
@@ -683,7 +687,7 @@ please read <https://www.gnu.org/licenses/why-not-lgpl.html>.
 
 ---
 
-## Third-Party Licenses
+# Third-Party Licenses
 
 ### LuaJIT
 
