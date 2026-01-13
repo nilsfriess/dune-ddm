@@ -108,47 +108,14 @@ private:
   const Dune::BCRSMatrix<Dune::FieldMatrix<double, 1>>& A;
 };
 
-template <class Mat>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> spectra_gevp(const Mat& A, const Mat& B, const EigensolverParams& params)
+template <class OpType, class BOpType>
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> spectra_gevp_op(OpType& op, BOpType& Bop, const EigensolverParams& params)
 {
-  logger::debug_all("Solving eigenproblem Ax=lBx of size {} with nnz(A) = {}, nnz(B) = {}", A.N(), A.nonzeroes(), B.nonzeroes());
-
-#if 1
-  using OpType = SymShiftInvert;
-  using BOpType = MatOp;
-
-  OpType op(A, B);
-  BOpType Bop(B);
-
-#else
-  Eigen::SparseMatrix<double> A_(A.N(), A.M());
-  Eigen::SparseMatrix<double> B_(B.N(), B.M());
-
-  using Triplet = Eigen::Triplet<double>;
-  std::vector<Triplet> triplets;
-  triplets.reserve(A.N() * 5);
-  Dune::flatMatrixForEach(A, [&](auto&& entry, std::size_t i, std::size_t j) { triplets.push_back({static_cast<int>(i), static_cast<int>(j), entry}); });
-  A_.setFromTriplets(triplets.begin(), triplets.end());
-
-  triplets.clear();
-  Dune::flatMatrixForEach(B, [&](auto&& entry, std::size_t i, std::size_t j) { triplets.push_back({static_cast<int>(i), static_cast<int>(j), entry}); });
-  B_.setFromTriplets(triplets.begin(), triplets.end());
-
-  A_.makeCompressed();
-  B_.makeCompressed();
-
-  using OpType = Spectra::SymShiftInvert<double, Eigen::Sparse, Eigen::Sparse>;
-  using BOpType = Spectra::SparseSymMatProd<double>;
-
-  OpType op(A_, B_);
-  BOpType Bop(B_);
-#endif
-
   auto nev = params.nev;
-  auto nev_max = 2 * params.nev; // FIXME
+  auto nev_max = params.nev_max;
   auto shift = params.shift;
   auto tolerance = params.tolerance;
-  double threshold = -1;     // FIXME
+  double threshold = params.threshold;
   bool done = threshold < 0; // In user has not provided a treshold, then we're done after one iteration
 
   using Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>;
@@ -245,6 +212,45 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> spectra_gevp(const 
   } while (not done);
 
   return eigenvectors;
+}
+
+template <class Mat>
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> spectra_gevp(const Mat& A, const Mat& B, const EigensolverParams& params)
+{
+  logger::debug_all("Solving eigenproblem Ax=lBx of size {} with nnz(A) = {}, nnz(B) = {}", A.N(), A.nonzeroes(), B.nonzeroes());
+
+#if 1
+  using OpType = SymShiftInvert;
+  using BOpType = MatOp;
+
+  OpType op(A, B);
+  BOpType Bop(B);
+
+#else
+  Eigen::SparseMatrix<double> A_(A.N(), A.M());
+  Eigen::SparseMatrix<double> B_(B.N(), B.M());
+
+  using Triplet = Eigen::Triplet<double>;
+  std::vector<Triplet> triplets;
+  triplets.reserve(A.N() * 5);
+  Dune::flatMatrixForEach(A, [&](auto&& entry, std::size_t i, std::size_t j) { triplets.push_back({static_cast<int>(i), static_cast<int>(j), entry}); });
+  A_.setFromTriplets(triplets.begin(), triplets.end());
+
+  triplets.clear();
+  Dune::flatMatrixForEach(B, [&](auto&& entry, std::size_t i, std::size_t j) { triplets.push_back({static_cast<int>(i), static_cast<int>(j), entry}); });
+  B_.setFromTriplets(triplets.begin(), triplets.end());
+
+  A_.makeCompressed();
+  B_.makeCompressed();
+
+  using OpType = Spectra::SymShiftInvert<double, Eigen::Sparse, Eigen::Sparse>;
+  using BOpType = Spectra::SparseSymMatProd<double>;
+
+  OpType op(A_, B_);
+  BOpType Bop(B_);
+#endif
+
+  return spectra_gevp_op(op, Bop, params);
 }
 
 #endif

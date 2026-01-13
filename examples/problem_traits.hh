@@ -12,13 +12,11 @@
  * - Problem parameter interface
  * - Entity set type (for CG vs DG assembly)
  * - Constraints type
- * - Block size (scalar=1, vector=dim)
  *
  * Supported PDEs:
  * - Convection-Diffusion (CG and DG)
  * - Linear Elasticity
  *
- * Part of the unified PDELab example framework.
  */
 
 #include <dune/pdelab/common/partitionviewentityset.hh>
@@ -36,26 +34,44 @@
 #include <type_traits>
 
 /**
+ * @brief A class that can be used with the CRTP to mark a traits class as a elliptic PDE.
+ *
+ * @see LinearElasticityTraits for an example.
+ */
+template <class Traits>
+struct SymmetrizeTraits {
+  using SymmetricModelProblem = typename Traits::ModelProblem;
+  using SymmetricLocalOperator = typename Traits::LocalOperator;
+  static constexpr bool is_symmetric = true;
+};
+
+/**
  * @brief Traits for Convection-Diffusion problems (scalar elliptic/parabolic PDEs)
  *
  * Supports both continuous Galerkin (CG) and discontinuous Galerkin (DG) discretizations.
- * The discretization type is controlled by the UseDG template parameter. Assumes a quadrilateral
- * mesh both for CG and DG.
+ * The discretization type is controlled by the UseDG template parameter.
  *
  * @tparam GridView DUNE grid view type
  * @tparam ProblemParameters User-provided class defining PDE coefficients and boundary conditions
  *                           Must inherit from Dune::PDELab::ConvectionDiffusionModelProblem
- * @tparam UseDG If true, use DG discretization; if false, use CG
+ * @tparam SymmetricProblemParameters User-provided class defining the symmetric part of the operator.
+ *                                    Defaults to ProblemParameters. This is used, e.g., in the MsGFEM
+ *                                    coarse space to build the local spectral problems based on the
+ *                                    symmetric part only.
+ * @tparam IsSymmetic If true, the problem is considered symmetric; In this case, the GenericDDMProblem
+ *                    will only assemble a problem using the SymmetricLocalOperator and SymmetricModelProblem.
+ * @tparam UseDG If true, use DG discretization; if false, use CG (default: false)
  * @tparam degree Polynomial degree of finite elements (default: 1)
+ * @tparam QkElements If ture, assumes a quadrilateral grid; if false, assumes a simplicial grid (default: true)
  */
-template <class GridView, class ProblemParameters, bool UseDG = false, int degree = 1, bool QkElements = true>
+template <class GridView, class ProblemParameters, class SymmetricProblemParameters = ProblemParameters, bool IsSymmetric = true, bool UseDG = false, int degree = 1, bool QkElements = true>
 struct ConvectionDiffusionTraits {
   using RF = double; ///< Range field type
   using Grid = typename GridView::Grid;
   using DF = typename Grid::ctype; ///< Domain field type
 
   static constexpr int dim = GridView::dimension;
-  static constexpr bool assembled_matrix_is_consistent = UseDG; ///< For CG, assume assembled matrix is additive, for DG it's consistent by because we assemble including ghost elements
+  static constexpr bool assembled_matrix_is_consistent = UseDG; ///< For CG, assume assembled matrix is additive, for DG it's consistent by construction because we assemble including ghost elements.
 
   /// Entity set: AllEntitySet for DG (includes ghost elements), OverlappingEntitySet for CG
   using EntitySet = std::conditional_t<UseDG, Dune::PDELab::AllEntitySet<GridView>, Dune::PDELab::OverlappingEntitySet<GridView>>;
@@ -79,11 +95,21 @@ struct ConvectionDiffusionTraits {
   /// Model problem defining PDE coefficients (diffusion, convection, reaction, source, BC)
   using ModelProblem = ProblemParameters;
 
+  /// Model problem corresponding to the symmetric part of the operator
+  using SymmetricModelProblem = SymmetricProblemParameters;
+
   /// Boundary condition adapter
+  // TODO: Do we need a different BCType for the symmetric part?
   using BCType = Dune::PDELab::ConvectionDiffusionBoundaryConditionAdapter<ModelProblem>;
 
   /// Local operator: ConvectionDiffusionDG for DG, ConvectionDiffusionFEM for CG
   using LocalOperator = std::conditional_t<UseDG, Dune::PDELab::ConvectionDiffusionDG<ModelProblem, FEM>, Dune::PDELab::ConvectionDiffusionFEM<ModelProblem, FEM>>;
+
+  /// Symmetric local operator, same as above but for symmetric part only (if the PDE is already symmetric, this is the same as LocalOperator
+  using SymmetricLocalOperator = std::conditional_t<UseDG, Dune::PDELab::ConvectionDiffusionDG<SymmetricModelProblem, FEM>, Dune::PDELab::ConvectionDiffusionFEM<SymmetricModelProblem, FEM>>;
+
+  /// Convenience bool to check if the problem is symmetric
+  static constexpr bool is_symmetric = IsSymmetric;
 
   /// Constraints: None for DG (no DOF coupling across elements), Conforming Dirichlet for CG
   using Constraints = std::conditional_t<UseDG, Dune::PDELab::NoConstraints, Dune::PDELab::ConformingDirichletConstraints>;
@@ -108,19 +134,22 @@ struct ConvectionDiffusionTraits {
  * Solves the linear elasticity equations for small deformations.
  * This is a vector-valued problem with dim unknowns per DOF.
  *
+ * This class inherits from SymmetrizeTraits via CRTP to export the ModelProblem and LocalOperator also as
+ * SymmetricModelProblem and SymmetricLocalOperator. This informs the GenericDDMProblem that this is an
+ * elliptic PDE.
+ *
  * @tparam GridView DUNE grid view type
  * @tparam ProblemParameters User-provided class defining material parameters (lambda, mu)
  *                           Must inherit from Dune::PDELab::LinearElasticityParameterInterface
  * @tparam degree Polynomial degree of finite elements (default: 1)
  */
 template <class GridView, class ProblemParameters, int degree = 1>
-struct LinearElasticityTraits {
+struct LinearElasticityTraits : public SymmetrizeTraits<LinearElasticityTraits<GridView, ProblemParameters, degree>> {
   using RF = double;
   using Grid = typename GridView::Grid;
   using DF = typename Grid::ctype;
 
   static constexpr int dim = GridView::dimension;
-  static constexpr int blocksize = dim;                         ///< Vector problem: one block per spatial dimension
   static constexpr bool assembled_matrix_is_consistent = false; ///< We assume that the assembled matrix is additive, i.e., entries that belong to multiple subdomains are not already summed
 
   /// Entity set: OverlappingEntitySet for CG assembly (for non-overlapping grids this means that ghost elements are not included)

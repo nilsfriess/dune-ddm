@@ -56,7 +56,7 @@ public:
 
     logger::debug("Setting up coarse space of type '{}'", coarsespace);
 
-    if (coarsespace == "geneo" || coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::Overlap, overlap, true, novlp_comm_.get());
+    if (coarsespace == "geneo" || coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::All, overlap, true, novlp_comm_.get());
     else if (coarsespace == "msgfem") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::All, overlap, true, novlp_comm_.get());
     else if (coarsespace == "pou" || coarsespace == "harmonic_extension" || coarsespace == "algebraic_geneo" || coarsespace == "algebraic_msgfem" || coarsespace == "none")
       problem.assemble_dirichlet_matrix_only(*ovlp_comm_);
@@ -93,14 +93,15 @@ public:
 
     if (coarsespace == "geneo") { coarse_space = std::make_unique<GenEOCoarseSpace<NativeMat>>(A_neu, B_neu, pou_, ptree, taskflow, coarse_space_ptree_prefix); }
     else if (coarsespace == "constraint_geneo") {
-      coarse_space = std::make_unique<ConstraintGenEOCoarseSpace<NativeMat, std::remove_reference_t<decltype(boundary_mask)>>>(A_dir, A_neu, B_neu, pou_, boundary_mask, ptree, taskflow, coarse_space_ptree_prefix);
+      coarse_space = std::make_unique<ConstraintGenEOCoarseSpace<NativeMat, std::remove_reference_t<decltype(boundary_mask)>>>(A_dir, A_neu, B_neu, pou_, boundary_mask, ptree, taskflow,
+                                                                                                                               coarse_space_ptree_prefix);
     }
     else if (coarsespace == "geneo_ring") {
       coarse_space = std::make_unique<GenEORingCoarseSpace<NativeMat>>(A_dir, A_neu, pou_, problem.get_neumann_region_to_subdomain(), ptree, taskflow, coarse_space_ptree_prefix);
     }
     else if (coarsespace == "msgfem") {
       coarse_space = std::make_unique<MsGFEMCoarseSpace<NativeMat, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>, std::remove_reference_t<decltype(boundary_mask)>>>(
-          A_neu, pou_, problem.get_overlapping_dirichlet_mask(), boundary_mask, ptree, taskflow, coarse_space_ptree_prefix);
+          A_neu, A_dir, pou_, problem.get_overlapping_dirichlet_mask(), boundary_mask, ptree, taskflow, coarse_space_ptree_prefix);
     }
     else if (coarsespace == "msgfem_ring") {
       coarse_space = std::make_unique<MsGFEMRingCoarseSpace<NativeMat, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>, std::remove_reference_t<decltype(boundary_mask)>>>(

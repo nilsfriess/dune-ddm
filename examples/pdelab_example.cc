@@ -2,10 +2,10 @@
 #include "config.h"
 #endif
 
+#include "examples/convection_diffusion_problems.hh"
 #include "examples/ddm_utilities.hh"
 #include "examples/generic_ddm_problem.hh"
 #include "examples/pdelab_schwarz.hh"
-#include "examples/poisson_problems.hh"
 #include "examples/problem_traits.hh"
 
 #include <dune/common/parallel/mpihelper.hh>
@@ -58,11 +58,16 @@ int main(int argc, char* argv[])
     // Create problem classes, assemble and setup preconditioner
     Logger::get().startEvent(setup_prec_event);
 
-    using ProblemParams = IslandsProblem<GridView, double>;
-    using Traits = ConvectionDiffusionTraits<GridView, ProblemParams, true>;
+    using ProblemParams = LuaConvectionDiffusionProblem<GridView, double>;
+    using SymmetricProblemParams = LuaConvectionDiffusionProblem<GridView, double, true>; // true means symmetrise the problem (i.e. ignore convection)
+    static constexpr bool is_symmetric = false;
+    static constexpr bool use_dg = true;
+    using Traits = ConvectionDiffusionTraits<GridView, ProblemParams, SymmetricProblemParams, is_symmetric, use_dg>;
     using Problem = GenericDDMProblem<GridView, Traits>;
 
-    Problem problem(gv, helper);
+    auto params = std::make_shared<ProblemParams>("convection_diffusion_coefficient.lua");
+    auto symm_params = std::make_shared<SymmetricProblemParams>("convection_diffusion_coefficient.lua");
+    Problem problem(gv, helper, params, symm_params);
 
     // Create the two-level Schwarz preconditioner
     using Prec = TwoLevelSchwarzPreconditioner<Native<Problem::Vec>>;

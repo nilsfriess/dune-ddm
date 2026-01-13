@@ -11,7 +11,6 @@
 #include <dune/istl/owneroverlapcopy.hh>
 #include <dune/pdelab.hh>
 #include <dune/pdelab/backend/istl/parallelhelper.hh>
-#include <type_traits>
 
 /** @brief Determines the region where the "restricted Neumann" matrix is defined (to be used with the function PoissonProblem#assemble_overlapping_matrices()).
  */
@@ -32,15 +31,16 @@ enum class NeumannRegion : std::uint8_t {
  *  @param dirichlet_mask Vector with non-zero values at Dirichlet DOF indices
  */
 template <class Mat, class Vec>
-void eliminate_dirichlet(Mat& A, const Vec& dirichlet_mask)
+void eliminate_dirichlet(Mat& A, const Vec& dirichlet_mask, bool symmetrically = true)
 {
   for (auto ri = A.begin(); ri != A.end(); ++ri) {
     if (dirichlet_mask[ri.index()] > 0) {
       for (auto ci = ri->begin(); ci != ri->end(); ++ci) *ci = (ci.index() == ri.index()) ? 1.0 : 0.0;
     }
     else {
-      for (auto ci = ri->begin(); ci != ri->end(); ++ci)
-        if (dirichlet_mask[ci.index()] > 0) *ci = 0.0;
+      if (symmetrically)
+        for (auto ci = ri->begin(); ci != ri->end(); ++ci)
+          if (dirichlet_mask[ci.index()] > 0) *ci = 0.0;
     }
   }
 }
@@ -69,6 +69,17 @@ void eliminate_dirichlet(Mat& A, const Vec& dirichlet_mask, const std::vector<st
   }
 }
 
+/** @brief Wrapper for the overlapping matrices assembled by assemble_overlapping_matrices().
+ *
+ *  @see assemble_overlapping_matrices() for explanations of the different matrices.
+ */
+template <class Mat>
+struct OverlappingMatrices {
+  std::shared_ptr<Mat> A_dir; ///< The overlapping Dirichlet matrix
+  std::shared_ptr<Mat> A_neu; ///< The "first" Neumann matrix
+  std::shared_ptr<Mat> B_neu; ///< The "second" Neumann matrix
+};
+
 /** @brief Assemble the overlapping Dirichlet and Neumann matrices
 
      This function assembles the stiffness matrix locally and then creates three matrices:
@@ -82,27 +93,29 @@ void eliminate_dirichlet(Mat& A, const Vec& dirichlet_mask, const std::vector<st
      - The second "Neumann" matrix which might also be defined on the whole overlapping subdomain,
        or on a smaller sub-region. The region is determined by the third parameter \p second_neumann_region.
 
-     The created matrices can be accessed via the methods get_dirichlet_matrix(), get_first_neumann_matrix(),
-     and get_second_neumann_matrix(). If \p first_neumann_region and \p second_neumann_region are
-     the same, then only two matrices will be assembled and get_first_neumann_matrix() and get_second_neumann_matrix()
-     return pointers to the same matrix.
+     If \p first_neumann_region and \p second_neumann_region are the same, then only one matrix
+     will be assembled and the returned pointers point to the same matrix.
 
-     The last parameter \p neumann_size_as_dirichlet can be used to control the size of the Neumann matrix.
-     If it is true, then the Neumann matrices will be of the same size as the Dirichlet matrix. If it is false
+     The parameter \p matrix_size_eq_subdomain can be used to control the size of the assembled Neumann matrices.
+     If it is true, then the Neumann matrices will have as many rows as there are dofs in the subdomain. If it is false
      and, e.g., \p first_neumann_region equals NeumannRegion::Overlap, then the Neumann matrix will only have
      as many rows/columns as there are degrees of freedom in the overlap region. This can be used to assemble
      the matrices for the "ring" coarse spaces.
 
+     If the parameter \p call_make_additive is true, then the function make_additive will be called after assembly.
+     In this case the last parameter novlp_comm must not be nullptr. This parameter must be set if the matrix
+     that PDELab assembles locally is already consistent after assembly (which is the case if the EntitySet
+     contains ghost elements, for example). Otherwise the assembled overlapping matrices will contain incorrect
+     values.
+
      @see NeumannRegion for the options that can be used for \p first_neumann_region and \p second_neumann_region.
   */
 template <class PDELabMat, class PDELabVec, class Vec, class GO, class Communication>
-[[nodiscard]] std::tuple<std::shared_ptr<Dune::PDELab::Backend::Native<PDELabMat>>, // The dirichlet matrix
-                         std::shared_ptr<Dune::PDELab::Backend::Native<PDELabMat>>, // The "first" Neumann matrix
-                         std::shared_ptr<Dune::PDELab::Backend::Native<PDELabMat>>, // The "second" Neumann matrix
-                         std::shared_ptr<Vec>,                                      // The dirichlet mask extended to the overlapping subdomain
-                         std::vector<std::size_t>>                                  // Mapping from the Neumann region to the whole subdomain (might be empty)
+[[nodiscard]] std::tuple<OverlappingMatrices<Dune::PDELab::Backend::Native<PDELabMat>>, // Overlapping matrices
+                         std::shared_ptr<Vec>,                                          // Overlapping Dirichlet mask
+                         std::vector<std::size_t>>                                      // Mapping from the Neumann region to the whole subdomain (might be empty)
 assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const Vec& dirichlet_mask, Communication& comm, NeumannRegion first_neumann_region, NeumannRegion second_neumann_region,
-                              int overlap, bool neumann_size_as_dirichlet = true, bool use_dg = false, const Communication* novlp_comm = nullptr)
+                              int overlap, bool matrix_size_eq_subdomain = true, bool call_make_additive = false, const Communication* novlp_comm = nullptr)
 {
   using Dune::PDELab::Backend::native;
   using Dune::PDELab::Backend::Native;
@@ -134,7 +147,6 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   // that they can find out which elements they have to integrate separately in order
   // to send us the "Neumann correction terms".
   const auto& boundary_mask = ibdh.get_boundary_mask();
-  // const auto& boundary_mask = extids.get_overlapping_boundary_mask();
 
   std::vector<int> boundary_dst(boundary_mask.size(), std::numeric_limits<int>::max() - 1);
   for (std::size_t i = 0; i < boundary_dst.size(); ++i)
@@ -189,7 +201,7 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   wrapper.set_masks(nAs, &on_boundary_mask_for_rank, &inside_boundary_mask_for_rank, &on_boundary_mask, &outside_boundary_mask);
   go.jacobian(x, As);
 
-  if (use_dg) {
+  if (call_make_additive) {
     if (novlp_comm == nullptr) DUNE_THROW(Dune::Exception, "Need non-overlapping communicator for DG assembly");
     make_additive(As, *novlp_comm);
   }
@@ -261,8 +273,6 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   advdh.setVec(*dirichlet_mask_ovlp);
   varcomm.forward(advdh);
 
-  eliminate_dirichlet(*A_dir, *dirichlet_mask_ovlp);
-
   // Next, assemble the Neumann matrices
   std::shared_ptr<Mat> A_neu;
   std::shared_ptr<Mat> B_neu;
@@ -291,13 +301,12 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
         }
       }
     }
-    // Just to be sure
     eliminate_dirichlet(*A_neu, *dirichlet_mask_ovlp);
   }
   else if (first_neumann_region == NeumannRegion::ExtendedOverlap or first_neumann_region == NeumannRegion::Overlap) {
     auto neumann_region_width = first_neumann_region == NeumannRegion::ExtendedOverlap ? 2 * overlap + 1 : 2 * overlap;
 
-    if (neumann_size_as_dirichlet) {
+    if (matrix_size_eq_subdomain) {
       // First create a copy of the Dirichlet matrix, but only those entries in the extended overlap region
       auto avg = A_dir->nonzeroes() / A_dir->N() + 2;
       A_neu = std::make_shared<Mat>(A_dir->N(), A_dir->N(), avg, 0.2, Mat::implicit);
@@ -414,5 +423,13 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
     DUNE_THROW(Dune::NotImplemented, "Unknown neumann_region type");
   }
 
-  return {A_dir, A_neu, B_neu, dirichlet_mask_ovlp, neumann_region_to_subdomain};
+  // Symmetrically eliminate global Dirichlet dofs and subdomain boundary dofs in A_dir
+  eliminate_dirichlet(*A_dir, *dirichlet_mask_ovlp);
+  eliminate_dirichlet(*A_dir, boundary_mask);
+
+  OverlappingMatrices<Dune::PDELab::Backend::Native<PDELabMat>> matrices;
+  matrices.A_dir = std::move(A_dir);
+  matrices.A_neu = std::move(A_neu);
+  matrices.B_neu = std::move(B_neu);
+  return {matrices, dirichlet_mask_ovlp, neumann_region_to_subdomain};
 }

@@ -677,9 +677,19 @@ public:
     const auto& subtree = ptree.sub(ptree_prefix);
     Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
 
+    this->setup_task = taskflow.emplace([A, pou, &dirichlet_mask, &subdomain_boundary_mask, eig_ptree, this] { setup_msgfem_impl(A, A, pou, dirichlet_mask, subdomain_boundary_mask, eig_ptree); })
+                           .name("MsGFEM coarse space setup");
+  }
+
+  MsGFEMCoarseSpace(std::shared_ptr<const Mat> A_neu, std::shared_ptr<const Mat> A_dir, std::shared_ptr<const PartitionOfUnity> pou, const MaskVec1& dirichlet_mask,
+                    const MaskVec2& subdomain_boundary_mask, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow, const std::string& ptree_prefix = "msgfem")
+  {
+    const auto& subtree = ptree.sub(ptree_prefix);
+    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+
     this->setup_task = taskflow
-                           .emplace([A, pou, &dirichlet_mask, &subdomain_boundary_mask, eig_ptree, this] {
-                             setup_msgfem_impl(A, pou, dirichlet_mask, subdomain_boundary_mask, eig_ptree);
+                           .emplace([A_neu, A_dir, pou, &dirichlet_mask, &subdomain_boundary_mask, eig_ptree, this] {
+                             setup_msgfem_impl(A_neu, A_dir, pou, dirichlet_mask, subdomain_boundary_mask, eig_ptree);
                            })
                            .name("MsGFEM coarse space setup");
   }
@@ -694,21 +704,24 @@ protected:
    * @brief Core implementation of MsGFEM setup - can be called from any task context.
    */
   template <class MV1, class MV2>
-  void setup_msgfem_impl(std::shared_ptr<const Mat> A, std::shared_ptr<const PartitionOfUnity> pou, const MV1& dirichlet_mask, const MV2& subdomain_boundary_mask, const Dune::ParameterTree& eig_ptree)
+  void setup_msgfem_impl(std::shared_ptr<const Mat> A_neu, std::shared_ptr<const Mat> A_dir, std::shared_ptr<const PartitionOfUnity> pou, const MV1& dirichlet_mask, const MV2& subdomain_boundary_mask,
+                         const Dune::ParameterTree& eig_ptree)
   {
     logger::info("Setting up MsGFEM coarse space");
 
-    if (dirichlet_mask.N() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the Dirichlet mask must have the same size");
+    if (A_dir->N() != A_neu->N()) DUNE_THROW(Dune::Exception, "The two matrices must have the same size");
 
-    if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
+    if (dirichlet_mask.N() != A_dir->N()) DUNE_THROW(Dune::Exception, "The matrix and the Dirichlet mask must have the same size");
+
+    if (pou->size() != A_dir->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
 
     // Partition the degrees of freedom
     enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
-    std::vector<DOFType> dof_partitioning(A->N());
+    std::vector<DOFType> dof_partitioning(A_dir->N());
     std::size_t num_interior = 0;
     std::size_t num_boundary = 0;
     std::size_t num_dirichlet = 0;
-    for (std::size_t i = 0; i < A->N(); ++i) {
+    for (std::size_t i = 0; i < A_dir->N(); ++i) {
       if (dirichlet_mask[i] > 0) {
         dof_partitioning[i] = DOFType::Dirichlet;
         num_dirichlet++;
@@ -725,7 +738,7 @@ protected:
     logger::debug_all("Partitioned dofs, have {} in interior, {} on subdomain boundary, {} on Dirichlet boundary", num_interior, num_boundary, num_dirichlet);
 
     // Create a reordered index set: first interior dofs, then boundary dofs, then Dirichlet dofs
-    std::vector<std::size_t> reordering(A->N());
+    std::vector<std::size_t> reordering(A_dir->N());
     std::size_t cnt_interior = 0;
     std::size_t cnt_boundary = num_interior;
     std::size_t cnt_dirichlet = num_interior + num_boundary;
@@ -737,13 +750,13 @@ protected:
     // Assemble the left-hand side of the eigenproblem
     auto A_lhs = std::make_shared<Mat>();
     const auto n_big = num_interior + num_boundary + num_interior; // size of the big eigenproblem, including the harmonicity constraint
-    const auto avg = 2 * (A->nonzeroes() / A->N());
+    const auto avg = 2 * (A_dir->nonzeroes() / A_dir->N());
     A_lhs->setBuildMode(Mat::implicit);
     A_lhs->setImplicitBuildModeParameters(avg, 0.2);
     A_lhs->setSize(n_big, n_big);
 
     // Assemble the part corresponding to the a-harmonic constraint
-    for (auto rit = A->begin(); rit != A->end(); ++rit) {
+    for (auto rit = A_dir->begin(); rit != A_dir->end(); ++rit) {
       auto ii = rit.index();
       auto ri = reordering[ii];
       if (dof_partitioning[ii] != DOFType::Interior) continue;
@@ -760,7 +773,7 @@ protected:
     }
 
     // Assemble the remaining part of the matrix
-    for (auto rit = A->begin(); rit != A->end(); ++rit) {
+    for (auto rit = A_neu->begin(); rit != A_neu->end(); ++rit) {
       auto ii = rit.index();
       auto ri = reordering[ii];
       if (dof_partitioning[ii] == DOFType::Dirichlet) // Skip Dirchlet dofs
@@ -781,7 +794,7 @@ protected:
     B->setImplicitBuildModeParameters(avg, 0.2);
     B->setSize(n_big, n_big);
 
-    for (auto rit = A->begin(); rit != A->end(); ++rit) {
+    for (auto rit = A_neu->begin(); rit != A_neu->end(); ++rit) {
       auto ii = rit.index();
       auto ri = reordering[ii];
       if (dof_partitioning[ii] != DOFType::Interior) continue;
@@ -799,11 +812,11 @@ protected:
     auto eigenvectors = solve_gevp(A_lhs, B, eig_ptree);
 
     // Finally, extract the actual eigenvectors
-    Vec v(A->N());
+    Vec v(A_dir->N());
     v = 0;
     std::vector<Vec> eigenvectors_actual(eigenvectors.size(), v);
     for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
-      for (std::size_t i = 0; i < A->N(); ++i)
+      for (std::size_t i = 0; i < A_dir->N(); ++i)
         if (dof_partitioning[i] != DOFType::Dirichlet) eigenvectors_actual[k][i] = eigenvectors[k][reordering[i]];
     }
 

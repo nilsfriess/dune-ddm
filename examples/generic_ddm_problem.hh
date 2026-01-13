@@ -13,6 +13,7 @@
 #include "dune/ddm/logger.hh"
 #include "pdelab_helper.hh"
 
+#include <cstddef>
 #include <dune/common/parallel/mpihelper.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/bvector.hh>
@@ -32,6 +33,7 @@
  * This class handles the complete workflow from grid function space setup
  * to matrix assembly for domain decomposition methods. It is parameterized
  * by a Traits class that provides all PDE-specific type information.
+ *
  *
  * @tparam GridView DUNE grid view type
  * @tparam Traits Problem traits providing FEM, LocalOperator, Constraints, etc.
@@ -54,20 +56,27 @@ public:
   using EntitySet = typename Traits::EntitySet;
   using FEM = typename Traits::FEM;
   using ModelProblem = typename Traits::ModelProblem;
+  using SymmetricModelProblem = typename Traits::SymmetricModelProblem;
   using BCType = typename Traits::BCType;
   using LocalOperator = typename Traits::LocalOperator;
+  using SymmetricLocalOperator = typename Traits::SymmetricLocalOperator;
   using Constraints = typename Traits::Constraints;
+  constexpr static bool is_symmetric = Traits::is_symmetric;
+  static_assert((is_symmetric && std::is_same_v<LocalOperator, SymmetricLocalOperator>) or !is_symmetric,
+                "If the problem is symmetric, the LocalOperator and SymmetricLocalOperator must be the same types");
 
   // PDELab types
   using VBE = Dune::PDELab::ISTL::VectorBackend<Dune::PDELab::ISTL::Blocking::none>;
   using MBE = Dune::PDELab::ISTL::BCRSMatrixBackend<>;
   using GFS = Dune::PDELab::GridFunctionSpace<EntitySet, FEM, Constraints, VBE>;
   using CC = typename GFS::template ConstraintsContainer<RF>::Type;
-  using GO = Dune::PDELab::GridOperator<GFS, GFS, AssembleWrapper<LocalOperator>, MBE, RF, RF, RF, CC, CC>;
+  using GO = Dune::PDELab::GridOperator<GFS, GFS, LocalOperator, MBE, RF, RF, RF, CC, CC>;
+  using SymmetricGO = Dune::PDELab::GridOperator<GFS, GFS, AssembleWrapper<SymmetricLocalOperator>, MBE, RF, RF, RF, CC, CC>;
 
   // Vector and matrix types
   using Vec = Dune::PDELab::Backend::Vector<GFS, RF>;
   using Mat = typename GO::Jacobian;
+  static_assert(std::is_same_v<Mat, typename SymmetricGO::Jacobian>);
   using NativeMat = Dune::PDELab::Backend::Native<Mat>;
   using NativeVec = Dune::PDELab::Backend::Native<Vec>;
 
@@ -82,18 +91,22 @@ public:
    * 5. Assembles grid operator, sparsity pattern, and residual
    * 6. Communicates residual in parallel if needed
    *
+   * @note This variant is for symmetric problems and is only chosen if Traits::is_symmetric == true.
+   *       It only uses the SymmetricLocalOperator and SymmetricModelProblem.
+   *
    * @param gv Grid view defining the computational domain
    * @param helper MPI helper for parallel operations
    * @param model_problem Instance of the problem parameter class (coefficients, BC)
    */
-  GenericDDMProblem(const GridView& gv, const Dune::MPIHelper& helper, const ModelProblem& model_problem = ModelProblem())
+  template <bool symm = is_symmetric, std::enable_if_t<symm, bool> = true>
+  GenericDDMProblem(const GridView& gv, const Dune::MPIHelper& helper, std::shared_ptr<SymmetricModelProblem> symm_model_problem = std::make_shared<SymmetricModelProblem>())
       : es(gv)
-      , modelProblem(model_problem)
-      , bc(gv, modelProblem)
+      , symmetricModelProblem(std::move(symm_model_problem))
+      , bc(gv, *this->symmetricModelProblem)
       , fem(Traits::create_fem(es))
       , gfs(std::make_shared<GFS>(es, *fem))
-      , lop(modelProblem)
-      , wrapper(std::make_unique<AssembleWrapper<LocalOperator>>(&lop))
+      , symm_lop(*this->symmetricModelProblem)
+      , wrapper(&symm_lop)
       , x(std::make_unique<Vec>(*gfs, 0.0))
       , x0(std::make_unique<Vec>(*gfs, 0.0))
       , d(std::make_unique<Vec>(*gfs, 0.0))
@@ -109,7 +122,7 @@ public:
 
     // For ConvectionDiffusion problems, use ConvectionDiffusionDirichletExtensionAdapter
     // Note: It expects GridView, not EntitySet
-    Dune::PDELab::ConvectionDiffusionDirichletExtensionAdapter g(gv, modelProblem);
+    Dune::PDELab::ConvectionDiffusionDirichletExtensionAdapter g(gv, *this->symmetricModelProblem);
     Dune::PDELab::interpolate(g, *gfs, *x);
 
     // Set Dirichlet mask
@@ -117,7 +130,78 @@ public:
 
     // Create grid operator with appropriate matrix nonzeros estimate
     const int nz = Traits::AssemblyDefaults::nonzeros_per_row;
-    go = std::make_unique<GO>(*gfs, cc, *gfs, cc, *wrapper, MBE(nz));
+    symm_go = std::make_unique<SymmetricGO>(*gfs, cc, *gfs, cc, wrapper, MBE(nz));
+
+    logger::debug("Assembling sparsity pattern");
+    As = std::make_unique<Mat>(*symm_go);
+
+    logger::debug("Assembling residual");
+    symm_go->residual(*x, *d);
+
+    *x0 = *x;
+
+    // Communicate residual in parallel
+    if (helper.size() > 1) {
+      Dune::PDELab::AddDataHandle adddhd(*gfs, *d);
+      gfs->gridView().communicate(adddhd, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
+    }
+  }
+
+  /**
+   * @brief Constructor: sets up complete finite element discretization
+   *
+   * Performs the following steps:
+   * 1. Creates entity set and finite element map
+   * 2. Sets up grid function space with constraints
+   * 3. Initializes solution vector with boundary conditions
+   * 4. Creates Dirichlet constraint mask
+   * 5. Assembles grid operator, sparsity pattern, and residual
+   * 6. Communicates residual in parallel if needed
+   *
+   * @note This variant is for non-symmetric problems and is only chosen if Traits::is_symmetric == false.
+   *
+   * @param gv Grid view defining the computational domain
+   * @param helper MPI helper for parallel operations
+   * @param model_problem Instance of the problem parameter class (coefficients, BC)
+   * @param symm_model_problem Instance of the problem parameter class corresponding to the elliptic part
+   */
+  template <bool symm = is_symmetric, std::enable_if_t<!symm, bool> = true>
+  GenericDDMProblem(const GridView& gv, const Dune::MPIHelper& helper, std::shared_ptr<ModelProblem> model_problem = std::make_shared<ModelProblem>(),
+                    std::shared_ptr<SymmetricModelProblem> symm_model_problem = std::make_shared<SymmetricModelProblem>())
+      : es(gv)
+      , modelProblem(std::move(model_problem))
+      , symmetricModelProblem(std::move(symm_model_problem))
+      , bc(gv, *this->modelProblem)
+      , fem(Traits::create_fem(es))
+      , gfs(std::make_shared<GFS>(es, *fem))
+      , lop(std::make_unique<LocalOperator>(*this->modelProblem))
+      , symm_lop(*this->symmetricModelProblem)
+      , wrapper(&symm_lop)
+      , x(std::make_unique<Vec>(*gfs, 0.0))
+      , x0(std::make_unique<Vec>(*gfs, 0.0))
+      , d(std::make_unique<Vec>(*gfs, 0.0))
+      , dirichlet_mask(std::make_unique<Vec>(*gfs, 0))
+  {
+    using Dune::PDELab::Backend::native;
+
+    gfs->name("Solution");
+
+    // Interpolate Dirichlet boundary conditions
+    cc.clear();
+    Dune::PDELab::constraints(bc, *gfs, cc);
+
+    // For ConvectionDiffusion problems, use ConvectionDiffusionDirichletExtensionAdapter
+    // Note: It expects GridView, not EntitySet
+    Dune::PDELab::ConvectionDiffusionDirichletExtensionAdapter g(gv, *this->modelProblem);
+    Dune::PDELab::interpolate(g, *gfs, *x);
+
+    // Set Dirichlet mask
+    Dune::PDELab::set_constrained_dofs(cc, 1.0, *dirichlet_mask);
+
+    // Create grid operator with appropriate matrix nonzeros estimate
+    const int nz = Traits::AssemblyDefaults::nonzeros_per_row;
+    go = std::make_unique<GO>(*gfs, cc, *gfs, cc, *lop, MBE(nz));
+    symm_go = std::make_unique<SymmetricGO>(*gfs, cc, *gfs, cc, wrapper, MBE(nz));
 
     logger::debug("Assembling sparsity pattern");
     As = std::make_unique<Mat>(*go);
@@ -143,7 +227,7 @@ public:
    * - Second Neumann matrix: restricted Neumann matrix (region controlled by second_neumann_region)
    *
    * @tparam Communication Parallel communication type
-   * @param comm Overlapping communication object
+   * @param ovlp_comm Overlapping communication object
    * @param first_neumann_region Region where first Neumann matrix is defined
    * @param second_neumann_region Region where second Neumann matrix is defined
    * @param overlap Overlap width
@@ -151,18 +235,34 @@ public:
    * @param novlp_comm Non-overlapping communication (optional, for Neumann corrections)
    */
   template <class Communication>
-  void assemble_overlapping_matrices(Communication& comm, NeumannRegion first_neumann_region, NeumannRegion second_neumann_region, int overlap, bool neumann_size_as_dirichlet = true,
+  void assemble_overlapping_matrices(Communication& ovlp_comm, NeumannRegion first_neumann_region, NeumannRegion second_neumann_region, int overlap, bool neumann_size_as_dirichlet = true,
                                      const Communication* novlp_comm = nullptr)
   {
-    auto [A_dir_, A_neu_, B_neu_, dirichlet_mask_ovlp_, neumann_region_to_subdomain_] =
-        ::assemble_overlapping_matrices(*As, *x, *go, Dune::PDELab::Backend::native(*dirichlet_mask), comm, first_neumann_region, second_neumann_region, overlap, neumann_size_as_dirichlet,
-                                        Traits::assembled_matrix_is_consistent, novlp_comm);
+    if constexpr (is_symmetric) {
+      auto [matrices, dirichlet_mask_ovlp_, neumann_region_to_subdomain_] =
+          ::assemble_overlapping_matrices(*As, *x, *symm_go, Dune::PDELab::Backend::native(*dirichlet_mask), ovlp_comm, first_neumann_region, second_neumann_region, overlap, neumann_size_as_dirichlet,
+                                          Traits::assembled_matrix_is_consistent, novlp_comm);
 
-    A_dir = std::move(A_dir_);
-    A_neu = std::move(A_neu_);
-    B_neu = std::move(B_neu_);
-    dirichlet_mask_ovlp = std::move(*dirichlet_mask_ovlp_);
-    neumann_region_to_subdomain = std::move(neumann_region_to_subdomain_);
+      A_dir = std::move(matrices.A_dir);
+      A_neu = std::move(matrices.A_neu);
+      B_neu = std::move(matrices.B_neu);
+      dirichlet_mask_ovlp = std::move(*dirichlet_mask_ovlp_);
+      neumann_region_to_subdomain = std::move(neumann_region_to_subdomain_);
+    }
+    else {
+      // In the non-symmetric case, we only need the Neumann matrices for the elliptic part of the PDE
+      auto [matrices, dirichlet_mask_ovlp_, neumann_region_to_subdomain_] =
+          ::assemble_overlapping_matrices(*As, *x, *symm_go, Dune::PDELab::Backend::native(*dirichlet_mask), ovlp_comm, first_neumann_region, second_neumann_region, overlap, neumann_size_as_dirichlet,
+                                          Traits::assembled_matrix_is_consistent, novlp_comm);
+
+      A_neu = std::move(matrices.A_neu);
+      B_neu = std::move(matrices.B_neu);
+      dirichlet_mask_ovlp = std::move(*dirichlet_mask_ovlp_);
+      neumann_region_to_subdomain = std::move(neumann_region_to_subdomain_);
+
+      // Now we have the Neumann matrix corresponding to the symmetric part, we still need the Dirichlet matrix corresponding to the actual problem
+      assemble_dirichlet_matrix_only(ovlp_comm, novlp_comm);
+    }
   }
 
   /**
@@ -174,11 +274,11 @@ public:
    * @param comm Overlapping communication
    */
   template <class Communication>
-  void assemble_dirichlet_matrix_only(const Communication& comm)
+  void assemble_dirichlet_matrix_only(const Communication& comm, const Communication* novlp_comm = nullptr)
   {
     using Dune::PDELab::Backend::native;
     logger::debug("Assembling overlapping Dirichlet matrix");
-    jacobian();
+    jacobian(novlp_comm);
 
     // Create communicator on the overlapping index set
     typename Communication::AllSet allset;
@@ -200,12 +300,13 @@ public:
     for (std::size_t i = 0; i < dirichlet_mask->N(); ++i) dirichlet_mask_ovlp[i] = native(*dirichlet_mask)[i];
     comm.addOwnerCopyToAll(dirichlet_mask_ovlp, dirichlet_mask_ovlp);
 
-    // Eliminate Dirichlet dofs symmetrically
-    eliminate_dirichlet(*A_dir, dirichlet_mask_ovlp);
+    // Eliminate Dirichlet dofs and subdomain boundary dofs symmetrically
+    IdentifyBoundaryDataHandle ibdh(*A_dir, comm.indexSet());
+    varcomm.forward(ibdh);
+    const auto& boundary_mask = ibdh.get_boundary_mask();
 
-    // No Neumann matrices for this mode
-    A_neu = nullptr;
-    B_neu = nullptr;
+    eliminate_dirichlet(*A_dir, dirichlet_mask_ovlp);
+    // eliminate_dirichlet(*A_dir, boundary_mask, false); // false = don't eliminate symmetrically
   }
 
   /**
@@ -213,14 +314,20 @@ public:
    *
    * Assembles the stiffness matrix and eliminates Dirichlet DOFs symmetrically.
    */
-  void jacobian()
+  template <class Communication = std::nullptr_t>
+  void jacobian(const Communication* novlp_comm = nullptr)
   {
     using Dune::PDELab::Backend::native;
     // Simple assembly without Neumann corrections
-    std::map<int, std::vector<bool>> empty_boundary_map;
-    std::vector<bool> empty_mask(As->N(), false);
-    wrapper->set_masks(native(*As), &empty_boundary_map, &empty_boundary_map, &empty_mask, &empty_mask);
+    wrapper.reset_masks();
+    As = std::make_unique<Mat>(*go);
     go->jacobian(*x, *As);
+
+    if (Traits::assembled_matrix_is_consistent) {
+      if (novlp_comm == nullptr) DUNE_THROW(Dune::Exception, "Need non-overlapping communicator for DG assembly");
+      make_additive(*As, *novlp_comm);
+    }
+
     eliminate_dirichlet(native(*As), native(*dirichlet_mask));
   }
 
@@ -241,7 +348,7 @@ public:
 
   std::shared_ptr<GFS> getGFS() const { return gfs; }
   const EntitySet& getEntitySet() const { return es; }
-  const ModelProblem& getUnderlyingProblem() const { return modelProblem; }
+  const ModelProblem& getUnderlyingProblem() const { return *modelProblem; }
   ///@}
 
   ///@{
@@ -257,14 +364,20 @@ private:
   ///@{
   /** @name Core DUNE/PDELab objects */
   EntitySet es;
-  ModelProblem modelProblem;
+  std::shared_ptr<ModelProblem> modelProblem;
+  std::shared_ptr<SymmetricModelProblem> symmetricModelProblem{nullptr};
   BCType bc;
   CC cc;
   std::unique_ptr<FEM> fem;
   std::shared_ptr<GFS> gfs;
-  LocalOperator lop;
-  std::unique_ptr<AssembleWrapper<LocalOperator>> wrapper;
+  std::unique_ptr<LocalOperator> lop; // Pointer because it does not have a default constructor
+  SymmetricLocalOperator symm_lop;
+  AssembleWrapper<SymmetricLocalOperator> wrapper; // Some explanations are in order here: The wrapper object only exists for the SymmetricLocalOperator.
+                                                   // This is because we only ever need to assemble the Neumann matrix for the elliptic part of the PDE,
+                                                   // and for PDEs that are already elliptic, we know that SymmetricLocalOperator == LocalOperator.
+
   std::unique_ptr<GO> go;
+  std::unique_ptr<SymmetricGO> symm_go;
   ///@}
 
   ///@{
