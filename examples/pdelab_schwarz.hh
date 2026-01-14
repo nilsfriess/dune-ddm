@@ -159,6 +159,7 @@ public:
   void post(X& x) override { combined_prec_->post(x); }
 
   std::shared_ptr<Communication> getNonOverlappingCommunication() const { return novlp_comm_; }
+  std::shared_ptr<Communication> getOverlappingCommunication() const { return ovlp_comm_; }
 
   using NonOverlappingOp = NonOverlappingOperator<NativeMat, NativeVec, NativeVec, Communication>;
   std::shared_ptr<NonOverlappingOp> getNonOverlappingOperator() const { return novlp_op_; }
