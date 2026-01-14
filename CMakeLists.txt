@@ -4,6 +4,7 @@ project(dune-ddm
         LANGUAGES CXX C Fortran)
 
 include(CheckFunctionExists)
+include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_COLOR_DIAGNOSTICS ON)
@@ -54,29 +55,37 @@ else()
   message(STATUS "Eigen not found, Spectra eigensolver will not be available")
 endif()
 
-option(DUNE_DDM_WITH_TASKFLOW "Download the taskflow library for asynchronous execution" On)
-if (${DUNE_DDM_WITH_TASKFLOW})
-  find_package(Taskflow)
-
-  if(NOT ${FOUND_Taskflow})
-    include(FetchContent)
-    message(STATUS "Trying to download Taskflow (C++ Parallel Programming Library)")
-    set(TF_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(TF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-      Taskflow
-      GIT_REPOSITORY https://github.com/taskflow/taskflow.git
-      GIT_TAG        v3.8.0
-    )
-    FetchContent_MakeAvailable(Taskflow)
-  endif()
-  target_link_libraries(duneddm INTERFACE Taskflow::Taskflow)
-  target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_TASKFLOW=1)
-endif()
+target_include_directories(duneddm INTERFACE
+                                   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/extern/taskflow>
+                                   $<INSTALL_INTERFACE:extern/taskflow>)
+target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_TASKFLOW=1)
 
 # Build vendored LuaJIT
 add_subdirectory(extern/luajit)
-target_link_libraries(duneddm INTERFACE luajit)
+
+# Link LuaJIT using full paths for both build and install trees
+# This ensures the library can be found when dune-ddm is used from either location
+target_include_directories(duneddm INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/extern/luajit/src>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/dune-ddm/luajit>
+)
+
+# Use absolute path for build tree, relative for install tree
+target_link_libraries(duneddm INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/extern/luajit/src/libluajit.a>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_LIBDIR}/libdune-ddm-luajit.a>
+)
+
+# Add system libraries needed by LuaJIT
+if(UNIX AND NOT APPLE)
+  target_link_libraries(duneddm INTERFACE dl m)
+elseif(APPLE)
+  target_link_libraries(duneddm INTERFACE m)
+endif()
+
+# Ensure luajit is built before anything that links against duneddm
+add_dependencies(duneddm luajit)
+
 target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_LUAJIT)
 
 add_subdirectory(examples)
