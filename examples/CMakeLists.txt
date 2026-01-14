@@ -32,6 +32,10 @@ if (${dune-pdelab_FOUND})
 
     # PDELab example demonstrating the unified DDM framework
     add_executable(pdelab_example EXCLUDE_FROM_ALL pdelab_example.cc)
+    dune_symlink_to_source_files(FILES poisson_coefficient.lua
+                                       convection_diffusion_coefficient.lua
+                                       symmetric_convection_diffusion_coefficient.lua
+    )
     target_link_dune_default_libraries(pdelab_example)
     target_link_libraries(pdelab_example PUBLIC duneddm -llapacke)
     dune_symlink_to_source_files(FILES pdelab_example.ini)

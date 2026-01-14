@@ -45,13 +45,14 @@
  * GenericDDMProblem<GridView, Traits> problem(gv, helper);
  * @endcode
  */
-template <class GridView, class Traits>
+template <class GridView, class TraitsT>
 class GenericDDMProblem {
 public:
   using Grid = typename GridView::Grid;
   using DF = typename Grid::ctype;
 
   // Import types from traits
+  using Traits = TraitsT;
   using RF = typename Traits::RF;
   using EntitySet = typename Traits::EntitySet;
   using FEM = typename Traits::FEM;
