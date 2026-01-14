@@ -391,6 +391,8 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
 
         (*A_neu)[subdomain_to_neumann_region[triple.row]][subdomain_to_neumann_region[triple.col]] -= triple.val;
       }
+
+      eliminate_dirichlet(*A_neu, *dirichlet_mask_ovlp, neumann_region_to_subdomain);
     }
   }
   else {
@@ -423,9 +425,8 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
     DUNE_THROW(Dune::NotImplemented, "Unknown neumann_region type");
   }
 
-  // Symmetrically eliminate global Dirichlet dofs and subdomain boundary dofs in A_dir
+  // Symmetrically eliminate global Dirichlet dofs
   eliminate_dirichlet(*A_dir, *dirichlet_mask_ovlp);
-  eliminate_dirichlet(*A_dir, boundary_mask);
 
   OverlappingMatrices<Dune::PDELab::Backend::Native<PDELabMat>> matrices;
   matrices.A_dir = std::move(A_dir);
