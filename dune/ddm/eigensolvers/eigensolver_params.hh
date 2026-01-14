@@ -66,5 +66,7 @@ private:
       case Type::SRRIT: return "SRRIT";
       case Type::KrylovSchur: return "KrylovSchur";
     }
+    assert(false && "Unreachable");
+    return "";
   }
 };
