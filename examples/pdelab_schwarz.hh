@@ -56,7 +56,7 @@ public:
 
     logger::debug("Setting up coarse space of type '{}'", coarsespace);
 
-    if (coarsespace == "geneo" || coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::All, overlap, true, novlp_comm_.get());
+    if (coarsespace == "geneo" || coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::Overlap, overlap, true, novlp_comm_.get());
     else if (coarsespace == "msgfem") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::All, overlap, true, novlp_comm_.get());
     else if (coarsespace == "pou" || coarsespace == "harmonic_extension" || coarsespace == "algebraic_geneo" || coarsespace == "algebraic_msgfem" || coarsespace == "none")
       problem.assemble_dirichlet_matrix_only(*ovlp_comm_);
