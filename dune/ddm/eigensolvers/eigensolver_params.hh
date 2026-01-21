@@ -6,7 +6,7 @@
 #include <dune/common/parametertree.hh>
 
 struct EigensolverParams {
-  enum class Type { Spectra, SubspaceIteration, SRRIT, KrylovSchur /* RAES*/ };
+  enum class Type { Spectra };
 
   EigensolverParams()
       : ncv(2 * nev)
@@ -32,15 +32,8 @@ struct EigensolverParams {
     if (ptree.hasKey("type")) {
       const auto& typestr = ptree.get<std::string>("type");
       if (typestr == "Spectra") type = Type::Spectra;
-      else if (typestr == "SubspaceIteration") type = Type::SubspaceIteration;
-      else if (typestr == "SRRIT") type = Type::SRRIT;
-      else if (typestr == "KrylovSchur") type = Type::KrylovSchur;
-      // else if (typestr == "RAES") {
-      //   type = Type::RAES;
-      // }
       else DUNE_THROW(Dune::NotImplemented, "Unknown eigensolver type '" + typestr + "'");
     }
-    // else: use default Type::Spectra
 
     logger::debug("Eigensolver of type '{}' set up with nev = {}, ncv = {}, maxit = {}, seed = {}, blocksize = {}, tolerance = {}, shift = {}", type_to_string(), nev, ncv, maxit, seed, blocksize,
                   tolerance, shift);
@@ -62,9 +55,6 @@ private:
   {
     switch (type) {
       case Type::Spectra: return "Spectra";
-      case Type::SubspaceIteration: return "SubspaceIteration";
-      case Type::SRRIT: return "SRRIT";
-      case Type::KrylovSchur: return "KrylovSchur";
     }
     assert(false && "Unreachable");
     return "";

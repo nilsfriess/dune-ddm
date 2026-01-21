@@ -122,6 +122,24 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
       write_overlapping_vector(v, "Ring region");
     }
 
+    // Visualise the basis vectors
+    // First get the number of basis vectors from the debug rank
+    auto n_basis = prec->get_basis().size();
+    helper.getCommunication().broadcast(&n_basis, 1, ptree.get("debug_rank", 0));
+
+    for (std::size_t i = 0; i < n_basis; ++i) {
+      auto istr = std::to_string(i);
+      auto i_padded = std::string(4 - std::min(4UL, istr.length()), '0') + istr;
+      auto name = "Basis " + i_padded;
+
+      if (helper.rank() == ptree.get("debug_rank", 0)) { write_overlapping_vector(prec->get_basis()[i], name); }
+      else {
+        typename Prec::NativeVec v(prec->getOverlappingCommunication()->indexSet().size());
+        v = 0;
+        write_overlapping_vector(v, name);
+      }
+    }
+
     writer.write(ptree.get("filename", "pdelab_example"), Dune::VTK::appendedraw);
   }
 

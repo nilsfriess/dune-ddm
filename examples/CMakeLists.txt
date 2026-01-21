@@ -3,14 +3,14 @@ if (${dune-pdelab_FOUND})
   if (${DUNE_DDM_BUILD_EXAMPLES})
     # Poisson example
     add_executable(poisson EXCLUDE_FROM_ALL poisson.cc)
-    target_link_libraries(poisson PUBLIC duneddm -llapacke)
+    target_link_libraries(poisson PUBLIC duneddm)
     add_dune_blas_lapack_flags(poisson)
     target_link_dune_default_libraries(poisson)
     dune_symlink_to_source_files(FILES poisson.ini)
 
     # Linear elasticity example
     add_executable(linearelasticity EXCLUDE_FROM_ALL linearelasticity.cc)
-    target_link_libraries(linearelasticity PUBLIC duneddm -llapacke)
+    target_link_libraries(linearelasticity PUBLIC duneddm)
     target_compile_definitions(linearelasticity PUBLIC DUNE_DDM_HAVE_LUA)
     dune_symlink_to_source_files(FILES coefficient.lua)
     add_dune_blas_lapack_flags(linearelasticity)
@@ -36,8 +36,8 @@ if (${dune-pdelab_FOUND})
                                        convection_diffusion_coefficient.lua
                                        symmetric_convection_diffusion_coefficient.lua
     )
+    target_link_libraries(pdelab_example PUBLIC duneddm)
     target_link_dune_default_libraries(pdelab_example)
-    target_link_libraries(pdelab_example PUBLIC duneddm -llapacke)
     dune_symlink_to_source_files(FILES pdelab_example.ini)
   endif()
 else()

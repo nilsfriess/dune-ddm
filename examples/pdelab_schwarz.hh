@@ -3,6 +3,7 @@
 #include "generic_ddm_problem.hh"
 #include "pdelab_helper.hh"
 
+#include <algorithm>
 #include <dune/common/parallel/mpihelper.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/ddm/coarsespaces/coarse_spaces.hh>
@@ -16,6 +17,7 @@
 #include <dune/ddm/schwarz.hh>
 #include <dune/istl/preconditioner.hh>
 #include <dune/pdelab/backend/interface.hh>
+#include <random>
 
 #if DUNE_DDM_HAVE_TASKFLOW
 #include <taskflow/taskflow.hpp>
@@ -58,8 +60,9 @@ public:
 
     if (coarsespace == "geneo" || coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::Overlap, overlap, true, novlp_comm_.get());
     else if (coarsespace == "msgfem") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::All, overlap, true, novlp_comm_.get());
-    else if (coarsespace == "pou" || coarsespace == "harmonic_extension" || coarsespace == "algebraic_geneo" || coarsespace == "algebraic_msgfem" || coarsespace == "none")
-      problem.assemble_dirichlet_matrix_only(*ovlp_comm_);
+    else if (coarsespace == "pou" || coarsespace == "harmonic_extension" || coarsespace == "algebraic_geneo" || coarsespace == "algebraic_msgfem" || coarsespace == "svd" ||
+             coarsespace == "msgfem_euclid" || coarsespace == "none")
+      problem.assemble_dirichlet_matrix_only(*ovlp_comm_, novlp_comm_.get());
     else if (coarsespace == "geneo_ring") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, overlap, false, novlp_comm_.get());
     else if (coarsespace == "msgfem_ring") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::Overlap, NeumannRegion::Overlap, overlap, false, novlp_comm_.get());
     else DUNE_THROW(Dune::NotImplemented, "Unknown coarse space type: " + coarsespace);
@@ -75,10 +78,6 @@ public:
 
     // Set up taskflow for coarse space construction
     tf::Taskflow taskflow("Coarse space setup");
-
-    // Create fine level Schwarz preconditioner
-    logger::debug("Setting up fine level Schwarz preconditioner");
-    auto schwarz = std::make_shared<FineLevel>(A_dir, ovlp_comm_, pou_, ptree);
 
     // Create coarse space
     std::unique_ptr<CoarseSpaceBuilder<>> coarse_space = nullptr;
@@ -110,6 +109,30 @@ public:
     else if (coarsespace == "pou") {
       coarse_space = std::make_unique<POUCoarseSpace<>>(pou_, taskflow);
     }
+    else if (coarsespace == "harmonic_extension") {
+      const auto& subtree = ptree.sub(coarse_space_ptree_prefix);
+      int n_basis_vectors = subtree.get("n_basis_vectors", 8);
+
+      std::size_t n_boundary = std::count_if(boundary_mask.begin(), boundary_mask.end(), [](const auto& x) { return x != 0; });
+
+      std::mt19937 rng(ptree.get("seed", 1));
+      std::normal_distribution<double> dist;
+      auto basis_vectors = std::make_shared<std::vector<NativeVec>>(n_boundary, NativeVec(n_boundary));
+      std::for_each(basis_vectors->begin(), basis_vectors->end(), [&](auto& x) { std::generate(x.begin(), x.end(), [&]() { return dist(rng); }); });
+
+      coarse_space = std::make_unique<HarmonicExtensionCoarseSpace<>>(A_dir, pou_, basis_vectors, boundary_mask, taskflow);
+    }
+    else if (coarsespace == "svd") {
+      coarse_space = std::make_unique<SVDCoarseSpace<>>(A_dir, pou_, boundary_mask, problem.get_overlapping_dirichlet_mask(), ptree, taskflow, coarse_space_ptree_prefix);
+    }
+    else if (coarsespace == "msgfem_euclid") {
+      auto I = std::make_shared<NativeMat>(A_dir->N(), A_dir->N(), 1, 0.1, NativeMat::BuildMode::implicit);
+      for (std::size_t i = 0; i < I->N(); ++i) I->entry(i, i) = 1.;
+      I->compress();
+
+      coarse_space = std::make_unique<MsGFEMCoarseSpace<NativeMat, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>, std::remove_reference_t<decltype(boundary_mask)>>>(
+          I, A_dir, pou_, problem.get_overlapping_dirichlet_mask(), boundary_mask, ptree, taskflow, coarse_space_ptree_prefix);
+    }
     else if (coarsespace == "none") {
       logger::debug("No coarse space selected");
     }
@@ -134,6 +157,12 @@ public:
     }
 
     helper.getCommunication().barrier();
+
+    // Create fine level Schwarz preconditioner
+    logger::debug("Setting up fine level Schwarz preconditioner");
+    // Modify the A_dir matrix to eliminate subdomain boundary dofs
+    if (ptree.get("modify_subdomain_matrix", false)) eliminate_dirichlet(*A_dir, boundary_mask);
+    auto schwarz = std::make_shared<FineLevel>(A_dir, ovlp_comm_, pou_, ptree);
 
     // Create non-overlapping operator (needed for multiplicative coarse space correction)
     logger::debug("Creating non-overlapping operator");
@@ -163,6 +192,8 @@ public:
 
   using NonOverlappingOp = NonOverlappingOperator<NativeMat, NativeVec, NativeVec, Communication>;
   std::shared_ptr<NonOverlappingOp> getNonOverlappingOperator() const { return novlp_op_; }
+
+  const std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>>& get_basis() const { return basis_; }
 
 private:
   std::shared_ptr<Communication> novlp_comm_;

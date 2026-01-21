@@ -274,8 +274,8 @@ public:
    * @tparam Communication Parallel communication type
    * @param comm Overlapping communication
    */
-  template <class Communication>
-  void assemble_dirichlet_matrix_only(const Communication& comm, const Communication* novlp_comm = nullptr)
+  template <class Communication, class NonoverlappingCommunication = Communication>
+  void assemble_dirichlet_matrix_only(const Communication& comm, const NonoverlappingCommunication* novlp_comm = nullptr)
   {
     using Dune::PDELab::Backend::native;
     logger::debug("Assembling overlapping Dirichlet matrix");
@@ -321,8 +321,14 @@ public:
     using Dune::PDELab::Backend::native;
     // Simple assembly without Neumann corrections
     wrapper.reset_masks();
-    As = std::make_unique<Mat>(*go);
-    go->jacobian(*x, *As);
+    if (go) {
+      As = std::make_unique<Mat>(*go);
+      go->jacobian(*x, *As);
+    }
+    else {
+      As = std::make_unique<Mat>(*symm_go);
+      symm_go->jacobian(*x, *As);
+    }
 
     if (Traits::assembled_matrix_is_consistent) {
       if (novlp_comm == nullptr) DUNE_THROW(Dune::Exception, "Need non-overlapping communicator for DG assembly");

@@ -44,10 +44,11 @@ public:
     using Dune::PDELab::Backend::Native;
     using Dune::PDELab::Backend::native;
 
-    std::vector<Vec> template_vecs(3, gfs);
+    std::vector<Vec> template_vecs(4, gfs);
     Dune::PDELab::interpolate([](auto&&) { return 1; }, gfs, template_vecs[0]);
     Dune::PDELab::interpolate([](auto&& x) { return x[0]; }, gfs, template_vecs[1]);
     Dune::PDELab::interpolate([](auto&& x) { return x[1]; }, gfs, template_vecs[2]);
+    Dune::PDELab::interpolate([](auto&& x) { return x[0] * x[1]; }, gfs, template_vecs[3]);
     std::for_each(template_vecs.begin(), template_vecs.end(), [&](auto&& v) { Dune::PDELab::set_constrained_dofs(cc, 0., v); });
 
     native_template_vecs.resize(template_vecs.size(), NativeVec(template_vecs[0].N()));

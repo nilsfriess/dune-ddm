@@ -9,14 +9,21 @@
 */
 
 #include "../logger.hh"
+#include "dune/ddm/eigensolvers/spectra.hh"
 
+#include <Eigen/Dense>
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/indexset.hh>
 #include <dune/common/parallel/interface.hh>
 #include <dune/common/parametertree.hh>
+#include <dune/common/timer.hh>
 #include <dune/istl/bvector.hh>
 #include <dune/istl/matrixmarket.hh>
+#include <dune/istl/solver.hh>
+#include <fstream>
 #include <mpi.h>
+#include <ostream>
+#include <sstream>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -448,13 +455,13 @@ public:
                                // Copy X to W at the boundary indices
                                W.set_zero();
                                auto Wb = W.block_view(0);
-                               auto Xb = X.block_view(0);
+                               auto Xb = X.block_view(block);
                                for (std::size_t i = 0; i < subdomain_boundary.size(); ++i)
                                  if (subdomain_boundary[i] != 0)
                                    for (std::size_t j = 0; j < BMV::blocksize; ++j) Wb(i, j) = Xb(i, j);
 
                                // Compute AW = A*W
-                               auto AWb = AW.block_view(block);
+                               auto AWb = AW.block_view(0);
                                Wb.apply_to_mat(*A_dir, AWb);
 
                                // Extract the interior values
@@ -687,11 +694,9 @@ public:
     const auto& subtree = ptree.sub(ptree_prefix);
     Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
 
-    this->setup_task = taskflow
-                           .emplace([A_neu, A_dir, pou, &dirichlet_mask, &subdomain_boundary_mask, eig_ptree, this] {
-                             setup_msgfem_impl(A_neu, A_dir, pou, dirichlet_mask, subdomain_boundary_mask, eig_ptree);
-                           })
-                           .name("MsGFEM coarse space setup");
+    this->setup_task =
+        taskflow.emplace([A_neu, A_dir, pou, &dirichlet_mask, &subdomain_boundary_mask, eig_ptree, this] { setup_msgfem_impl(A_neu, A_dir, pou, dirichlet_mask, subdomain_boundary_mask, eig_ptree); })
+            .name("MsGFEM coarse space setup");
   }
 
   /**
@@ -1256,6 +1261,147 @@ public:
       }
 
       detail::finalize_eigenvectors(this->basis_, *pou);
+    });
+  }
+};
+
+template <class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
+class SVDCoarseSpace : public CoarseSpaceBuilder<Vec> {
+public:
+  template <class Mat, class MaskVec, class MaskVec2>
+  SVDCoarseSpace(std::shared_ptr<Mat> A_ovlp, std::shared_ptr<PartitionOfUnity> pou, const MaskVec& subdomain_boundary_mask, const MaskVec2& dirichlet_boundary_mask, const Dune::ParameterTree& ptree,
+                 tf::Taskflow& taskflow, const std::string& ptree_prefix = "svd_coarse_space")
+  {
+    int n = ptree.sub(ptree_prefix).get("n", 10);
+    bool mult_pou = ptree.sub(ptree_prefix).get("mult_pou", false);
+
+    this->setup_task = taskflow.emplace([subdomain_boundary_mask, dirichlet_boundary_mask, A_ovlp, pou, n, mult_pou, this]() {
+      logger::info("Setting up SVD coarse space");
+
+      Dune::Timer timer;
+
+      assert(A_ovlp->N() == subdomain_boundary_mask.size());
+      assert(subdomain_boundary_mask.size() == dirichlet_boundary_mask.size());
+
+      // Start by partitioning the dofs
+      enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
+      std::vector<DOFType> dof_partitioning(A_ovlp->N());
+      std::size_t n_interior = 0;
+      std::size_t n_boundary = 0;
+      std::size_t n_dirichlet = 0;
+      for (std::size_t i = 0; i < A_ovlp->N(); ++i) {
+        if (dirichlet_boundary_mask[i] > 0) {
+          dof_partitioning[i] = DOFType::Dirichlet;
+          n_dirichlet++;
+        }
+        else if (subdomain_boundary_mask[i]) {
+          dof_partitioning[i] = DOFType::Boundary;
+          n_boundary++;
+        }
+        else {
+          dof_partitioning[i] = DOFType::Interior;
+          n_interior++;
+        }
+      }
+      logger::debug_all("[SVD] Partitioned dofs, have {} in interior, {} on subdomain boundary, {} on Dirichlet boundary", n_interior, n_boundary, n_dirichlet);
+
+      // Now create a subdomain -> interior mapping and a subdomain -> boundary mapping
+      std::unordered_map<std::size_t, std::size_t> subdomain_to_interior;
+      std::unordered_map<std::size_t, std::size_t> subdomain_to_boundary;
+      subdomain_to_interior.reserve(n_interior);
+      subdomain_to_boundary.reserve(n_boundary);
+      std::size_t cnt_interior = 0;
+      std::size_t cnt_boundary = 0;
+      for (std::size_t i = 0; i < A_ovlp->N(); ++i)
+        if (dof_partitioning[i] == DOFType::Interior) subdomain_to_interior[i] = cnt_interior++;
+        else if (dof_partitioning[i] == DOFType::Boundary) subdomain_to_boundary[i] = cnt_boundary++;
+
+      // Now create the matrix A_{i, \\Gamma_i}
+      logger::info("[SVD] Create columns of A_{i, \\Gamma_i}");
+      timer.reset();
+
+      std::vector<Vec> A_igamma(n_boundary, Vec(n_interior));
+      for (auto& column : A_igamma) column = 0; // zero initialise
+      for (auto ri = A_ovlp->begin(); ri != A_ovlp->end(); ++ri) {
+        if (dof_partitioning[ri.index()] != DOFType::Interior) continue;
+        for (auto ci = ri->begin(); ci != ri->end(); ++ci)
+          if (dof_partitioning[ci.index()] == DOFType::Boundary) A_igamma[subdomain_to_boundary[ci.index()]][subdomain_to_interior[ri.index()]] = *ci;
+      }
+
+      MPI_Barrier(MPI_COMM_WORLD);
+      logger::info("[SVD] Done creating columns of A_{i, \\Gamma_i}, took {}s", timer.elapsed());
+      timer.reset();
+      logger::info("[SVD] Computing T matrix");
+      // ################################################################
+
+      Mat A_int;
+      auto avg = A_ovlp->nonzeroes() / A_ovlp->N() + 2;
+      A_int.setBuildMode(Mat::implicit);
+      A_int.setImplicitBuildModeParameters(avg, 0.2);
+      A_int.setSize(n_interior, n_interior);
+      for (auto ri = A_ovlp->begin(); ri != A_ovlp->end(); ++ri) {
+        if (dof_partitioning[ri.index()] != DOFType::Interior) continue;
+        for (auto ci = ri->begin(); ci != ri->end(); ++ci)
+          if (dof_partitioning[ci.index()] == DOFType::Interior) A_int.entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = *ci;
+      }
+      A_int.compress();
+
+      // Create the solver and solve for all right hand sides
+      Dune::UMFPack<Mat> solver(A_int);
+      Eigen::MatrixXd T(n_interior, n_boundary);
+
+      Dune::InverseOperatorResult res;
+      for (std::size_t i = 0; i < A_igamma.size(); ++i) {
+        auto& rhs = A_igamma[i];
+        Vec x(rhs.size());
+        solver.apply(x, rhs, res);
+
+        // Put solution into T
+        for (std::size_t j = 0; j < x.size(); ++j) T((int)j, (int)i) = x[j];
+      }
+
+      // Scale T by partition of unity: T <- D * T
+      for (std::size_t i = 0; i < pou->size(); ++i) {
+        if (dof_partitioning[i] == DOFType::Interior) {
+          const auto p = pou->vector()[i];
+          const auto ii = subdomain_to_interior[i];
+          for (std::size_t j = 0; j < n_boundary; ++j) T((int)ii, (int)j) *= p;
+        }
+      }
+
+      MPI_Barrier(MPI_COMM_WORLD);
+      logger::info("[SVD] Done computing T matrix, took {}s", timer.elapsed());
+
+      logger::info("[SVD] Computing SVD of T");
+      timer.reset();
+
+      auto svd = T.bdcSvd(Eigen::ComputeThinU);
+
+      const auto& singular_values = svd.singularValues();
+      std::ostringstream os;
+      std::copy(singular_values.begin(), singular_values.end() - 1, std::ostream_iterator<double>(os, ","));
+      os << singular_values[singular_values.size() - 1];
+      // for (std::size_t i = 0; i < singular_values.size(); ++i) logger::info_all("[SVD] {}: {}", i, singular_values[i]);
+      logger::info_all("[SVD] Computes singular values: [{}]", os.str());
+
+      int rank{};
+      MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+      std::ofstream sv_file("singular_values_" + std::to_string(rank) + ".txt");
+      std::copy(singular_values.begin(), singular_values.end() - 1, std::ostream_iterator<double>(sv_file, ","));
+      sv_file << singular_values[singular_values.size() - 1];
+
+      this->basis_.resize(n);
+      const auto& U = svd.matrixU();
+      for (std::size_t i = 0; i < this->basis_.size(); ++i) {
+        auto& b = this->basis_[i];
+        b.resize(A_ovlp->N());
+        b = 0;
+
+        for (std::size_t j = 0; j < A_ovlp->N(); ++j)
+          if (dof_partitioning[j] == DOFType::Interior) b[j] = U((int)(subdomain_to_interior[j]), (int)(i));
+      }
+
+      if (mult_pou) detail::finalize_eigenvectors(this->basis_, *pou);
     });
   }
 };
