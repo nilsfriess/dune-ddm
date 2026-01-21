@@ -45,7 +45,7 @@ find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK CHOLMOD)
 # optionally find STRUMPACK
 find_package(STRUMPACK CONFIG)
 
-find_package(Eigen3 NO_MODULE)
+find_package(Eigen3 NO_MODULE REQUIRED)
 if (TARGET Eigen3::Eigen)
   target_include_directories(duneddm INTERFACE
                                      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/extern/spectra-1.2.0/include>
