@@ -207,13 +207,11 @@ public:
   }
 
   template <class Communication>
-  std::tuple<std::shared_ptr<NativeMat>, std::shared_ptr<NativeMat>, std::shared_ptr<NativeMat>, std::shared_ptr<NativeVec>>
-  assemble_overlapping_matrices(Communication& comm, int overlap = 1)
+  std::tuple<std::shared_ptr<NativeMat>, std::shared_ptr<NativeMat>, std::shared_ptr<NativeMat>, std::shared_ptr<NativeVec>> assemble_overlapping_matrices(Communication& comm, int overlap = 1)
   {
-    auto [A_dir, A_neu, B_neu, dirichlet_mask_ovlp, neumann_region_to_subdomain] =
-        ::assemble_overlapping_matrices(*A_, *x_, *gop_, dirichlet_mask(), comm, NeumannRegion::All, NeumannRegion::All, overlap, true);
+    auto [matrices, dirichlet_mask_ovlp, neumann_region_to_subdomain] = ::assemble_overlapping_matrices(*A_, *x_, *gop_, dirichlet_mask(), comm, NeumannRegion::All, NeumannRegion::All, overlap, true);
 
-    return {A_dir, A_neu, B_neu, Dune::PDELab::Backend::native(dirichlet_mask_ovlp)};
+    return {matrices.A_dir, matrices.A_neu, matrices.B_neu, Dune::PDELab::Backend::native(dirichlet_mask_ovlp)};
   }
 
   std::shared_ptr<GFS> gfs() const { return gfs_; }
