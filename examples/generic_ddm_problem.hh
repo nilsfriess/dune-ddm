@@ -69,7 +69,7 @@ public:
   // PDELab types
   using VBE = Dune::PDELab::ISTL::VectorBackend<Dune::PDELab::ISTL::Blocking::none>;
   using MBE = Dune::PDELab::ISTL::BCRSMatrixBackend<>;
-  using GFS = Dune::PDELab::GridFunctionSpace<EntitySet, FEM, Constraints, VBE>;
+  using GFS = typename Traits::GFS;
   using CC = typename GFS::template ConstraintsContainer<RF>::Type;
   using GO = Dune::PDELab::GridOperator<GFS, GFS, LocalOperator, MBE, RF, RF, RF, CC, CC>;
   using SymmetricGO = Dune::PDELab::GridOperator<GFS, GFS, AssembleWrapper<SymmetricLocalOperator>, MBE, RF, RF, RF, CC, CC>;
@@ -122,8 +122,7 @@ public:
     Dune::PDELab::constraints(bc, *gfs, cc);
 
     // For ConvectionDiffusion problems, use ConvectionDiffusionDirichletExtensionAdapter
-    // Note: It expects GridView, not EntitySet
-    Dune::PDELab::ConvectionDiffusionDirichletExtensionAdapter g(gv, *this->symmetricModelProblem);
+    typename Traits::DirichletExtensionAdapter g(gv, *this->symmetricModelProblem);
     Dune::PDELab::interpolate(g, *gfs, *x);
 
     // Set Dirichlet mask
