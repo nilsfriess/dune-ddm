@@ -363,6 +363,63 @@ public:
           }
         }
       }
+
+      // Corrections for ourselves (again, we need to distinguish two cases)
+      const auto& on_mask = *on_boundary_mask;
+      const auto& outside_mask = *outside_boundary_mask;
+      {
+        // Case 1: Inside element is on boundary, outside element is outside boundary
+        // Then we need to store the contribution to the inside element as Neumann correction
+
+        bool inside_elem_is_on_boundary = on_mask[global_indices_inside[0]];
+        bool outside_elem_is_outside_boundary = outside_mask[global_indices_outside[0]];
+
+        // If the outside element is a ghost element, we don't need to assemble Neumann corrections for it
+        // TODO: Can this even happen here?
+        bool inside_elem_is_ghost = ig.outside().partitionType() == Dune::GhostEntity;
+
+        if (inside_elem_is_on_boundary and outside_elem_is_outside_boundary) {
+          auto& An = neumann_correction_matrices[-1];
+          for (std::size_t i = 0; i < lfsu_s.size(); ++i) {
+            auto gi = global_indices_inside[i];
+
+            for (std::size_t j = 0; j < lfsu_s.size(); ++j) { // TODO: We assume lfsu == lfsv
+              auto gj = global_indices_inside[j];
+
+              // Calculate the contribution of this element, but only if the dof is on the current intersection
+              double val = mat_ss.container()(lfsu_s, i, lfsv_s, j) - M_ss_before(lfsu_s, i, lfsv_s, j);
+              An.entry(gi, gj) += val;
+            }
+          }
+        }
+      }
+
+      {
+        // Case 2: Outside element is on boundary, inside element is outside boundary
+        // Then we need to store the contribution to the outside element as Neumann correction
+
+        bool outside_elem_is_on_boundary = on_mask[global_indices_outside[0]];
+        bool inside_elem_is_outside_boundary = outside_mask[global_indices_inside[0]];
+
+        // If the inside element is a ghost element, we don't need to assemble Neumann corrections for it
+        // TODO: Can this even happen here?
+        bool outside_elem_is_ghost = ig.inside().partitionType() == Dune::GhostEntity;
+
+        if (outside_elem_is_on_boundary and inside_elem_is_outside_boundary) {
+          auto& An = neumann_correction_matrices[-1];
+          for (std::size_t i = 0; i < lfsu_n.size(); ++i) {
+            auto gi = global_indices_outside[i];
+
+            for (std::size_t j = 0; j < lfsu_n.size(); ++j) { // TODO: We assume lfsu == lfsv
+              auto gj = global_indices_outside[j];
+
+              // Calculate the contribution of this element
+              double val = mat_nn.container()(lfsu_n, i, lfsv_n, j) - M_nn_before(lfsu_n, i, lfsv_n, j);
+              An.entry(gi, gj) += val;
+            }
+          }
+        }
+      }
     }
   }
 
