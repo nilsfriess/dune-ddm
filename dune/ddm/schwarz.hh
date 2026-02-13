@@ -75,6 +75,7 @@ public:
       : Aovlp(std::move(Aovlp))
       , comm(std::move(comm))
       , pou(std::move(pou))
+      , boundary(this->Aovlp->N(), false)
   {
     const auto& subtree = ptree.sub(subtree_name);
     auto type_string = subtree.get("type", "restricted");
@@ -124,6 +125,10 @@ public:
     // 2. Get remaining values from other ranks
     comm->copyOwnerToAll(*d_ovlp, *d_ovlp);
 
+    // 2.5 Zero at subdomain boundary and Dirichlet boundary
+    for (std::size_t i = 0; i < d_ovlp->size(); ++i)
+      if (boundary[i]) (*d_ovlp)[i] = 0;
+
     Logger::get().endEvent(get_defect_event);
 
     // 3. Solve using the overlapping subdomain matrix
@@ -152,7 +157,7 @@ public:
    * @brief Get reference to the local subdomain solver.
    * @return Reference to the solver instance
    */
-  Solver& getSolver() { return *solver; }
+  std::shared_ptr<Solver> get_solver() { return solver; }
 
 #if DUNE_DDM_HAVE_TASKFLOW
   /**
@@ -194,6 +199,20 @@ private:
 
     d_ovlp = std::make_unique<Vec>(Aovlp->N());
     x_ovlp = std::make_unique<Vec>(Aovlp->N());
+
+    // Initialise the boundary mask
+    for (auto ri = Aovlp->begin(); ri != Aovlp->end(); ++ri) {
+      if ((*Aovlp)[ri.index()][ri.index()] != 1.) continue;
+
+      bool at_boundary = true;
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+        if (ri.index() != ci.index() && *ci != 0.) {
+          at_boundary = false;
+          break;
+        }
+      }
+      if (at_boundary) boundary[ri.index()] = true;
+    }
   }
 
   std::shared_ptr<Mat> Aovlp; ///< Overlapping subdomain matrix
@@ -206,6 +225,8 @@ private:
   std::shared_ptr<PartitionOfUnity> pou{nullptr}; ///< Partition of unity (might be null)
 
   SchwarzType type; ///< Type of Schwarz method (standard or restricted)
+
+  std::vector<bool> boundary;
 
 #if DUNE_DDM_HAVE_TASKFLOW
   // Task-related
