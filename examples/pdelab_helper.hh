@@ -152,10 +152,38 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   for (std::size_t i = 0; i < boundary_dst.size(); ++i)
     if (boundary_mask[i]) boundary_dst[i] = 0;
 
-  for (int round = 0; round <= 4 * overlap; ++round) {
-    for (std::size_t i = 0; i < boundary_dst.size(); ++i)
-      for (auto cit = (*A_dir)[i].begin(); cit != (*A_dir)[i].end(); ++cit) boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cit.index()] + 1); // Increase distance from boundary by one
+  // BFS initialization: enqueue all boundary DOFs with distance 0
+  std::vector<std::size_t> bfs_queue;
+  bfs_queue.reserve(boundary_dst.size());
+  for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
+    if (boundary_mask[i]) {
+      boundary_dst[i] = 0;
+      bfs_queue.push_back(i);
+    }
   }
+
+  // BFS traversal to compute boundary distances
+  // We only need distances up to (overlap + 2) for the public state modification
+  const int max_distance = 4 * overlap + 2;
+  std::size_t queue_start = 0;
+  while (queue_start < bfs_queue.size()) {
+    std::size_t current = bfs_queue[queue_start++];
+    int current_dist = boundary_dst[current];
+    if (current_dist >= max_distance) continue; // No need to explore further
+
+    for (auto cit = (*A_dir)[current].begin(); cit != (*A_dir)[current].end(); ++cit) {
+      std::size_t neighbor = cit.index();
+      if (boundary_dst[neighbor] > current_dist + 1) {
+        boundary_dst[neighbor] = current_dist + 1;
+        bfs_queue.push_back(neighbor);
+      }
+    }
+  }
+
+  // for (int round = 0; round <= 8 * overlap; ++round) {
+  //   for (std::size_t i = 0; i < boundary_dst.size(); ++i)
+  //     for (auto cit = (*A_dir)[i].begin(); cit != (*A_dir)[i].end(); ++cit) boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cit.index()] + 1); // Increase distance from boundary by one
+  // }
 
   std::vector<std::uint8_t> boundary_indicator(A_dir->N(), 0);
   for (std::size_t i = 0; i < boundary_indicator.size(); ++i)
