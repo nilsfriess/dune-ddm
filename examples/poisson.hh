@@ -322,12 +322,12 @@ public:
   void assemble_overlapping_matrices(Communication& comm, NeumannRegion first_neumann_region, NeumannRegion second_neumann_region, int overlap, bool neumann_size_as_dirichlet = true,
                                      const Communication* novlp_comm = nullptr)
   {
-    auto [A_dir_, A_neu_, B_neu_, dirichlet_mask_ovlp_, neumann_region_to_subdomain_] = ::assemble_overlapping_matrices(
+    auto [matrices, dirichlet_mask_ovlp_, neumann_region_to_subdomain_] = ::assemble_overlapping_matrices(
         *As, *x, *go, Dune::PDELab::Backend::native(*dirichlet_mask), comm, first_neumann_region, second_neumann_region, overlap, neumann_size_as_dirichlet, USEDG, novlp_comm);
 
-    A_dir = std::move(A_dir_);
-    A_neu = std::move(A_neu_);
-    B_neu = std::move(B_neu_);
+    A_dir = std::move(matrices.A_dir);
+    A_neu = std::move(matrices.A_neu);
+    B_neu = std::move(matrices.B_neu);
     dirichlet_mask_ovlp = std::move(*dirichlet_mask_ovlp_);
     neumann_region_to_subdomain = std::move(neumann_region_to_subdomain_);
   }
