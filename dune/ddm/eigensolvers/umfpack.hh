@@ -13,188 +13,86 @@
 #include <umfpack.h>
 #include <vector>
 
-template <class Mat>
 class UMFPackMultivecSolver {
 public:
-  explicit UMFPackMultivecSolver(const Mat& A, int max_refinement_iter = 3)
-      : A(A)
-      , A_norm(A.infinity_norm())
-      , max_refinement_iter(max_refinement_iter)
+  template <class Mat>
+  explicit UMFPackMultivecSolver(const Mat& A)
   {
+    Dune::UMFPack<Mat> solver;
     solver.setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
     solver.setMatrix(A);
-    init();
+    init(solver);
   }
 
-  template <class Multivec>
-  void operator()(Multivec& X, std::size_t block)
+  template <class Mat>
+  explicit UMFPackMultivecSolver(Dune::UMFPack<Mat>& solver)
   {
-    auto B = X;
-    apply(X, B, block, block + 1);
+    init(solver);
   }
 
-  template <class Multivec1, class Multivec2>
-  void apply(Multivec1& xx, Multivec2& bb)
+  template <class BlockView>
+  void solve(BlockView X, BlockView B)
   {
-    apply(xx, bb, 0, xx.blocks());
-  }
-
-  template <class Multivec1, class Multivec2>
-  void apply(Multivec1& xx, Multivec2& bb, std::size_t block_from, std::size_t block_to)
-  {
-    auto bbefore = bb;
-
-    const double tol = 1e-14; // More reasonable tolerance than machine epsilon
-    double omega_prev = std::numeric_limits<double>::infinity();
-
-    solve(xx, bb, block_from, block_to);
-    for (int iter = 0; iter < max_refinement_iter; ++iter) {
-      auto resid = xx;
-
-      // Compute block-wise backward errors and take maximum
-      double omega_max = 0.0;
-      for (std::size_t block = block_from; block < block_to; ++block) {
-        auto r_block = resid.block_view(block);
-        auto x_block = xx.block_view(block);
-        auto b_block = bbefore.block_view(block); // Read-only access to original RHS
-
-        // Compute residual: r = b - A*x
-        x_block.apply_to_mat(A, r_block); // r = A*x
-        r_block *= -1.0;                  // r = -A*x
-        r_block += b_block;               // r = b - A*x
-
-        // Compute norms for this block
-        auto r_norm = r_block.frobenius_norm();
-        auto x_norm = x_block.frobenius_norm();
-        auto b_norm = b_block.frobenius_norm();
-
-        // Backward error for this block: ||r|| / (||A|| * ||x|| + ||b||)
-        double denom = A_norm * x_norm + b_norm;
-        double omega_block = r_norm / denom;
-
-        omega_max = std::max(omega_max, omega_block);
-      }
-
-      // Stop if backward error is essentially zero (UMFPACK criterion)
-      if (omega_max < tol) {
-        // logger::debug("Converged: omega_max < machine epsilon");
-        break;
-      }
-
-      // Stop if NaN detected
-      if (std::isnan(omega_max)) {
-        logger::debug("NaN detected, stopping refinement");
-        break;
-      }
-
-      // Stop if insufficient improvement (UMFPACK requires 2x improvement, we do the same)
-      if (iter > 0 && omega_max > omega_prev / 2.0) {
-        logger::debug("Insufficient improvement, stopping refinement");
-        break;
-      }
-
-      // Solve correction equation: A * delta = r
-      // Note: resid now contains the actual residual r = b - A*x
-      auto delta = resid;                        // Copy residual to delta
-      solve(delta, resid, block_from, block_to); // Solve A * delta = r
-
-      // Update solution: x = x + delta
-      for (std::size_t block = block_from; block < block_to; ++block) {
-        auto x_block = xx.block_view(block);
-        auto d_block = delta.block_view(block);
-        x_block += d_block;
-      }
-
-      omega_prev = omega_max;
-    }
-
-    // // Final diagnostic output
-    // auto resid = xx;
-    // xx.apply_to_mat(A, resid);
-    // resid -= bbefore;
-    // resid *= -1.0;
-
-    // double final_omega_max = 0.0;
-    // for (std::size_t block = block_from; block < block_to; ++block) {
-    //   auto r_block = resid.block_view(block);
-    //   auto x_block = xx.block_view(block);
-    //   auto b_block = bbefore.block_view(block);
-    //   double r_norm = r_block.two_norm();
-    //   double x_norm = x_block.two_norm();
-    //   double b_norm = b_block.two_norm();
-    //   double omega_block = r_norm / (A_norm * x_norm + b_norm);
-    //   final_omega_max = std::max(final_omega_max, omega_block);
-    // }
-    // logger::debug("Final backward error: {}", final_omega_max);
-  }
-
-  template <class Multivec1, class Multivec2>
-  void solve(Multivec1& xx, Multivec2& bb, std::size_t block_from, std::size_t block_to)
-  {
-    if (!xx.matches_blocks(bb)) DUNE_THROW(Dune::Exception, "Vectors are incompatible");
-
-    constexpr auto block_size = Multivec1::blocksize;
+    constexpr auto block_size = BlockView::blocksize;
     using VReal = std::experimental::fixed_size_simd<double, block_size>;
 
-#define row_start(v, row) std::assume_aligned<64>(&((v).data_ptr[block * xx.rows_ * block_size + (row) * block_size]))
+#define row_start(v, row) std::assume_aligned<64>(&((v).data_[(row) * block_size]))
 
-#pragma omp parallel for schedule(static)
 #if 1 // Manually vectorised variant
-    for (std::size_t block = block_from; block < block_to; ++block) {
-      VReal vdata;
-      VReal vtemp;
+    VReal vdata;
+    VReal vtemp;
 
-      // Step 1: Row permutation and scaling - store result in xx (which becomes temporary storage)
-      auto addr_write = row_start(xx, 0);
-      for (std::int64_t k = 0; k < n_row; ++k) {
-        vdata.copy_from(row_start(bb, P[k]), std::experimental::vector_aligned);
-        vdata *= Rseff[k];
-        vdata.copy_to(addr_write, std::experimental::vector_aligned);
-        addr_write += block_size;
-      }
-
-      // Step 2: Forward solve L*y = (scaled and permuted b)
-      // Input from xx, output to bb
-      auto addr_read = row_start(xx, 0);
-      addr_write = row_start(bb, 0);
-      for (std::int64_t i = 0; i < n_row; ++i) {
-        vdata.copy_from(addr_read, std::experimental::vector_aligned);
-
-        for (auto k = Lp[i]; k < Lp[i + 1] - 1; ++k) {
-          const double coeff = Lx[k];
-          vtemp.copy_from(row_start(bb, Lj[k]), std::experimental::vector_aligned);
-          vdata = std::experimental::fma(-coeff, vtemp, vdata);
-        }
-
-        vdata.copy_to(addr_write, std::experimental::vector_aligned);
-
-        addr_read += block_size;
-        addr_write += block_size;
-      }
-
-      // Step 3: Back solve U and apply column permutation
-      // Input from bb, output to xx (final result)
-      addr_read = row_start(bb, n_row - 1);
-      for (std::int64_t j = n_row - 1; j >= 0; --j) {
-        vdata.copy_from(addr_read, std::experimental::vector_aligned);
-
-        // Multiply by precomputed inverse diagonal
-        vdata *= Udiag_inv[j];
-
-        // Update all rows above (those already processed)
-        for (auto k = Up[j]; k < Up[j + 1] - 1; ++k) {
-          const double coeff = Ux[k];
-          vtemp.copy_from(row_start(bb, Ui[k]), std::experimental::vector_aligned);
-          vtemp = std::experimental::fma(-coeff, vdata, vtemp);
-          vtemp.copy_to(row_start(bb, Ui[k]), std::experimental::vector_aligned);
-        }
-
-        // Store in permuted position in final result
-        vdata.copy_to(row_start(xx, Q[j]), std::experimental::vector_aligned);
-
-        addr_read -= block_size;
-      }
+    // Step 1: Row permutation and scaling - store result in xx (which becomes temporary storage)
+    auto addr_write = row_start(X, 0);
+    for (std::int64_t k = 0; k < n_row; ++k) {
+      vdata.copy_from(row_start(B, P[k]), std::experimental::vector_aligned);
+      vdata *= Rseff[k];
+      vdata.copy_to(addr_write, std::experimental::vector_aligned);
+      addr_write += block_size;
     }
+
+    // Step 2: Forward solve L*y = (scaled and permuted b)
+    // Input from xx, output to bb
+    auto addr_read = row_start(X, 0);
+    addr_write = row_start(B, 0);
+    for (std::int64_t i = 0; i < n_row; ++i) {
+      vdata.copy_from(addr_read, std::experimental::vector_aligned);
+
+      for (auto k = Lp[i]; k < Lp[i + 1] - 1; ++k) {
+        const double coeff = Lx[k];
+        vtemp.copy_from(row_start(B, Lj[k]), std::experimental::vector_aligned);
+        vdata = std::experimental::fma(-coeff, vtemp, vdata);
+      }
+
+      vdata.copy_to(addr_write, std::experimental::vector_aligned);
+
+      addr_read += block_size;
+      addr_write += block_size;
+    }
+
+    // Step 3: Back solve U and apply column permutation
+    // Input from bb, output to xx (final result)
+    addr_read = row_start(B, n_row - 1);
+    for (std::int64_t j = n_row - 1; j >= 0; --j) {
+      vdata.copy_from(addr_read, std::experimental::vector_aligned);
+
+      // Multiply by precomputed inverse diagonal
+      vdata *= Udiag_inv[j];
+
+      // Update all rows above (those already processed)
+      for (auto k = Up[j]; k < Up[j + 1] - 1; ++k) {
+        const double coeff = Ux[k];
+        vtemp.copy_from(row_start(B, Ui[k]), std::experimental::vector_aligned);
+        vtemp = std::experimental::fma(-coeff, vdata, vtemp);
+        vtemp.copy_to(row_start(B, Ui[k]), std::experimental::vector_aligned);
+      }
+
+      // Store in permuted position in final result
+      vdata.copy_to(row_start(X, Q[j]), std::experimental::vector_aligned);
+
+      addr_read -= block_size;
+    }
+
 #else // Variant that relies on autovectorisation (usually generates nearly identical assemble, occasionally even better than the other branch)
     for (std::size_t block = block_from; block < block_to; ++block) {
       alignas(64) double tmp[block_size];
@@ -251,7 +149,8 @@ public:
   }
 
 private:
-  void init()
+  template <class Mat>
+  void init(Dune::UMFPack<Mat>& solver)
   {
     void* Numeric = solver.getFactorization();
 
@@ -317,7 +216,7 @@ private:
   std::vector<std::int64_t, AlignedAllocator<std::int64_t>> Q;
 
   // Boolean argument that determines how the scale factors have to be applied
-  std::int64_t do_recip;
+  std::int64_t do_recip{};
 
   // The scale factors
   std::vector<double, AlignedAllocator<double>> Rs;
@@ -325,9 +224,4 @@ private:
   std::vector<double, AlignedAllocator<double>> Rseff;
   // Precomputed inverse of U diagonal
   std::vector<double, AlignedAllocator<double>> Udiag_inv;
-
-  Dune::UMFPack<Mat> solver;
-  const Mat& A;
-  double A_norm{};
-  int max_refinement_iter;
 };

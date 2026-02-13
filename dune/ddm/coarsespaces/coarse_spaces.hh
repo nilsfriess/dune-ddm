@@ -407,80 +407,22 @@ public:
    */
   // Note: We intentionally pass shared_ptrs by value to capture them safely in the taskflow lambda
   // TODO: Pass the references as shared_ptrs as well.
-  ConstraintGenEOCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A, std::shared_ptr<const Mat> B, std::shared_ptr<const PartitionOfUnity> pou,
-                             const MaskVec& subdomain_boundary, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow, const std::string& ptree_prefix = "constraint_geneo")
+  template <class Solver>
+  ConstraintGenEOCoarseSpace(std::shared_ptr<Solver> solver, std::shared_ptr<const Mat> A, std::shared_ptr<const Mat> B, std::shared_ptr<const PartitionOfUnity> pou, const MaskVec& subdomain_boundary,
+                             const Dune::ParameterTree& ptree, tf::Taskflow& taskflow, const std::string& ptree_prefix = "constraint_geneo")
   {
     const auto& subtree = ptree.sub(ptree_prefix);
     Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
 
     this->setup_task = taskflow
-                           .emplace([A_dir, A, B, pou, eig_ptree, &subdomain_boundary, this] {
+                           .emplace([solver, A, B, pou, eig_ptree, &subdomain_boundary, this] {
                              logger::info("Setting up GenEO coarse space with manual constraint");
                              if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
 
                              auto C = std::make_shared<Mat>(*B); // The rhs of the eigenproblem
                              detail::scale_matrix_with_pou(*C, *pou);
 
-                             // Assemble the matrix A_ii corresponding to interior dofs
-                             std::unordered_map<std::size_t, std::size_t> subdomain_to_interior;
-                             subdomain_to_interior.reserve(subdomain_boundary.size());
-                             std::size_t cnt = 0;
-                             for (std::size_t i = 0; i < subdomain_boundary.size(); ++i)
-                               if (subdomain_boundary[i] == 0) subdomain_to_interior[i] = cnt++;
-
-                             // Extract the interior-interior block of the matrix A_ii
-                             const auto N = subdomain_to_interior.size();
-                             auto interior_matrix = std::make_shared<Mat>();
-
-                             auto avg = A_dir->nonzeroes() / A_dir->N() + 2;
-                             interior_matrix->setBuildMode(Mat::implicit);
-                             interior_matrix->setImplicitBuildModeParameters(avg, 0.2);
-                             interior_matrix->setSize(N, N);
-                             for (auto ri = A_dir->begin(); ri != A_dir->end(); ++ri) {
-                               for (auto ci = ri->begin(); ci != ri->end(); ++ci)
-                                 if (subdomain_to_interior.count(ri.index()) > 0 and subdomain_to_interior.count(ci.index()) > 0)
-                                   interior_matrix->entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = *ci;
-                             }
-                             interior_matrix->compress();
-
-                             UMFPackMultivecSolver interior_solver(*interior_matrix, 0); // 0 means no iterative refinement
-
-                             const auto solve_constraint = [&](auto& X, std::size_t block) {
-                               using BMV = std::remove_cvref_t<decltype(X)>;
-
-                               // Compute the interior right-hand side
-                               BMV W(X.rows(), BMV::blocksize);
-                               BMV AW(X.rows(), BMV::blocksize);
-
-                               // Copy X to W at the boundary indices
-                               W.set_zero();
-                               auto Wb = W.block_view(0);
-                               auto Xb = X.block_view(block);
-                               for (std::size_t i = 0; i < subdomain_boundary.size(); ++i)
-                                 if (subdomain_boundary[i] != 0)
-                                   for (std::size_t j = 0; j < BMV::blocksize; ++j) Wb(i, j) = Xb(i, j);
-
-                               // Compute AW = A*W
-                               auto AWb = AW.block_view(0);
-                               Wb.apply_to_mat(*A_dir, AWb);
-
-                               // Extract the interior values
-                               BMV Xi(subdomain_to_interior.size(), BMV::blocksize);
-                               auto Xib = Xi.block_view(0);
-                               for (std::size_t i = 0; i < subdomain_boundary.size(); ++i)
-                                 if (subdomain_boundary[i] == 0)
-                                   for (std::size_t j = 0; j < BMV::blocksize; ++j) Xib(subdomain_to_interior[i], j) = AWb(i, j);
-
-                               // Solve in the interior
-                               interior_solver(Xi, 0);
-
-                               // Copy the results back into X
-                               for (std::size_t i = 0; i < subdomain_boundary.size(); ++i)
-                                 if (subdomain_boundary[i] == 0)
-                                   for (std::size_t j = 0; j < BMV::blocksize; ++j) Xb(i, j) = -Xib(subdomain_to_interior[i], j);
-                             };
-
-                             this->basis_ = solve_gevp(A, C, solve_constraint, eig_ptree);
+                             this->basis_ = solve_gevp(A, C, solver, subdomain_boundary, eig_ptree);
 
                              detail::finalize_eigenvectors(this->basis_, *pou);
                            })
@@ -513,14 +455,14 @@ public:
    * @param ptree ParameterTree containing solver and selection parameters.
    * @param ptree_prefix Prefix for parameter subtree (default: "geneo_ring").
    */
-  GenEORingCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A, std::shared_ptr<const PartitionOfUnity> pou, const std::vector<std::size_t>& ring_to_subdomain,
+  GenEORingCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A_neu, std::shared_ptr<const PartitionOfUnity> pou, const std::vector<std::size_t>& ring_to_subdomain,
                        const Dune::ParameterTree& ptree, tf::Taskflow& taskflow, const std::string& ptree_prefix = "geneo_ring")
   {
     const auto& subtree = ptree.sub(ptree_prefix);
     Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
 
     this->setup_task = taskflow
-                           .emplace([A_dir, A, pou, ring_to_subdomain, eig_ptree, this](tf::Subflow& subflow) {
+                           .emplace([A_dir, A_neu, pou, ring_to_subdomain, eig_ptree, this](tf::Subflow& subflow) {
                              logger::info("Setting up GenEO ring coarse space");
 
                              auto setup_ring_data_task = subflow
@@ -561,11 +503,11 @@ public:
 
                              auto solve_eigenproblem_task = subflow
                                                                 .emplace([&]() {
-                                                                  auto C = std::make_shared<Mat>(*A); // The rhs of the eigenproblem
+                                                                  auto C = std::make_shared<Mat>(*A_neu); // The rhs of the eigenproblem
                                                                   detail::scale_matrix_with_pou(*C, *mod_pou, ring_to_subdomain);
 
                                                                   // Now we can solve the eigenproblem
-                                                                  eigenvectors_ring = solve_gevp(A, C, eig_ptree);
+                                                                  eigenvectors_ring = solve_gevp(A_neu, C, eig_ptree);
                                                                 })
                                                                 .name("Solve ring eigenproblem");
 
@@ -928,7 +870,7 @@ public:
    * @param ptree_prefix Prefix for parameter subtree (default: "msgfem_ring").
    */
   // Note: We intentionally pass shared_ptrs by value to capture them safely in the taskflow lambda
-  MsGFEMRingCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A, int overlap, std::shared_ptr<const PartitionOfUnity> pou, const MaskVec1& dirichlet_mask,
+  MsGFEMRingCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A_neu, int overlap, std::shared_ptr<const PartitionOfUnity> pou, const MaskVec1& dirichlet_mask,
                         const MaskVec2& subdomain_boundary_mask, const std::vector<std::size_t>& ring_to_subdomain, const Dune::ParameterTree& ptree, tf::Taskflow& taskflow,
                         const std::string& ptree_prefix = "msgfem_ring")
   {
@@ -937,44 +879,45 @@ public:
 
     this->setup_task =
         taskflow
-            .emplace([A_dir, A, overlap, pou, &dirichlet_mask, &subdomain_boundary_mask, ring_to_subdomain, eig_ptree, this](tf::Subflow& subflow) {
+            .emplace([A_dir, A_neu, overlap, pou, &dirichlet_mask, &subdomain_boundary_mask, ring_to_subdomain, eig_ptree, this](tf::Subflow& subflow) {
               logger::info("Setting up MsGFEM ring coarse space");
-
-              auto setup_boundary_distance_task = subflow
-                                                      .emplace([&]() {
-                                                        // Similar as in the GenEO coarse space, we start by creating a modification of the
-                                                        // pargtition of unity function. Here we identify the different classes of dofs via
-                                                        // their distance to the overlapping subdomain boundary, so let's compute that
-                                                        // distance first (for sufficiently many layers of dofs).
-                                                        boundary_distance.resize(A_dir->N(), std::numeric_limits<int>::max() - 1);
-                                                        for (std::size_t i = 0; i < boundary_distance.size(); ++i)
-                                                          if (subdomain_boundary_mask[i] > 0) boundary_distance[i] = 0;
-
-                                                        for (int round = 0; round < 2 * overlap + 2; ++round) {
-                                                          for (std::size_t i = 0; i < boundary_distance.size(); ++i) {
-                                                            for (auto cit = (*A_dir)[i].begin(); cit != (*A_dir)[i].end(); ++cit) {
-                                                              auto nb_dist_plus_one = boundary_distance[cit.index()] + 1;
-                                                              if (nb_dist_plus_one < boundary_distance[i]) boundary_distance[i] = nb_dist_plus_one;
-                                                            }
-                                                          }
-                                                        }
-
-                                                        ring_width = (2 * overlap) - (2 * pou->get_shrink());
-                                                      })
-                                                      .name("Setup ring data structures");
 
               auto solve_eigenproblem_task = subflow
                                                  .emplace([&]() {
                                                    // Handle edge case: empty ring
                                                    if (ring_to_subdomain.empty()) DUNE_THROW(Dune::Exception, "The ring to subdomain mapping is empty, cannot build MsGFEM ring coarse space");
 
-                                                   auto mod_pou = *pou;
-                                                   for (std::size_t i = 0; i < mod_pou.size(); ++i)
-                                                     if (boundary_distance[i] >= pou->get_shrink() + ring_width) mod_pou[i] = 0;
+                                                   subdomain_to_ring.clear();
+                                                   for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) subdomain_to_ring[ring_to_subdomain[i]] = i;
 
-                                                   std::unordered_set<std::size_t> inside_ring_boundary_dofs;
-                                                   for (const auto& i : ring_to_subdomain)
-                                                     if (boundary_distance[i] == 2 * overlap) inside_ring_boundary_dofs.insert(i);
+                                                   interior_to_subdomain.resize(A_dir->N() - ring_to_subdomain.size());
+                                                   inner_ring_boundary_to_subdomain.clear();
+                                                   inner_ring_boundary_dofs.clear(); // For fast lookup
+                                                   inner_ring_boundary_to_subdomain.reserve(ring_to_subdomain.size());
+
+                                                   auto mod_pou = *pou;
+                                                   std::size_t cnt = 0;
+                                                   for (std::size_t i = 0; i < mod_pou.size(); ++i) {
+                                                     if (not subdomain_to_ring.contains(i)) { // Zero in the interior
+                                                       interior_to_subdomain[cnt++] = i;
+                                                       mod_pou[i] = 0;
+                                                     }
+                                                     else {
+                                                       for (auto ci = (*A_dir)[i].begin(); ci != (*A_dir)[i].end(); ++ci) {
+                                                         if (not subdomain_to_ring.contains(ci.index())) {
+                                                           // A neighbouring dof of dof i is outside the ring => dof i is on the ring boundary
+                                                           inner_ring_boundary_dofs.insert(i);
+                                                           inner_ring_boundary_to_subdomain.push_back(i);
+                                                           mod_pou[i] = 0;
+                                                           break;
+                                                         }
+                                                       }
+                                                     }
+                                                   }
+
+                                                   // Create subdomain-to-ring map
+                                                   std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
+                                                   for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) subdomain_to_ring[ring_to_subdomain[i]] = i;
 
                                                    // Partition DOFs in ring: Interior (ring interior), Boundary (ring boundary + inside ring boundary), Dirichlet
                                                    enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
@@ -990,7 +933,7 @@ public:
                                                        dof_partitioning[i] = DOFType::Dirichlet;
                                                        num_dirichlet++;
                                                      }
-                                                     else if (subdomain_boundary_mask[subdomain_idx] || inside_ring_boundary_dofs.contains(subdomain_idx)) {
+                                                     else if (subdomain_boundary_mask[subdomain_idx] || inner_ring_boundary_dofs.contains(subdomain_idx)) {
                                                        dof_partitioning[i] = DOFType::Boundary;
                                                        num_boundary++;
                                                      }
@@ -1015,7 +958,7 @@ public:
 
                                                    // Assemble left-hand side matrix (constrained system with A-harmonic constraint)
                                                    const auto n_big = num_interior + num_boundary + num_interior; // Include Lagrange multipliers
-                                                   const auto avg = 2 * (A->nonzeroes() / A->N());
+                                                   const auto avg = 2 * (A_neu->nonzeroes() / A_neu->N());
                                                    auto A_lhs = std::make_shared<Mat>();
                                                    A_lhs->setBuildMode(Mat::implicit);
                                                    A_lhs->setImplicitBuildModeParameters(avg, 0.2);
@@ -1027,8 +970,8 @@ public:
 
                                                      auto ri = reordering[i];
 
-                                                     for (auto cit = (*A)[i].begin(); cit != (*A)[i].end(); ++cit) {
-                                                       auto j = cit.index(); // j is also a ring index
+                                                     for (auto cit = (*A_dir)[ring_to_subdomain[i]].begin(); cit != (*A_dir)[ring_to_subdomain[i]].end(); ++cit) {
+                                                       auto j = subdomain_to_ring[cit.index()]; // j is also a ring index
 
                                                        if (dof_partitioning[j] != DOFType::Dirichlet) {
                                                          auto rj = reordering[j];
@@ -1045,7 +988,7 @@ public:
 
                                                      auto ri = reordering[i];
 
-                                                     for (auto cit = (*A)[i].begin(); cit != (*A)[i].end(); ++cit) {
+                                                     for (auto cit = (*A_neu)[i].begin(); cit != (*A_neu)[i].end(); ++cit) {
                                                        auto j = cit.index(); // j is also a ring index
 
                                                        if (dof_partitioning[j] != DOFType::Dirichlet) {
@@ -1068,7 +1011,7 @@ public:
                                                      auto subdomain_ii = ring_to_subdomain[i];
                                                      auto ri = reordering[i];
 
-                                                     for (auto cit = (*A)[i].begin(); cit != (*A)[i].end(); ++cit) {
+                                                     for (auto cit = (*A_neu)[i].begin(); cit != (*A_neu)[i].end(); ++cit) {
                                                        auto j = cit.index(); // j is also a ring index
                                                        auto subdomain_jj = ring_to_subdomain[j];
 
@@ -1097,37 +1040,39 @@ public:
 
               auto setup_harmonic_extension_task = subflow
                                                        .emplace([&]() {
-                                                         // Next, we identify the region where we compute the harmonic extension
-                                                         extension_interior_to_subdomain.reserve(A_dir->N());
-                                                         extension_boundary_to_subdomain.reserve(ring_to_subdomain.size());
-                                                         for (std::size_t i = 0; i < A_dir->N(); ++i)
-                                                           if (boundary_distance[i] > pou->get_shrink() + ring_width - 1) extension_interior_to_subdomain.push_back(i);
-                                                           else if (boundary_distance[i] == pou->get_shrink() + ring_width - 1) extension_boundary_to_subdomain.push_back(i);
+                                                         inside_ring_boundary_to_subdomain.clear();
+                                                         inside_ring_boundary_to_subdomain.reserve(ring_to_subdomain.size());
+                                                         for (auto i : ring_to_subdomain) {
+                                                           for (auto ci = (*A_dir)[i].begin(); ci != (*A_dir)[i].end(); ++ci) {
+                                                             // Check if a neighbouring dof of dof i lies on the inner ring boundary but i itself does not
+                                                             if (inner_ring_boundary_dofs.contains(ci.index()) and not inner_ring_boundary_dofs.contains(i))
+                                                               inside_ring_boundary_to_subdomain.push_back(i);
+                                                           }
+                                                         }
+
+                                                         // Of course we then also have to extend the "interior" to also include the inner ring boundary
+                                                         extended_interior_to_subdomain.resize(interior_to_subdomain.size() + inner_ring_boundary_to_subdomain.size());
+                                                         std::size_t cnt = 0;
+                                                         for (auto i : interior_to_subdomain) extended_interior_to_subdomain[cnt++] = i;
+                                                         for (auto i : inner_ring_boundary_to_subdomain) extended_interior_to_subdomain[cnt++] = i;
 
                                                          // Set up energy-minimal extension
-                                                         ext = std::make_unique<EnergyMinimalExtension<Mat, Vec>>(*A_dir, extension_interior_to_subdomain, extension_boundary_to_subdomain);
+                                                         ext = std::make_unique<EnergyMinimalExtension<Mat, Vec>>(*A_dir, extended_interior_to_subdomain, inside_ring_boundary_to_subdomain);
                                                        })
                                                        .name("Setup harmonic extension");
 
               auto compute_harmonic_extension_task = subflow
                                                          .emplace([&]() {
-                                                           // Now we have computed a set of eigenvectors on the ring. To obtain basis vectors on the full
-                                                           // subdomain, we extend those eigenvectors energy-minimally to the interior. However, we don't
-                                                           // extend from the inner ring boundary but from one layer within the ring, as required by the
-                                                           // theory.
                                                            // Here we create another map from 'inside ring boundary' to 'ring' to avoid too many hash map lookups below
-                                                           std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
-                                                           for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) subdomain_to_ring[ring_to_subdomain[i]] = i;
-
-                                                           std::vector<std::size_t> inside_boundary_to_ring(extension_boundary_to_subdomain.size());
-                                                           for (std::size_t i = 0; i < extension_boundary_to_subdomain.size(); ++i)
-                                                             inside_boundary_to_ring[i] = subdomain_to_ring[extension_boundary_to_subdomain[i]];
+                                                           std::vector<std::size_t> inside_boundary_to_ring(inside_ring_boundary_to_subdomain.size());
+                                                           for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i)
+                                                             inside_boundary_to_ring[i] = subdomain_to_ring[inside_ring_boundary_to_subdomain[i]];
 
                                                            Vec zero(A_dir->N());
                                                            zero = 0;
                                                            std::vector<Vec> combined_vectors(eigenvectors_ring.size(), zero);
 
-                                                           Vec dirichlet_data(extension_boundary_to_subdomain.size()); // Will be set each iteration
+                                                           Vec dirichlet_data(inside_ring_boundary_to_subdomain.size()); // Will be set each iteration
                                                            for (std::size_t k = 0; k < eigenvectors_ring.size(); ++k) {
                                                              const auto& evec = eigenvectors_ring[k];
 
@@ -1139,7 +1084,7 @@ public:
                                                              for (std::size_t i = 0; i < evec.N(); ++i) combined_vectors[k][ring_to_subdomain[i]] = evec[i];
 
                                                              // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
-                                                             for (std::size_t i = 0; i < interior_vec.N(); ++i) combined_vectors[k][extension_interior_to_subdomain[i]] = interior_vec[i];
+                                                             for (std::size_t i = 0; i < interior_vec.N(); ++i) combined_vectors[k][extended_interior_to_subdomain[i]] = interior_vec[i];
                                                            }
 
                                                            this->basis_ = std::move(combined_vectors);
@@ -1147,15 +1092,23 @@ public:
                                                          })
                                                          .name("Compute harmonic extension");
 
-              setup_boundary_distance_task.precede(solve_eigenproblem_task, setup_harmonic_extension_task);
-              compute_harmonic_extension_task.succeed(solve_eigenproblem_task, setup_harmonic_extension_task);
+              // setup_harmonic_extension_task depends on solve_eigenproblem_task because
+              // it uses inner_ring_boundary_dofs and interior_to_subdomain which are populated there
+              setup_harmonic_extension_task.succeed(solve_eigenproblem_task);
+              compute_harmonic_extension_task.succeed(setup_harmonic_extension_task);
             })
             .name("MsGFEM ring coarse space setup");
   }
 
 private:
-  std::vector<int> boundary_distance;
-  int ring_width;
+  std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
+  std::vector<std::size_t> interior_to_subdomain;
+  std::vector<std::size_t> inner_ring_boundary_to_subdomain;
+  std::unordered_set<std::size_t> inner_ring_boundary_dofs;
+  std::unique_ptr<PartitionOfUnity> mod_pou;
+  std::vector<std::size_t> inside_ring_boundary_to_subdomain;
+  std::vector<std::size_t> extended_interior_to_subdomain;
+
   std::vector<std::size_t> extension_interior_to_subdomain;
   std::vector<std::size_t> extension_boundary_to_subdomain;
   std::vector<Vec> eigenvectors_ring;
@@ -1261,147 +1214,6 @@ public:
       }
 
       detail::finalize_eigenvectors(this->basis_, *pou);
-    });
-  }
-};
-
-template <class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
-class SVDCoarseSpace : public CoarseSpaceBuilder<Vec> {
-public:
-  template <class Mat, class MaskVec, class MaskVec2>
-  SVDCoarseSpace(std::shared_ptr<Mat> A_ovlp, std::shared_ptr<PartitionOfUnity> pou, const MaskVec& subdomain_boundary_mask, const MaskVec2& dirichlet_boundary_mask, const Dune::ParameterTree& ptree,
-                 tf::Taskflow& taskflow, const std::string& ptree_prefix = "svd_coarse_space")
-  {
-    int n = ptree.sub(ptree_prefix).get("n", 10);
-    bool mult_pou = ptree.sub(ptree_prefix).get("mult_pou", false);
-
-    this->setup_task = taskflow.emplace([subdomain_boundary_mask, dirichlet_boundary_mask, A_ovlp, pou, n, mult_pou, this]() {
-      logger::info("Setting up SVD coarse space");
-
-      Dune::Timer timer;
-
-      assert(A_ovlp->N() == subdomain_boundary_mask.size());
-      assert(subdomain_boundary_mask.size() == dirichlet_boundary_mask.size());
-
-      // Start by partitioning the dofs
-      enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
-      std::vector<DOFType> dof_partitioning(A_ovlp->N());
-      std::size_t n_interior = 0;
-      std::size_t n_boundary = 0;
-      std::size_t n_dirichlet = 0;
-      for (std::size_t i = 0; i < A_ovlp->N(); ++i) {
-        if (dirichlet_boundary_mask[i] > 0) {
-          dof_partitioning[i] = DOFType::Dirichlet;
-          n_dirichlet++;
-        }
-        else if (subdomain_boundary_mask[i]) {
-          dof_partitioning[i] = DOFType::Boundary;
-          n_boundary++;
-        }
-        else {
-          dof_partitioning[i] = DOFType::Interior;
-          n_interior++;
-        }
-      }
-      logger::debug_all("[SVD] Partitioned dofs, have {} in interior, {} on subdomain boundary, {} on Dirichlet boundary", n_interior, n_boundary, n_dirichlet);
-
-      // Now create a subdomain -> interior mapping and a subdomain -> boundary mapping
-      std::unordered_map<std::size_t, std::size_t> subdomain_to_interior;
-      std::unordered_map<std::size_t, std::size_t> subdomain_to_boundary;
-      subdomain_to_interior.reserve(n_interior);
-      subdomain_to_boundary.reserve(n_boundary);
-      std::size_t cnt_interior = 0;
-      std::size_t cnt_boundary = 0;
-      for (std::size_t i = 0; i < A_ovlp->N(); ++i)
-        if (dof_partitioning[i] == DOFType::Interior) subdomain_to_interior[i] = cnt_interior++;
-        else if (dof_partitioning[i] == DOFType::Boundary) subdomain_to_boundary[i] = cnt_boundary++;
-
-      // Now create the matrix A_{i, \\Gamma_i}
-      logger::info("[SVD] Create columns of A_{i, \\Gamma_i}");
-      timer.reset();
-
-      std::vector<Vec> A_igamma(n_boundary, Vec(n_interior));
-      for (auto& column : A_igamma) column = 0; // zero initialise
-      for (auto ri = A_ovlp->begin(); ri != A_ovlp->end(); ++ri) {
-        if (dof_partitioning[ri.index()] != DOFType::Interior) continue;
-        for (auto ci = ri->begin(); ci != ri->end(); ++ci)
-          if (dof_partitioning[ci.index()] == DOFType::Boundary) A_igamma[subdomain_to_boundary[ci.index()]][subdomain_to_interior[ri.index()]] = *ci;
-      }
-
-      MPI_Barrier(MPI_COMM_WORLD);
-      logger::info("[SVD] Done creating columns of A_{i, \\Gamma_i}, took {}s", timer.elapsed());
-      timer.reset();
-      logger::info("[SVD] Computing T matrix");
-      // ################################################################
-
-      Mat A_int;
-      auto avg = A_ovlp->nonzeroes() / A_ovlp->N() + 2;
-      A_int.setBuildMode(Mat::implicit);
-      A_int.setImplicitBuildModeParameters(avg, 0.2);
-      A_int.setSize(n_interior, n_interior);
-      for (auto ri = A_ovlp->begin(); ri != A_ovlp->end(); ++ri) {
-        if (dof_partitioning[ri.index()] != DOFType::Interior) continue;
-        for (auto ci = ri->begin(); ci != ri->end(); ++ci)
-          if (dof_partitioning[ci.index()] == DOFType::Interior) A_int.entry(subdomain_to_interior[ri.index()], subdomain_to_interior[ci.index()]) = *ci;
-      }
-      A_int.compress();
-
-      // Create the solver and solve for all right hand sides
-      Dune::UMFPack<Mat> solver(A_int);
-      Eigen::MatrixXd T(n_interior, n_boundary);
-
-      Dune::InverseOperatorResult res;
-      for (std::size_t i = 0; i < A_igamma.size(); ++i) {
-        auto& rhs = A_igamma[i];
-        Vec x(rhs.size());
-        solver.apply(x, rhs, res);
-
-        // Put solution into T
-        for (std::size_t j = 0; j < x.size(); ++j) T((int)j, (int)i) = x[j];
-      }
-
-      // Scale T by partition of unity: T <- D * T
-      for (std::size_t i = 0; i < pou->size(); ++i) {
-        if (dof_partitioning[i] == DOFType::Interior) {
-          const auto p = pou->vector()[i];
-          const auto ii = subdomain_to_interior[i];
-          for (std::size_t j = 0; j < n_boundary; ++j) T((int)ii, (int)j) *= p;
-        }
-      }
-
-      MPI_Barrier(MPI_COMM_WORLD);
-      logger::info("[SVD] Done computing T matrix, took {}s", timer.elapsed());
-
-      logger::info("[SVD] Computing SVD of T");
-      timer.reset();
-
-      auto svd = T.bdcSvd(Eigen::ComputeThinU);
-
-      const auto& singular_values = svd.singularValues();
-      std::ostringstream os;
-      std::copy(singular_values.begin(), singular_values.end() - 1, std::ostream_iterator<double>(os, ","));
-      os << singular_values[singular_values.size() - 1];
-      // for (std::size_t i = 0; i < singular_values.size(); ++i) logger::info_all("[SVD] {}: {}", i, singular_values[i]);
-      logger::info_all("[SVD] Computes singular values: [{}]", os.str());
-
-      int rank{};
-      MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-      std::ofstream sv_file("singular_values_" + std::to_string(rank) + ".txt");
-      std::copy(singular_values.begin(), singular_values.end() - 1, std::ostream_iterator<double>(sv_file, ","));
-      sv_file << singular_values[singular_values.size() - 1];
-
-      this->basis_.resize(n);
-      const auto& U = svd.matrixU();
-      for (std::size_t i = 0; i < this->basis_.size(); ++i) {
-        auto& b = this->basis_[i];
-        b.resize(A_ovlp->N());
-        b = 0;
-
-        for (std::size_t j = 0; j < A_ovlp->N(); ++j)
-          if (dof_partitioning[j] == DOFType::Interior) b[j] = U((int)(subdomain_to_interior[j]), (int)(i));
-      }
-
-      if (mult_pou) detail::finalize_eigenvectors(this->basis_, *pou);
     });
   }
 };

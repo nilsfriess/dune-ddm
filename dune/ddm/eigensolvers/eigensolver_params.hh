@@ -6,7 +6,7 @@
 #include <dune/common/parametertree.hh>
 
 struct EigensolverParams {
-  enum class Type { Spectra };
+  enum class Type { Spectra, trl };
 
   EigensolverParams()
       : ncv(2 * nev)
@@ -32,6 +32,7 @@ struct EigensolverParams {
     if (ptree.hasKey("type")) {
       const auto& typestr = ptree.get<std::string>("type");
       if (typestr == "Spectra") type = Type::Spectra;
+      else if (typestr == "trl") type = Type::trl;
       else DUNE_THROW(Dune::NotImplemented, "Unknown eigensolver type '" + typestr + "'");
     }
 
@@ -40,12 +41,12 @@ struct EigensolverParams {
   }
 
   Type type = Type::Spectra;
-  std::size_t nev = 16;
-  std::size_t nev_max; // Will be set to 2 * nev in the constructor if not given by user. Only used if threshold is positive
-  std::size_t ncv;     // Will be set to 2 * nev in the constructor if not given by user
-  std::size_t maxit = 1000;
+  unsigned int nev = 16;
+  unsigned int nev_max; // Will be set to 2 * nev in the constructor if not given by user. Only used if threshold is positive
+  unsigned int ncv;     // Will be set to 2 * nev in the constructor if not given by user
+  unsigned int maxit = 1000;
   std::size_t seed = 1;
-  std::size_t blocksize = 8;
+  unsigned int blocksize = 8;
   double tolerance = 1e-5;
   double shift = 1e-3;
   double threshold = -0.5;
@@ -55,6 +56,7 @@ private:
   {
     switch (type) {
       case Type::Spectra: return "Spectra";
+      case Type::trl: return "trl";
     }
     assert(false && "Unreachable");
     return "";
