@@ -29,7 +29,7 @@ public:
   using Traits = typename Dune::PDELab::ConvectionDiffusionModelProblem<GridView, RF>::Traits;
 
   // Diffusion tensor: identity matrix (isotropic diffusion)
-  typename Traits::PermTensorType A(const typename Traits::ElementType& e, const typename Traits::DomainType& x) const
+  typename Traits::PermTensorType A(const typename Traits::ElementType&, const typename Traits::DomainType&) const
   {
     typename Traits::PermTensorType I;
     for (std::size_t i = 0; i < Traits::dimDomain; i++)
@@ -41,10 +41,10 @@ public:
   typename Traits::RangeFieldType f(const typename Traits::ElementType&, const typename Traits::DomainType&) const { return 1.0; }
 
   // Dirichlet boundary value: zero
-  typename Traits::RangeFieldType g(const typename Traits::ElementType& e, const typename Traits::DomainType& x) const { return 0.0; }
+  typename Traits::RangeFieldType g(const typename Traits::ElementType&, const typename Traits::DomainType&) const { return 0.0; }
 
   // Boundary condition type: Dirichlet everywhere
-  BC bctype(const typename Traits::IntersectionType& is, const typename Traits::IntersectionDomainType& x) const { return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet; }
+  BC bctype(const typename Traits::IntersectionType&, const typename Traits::IntersectionDomainType&) const { return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet; }
 };
 
 /**
@@ -95,9 +95,9 @@ public:
 
   typename Traits::RangeFieldType f(const typename Traits::ElementType&, const typename Traits::DomainType&) const { return 1.0; }
 
-  typename Traits::RangeFieldType g(const typename Traits::ElementType& e, const typename Traits::DomainType& x) const { return 0.0; }
+  typename Traits::RangeFieldType g(const typename Traits::ElementType&, const typename Traits::DomainType&) const { return 0.0; }
 
-  BC bctype(const typename Traits::IntersectionType& is, const typename Traits::IntersectionDomainType& x) const { return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet; }
+  BC bctype(const typename Traits::IntersectionType&, const typename Traits::IntersectionDomainType&) const { return Dune::PDELab::ConvectionDiffusionBoundaryConditions::Dirichlet; }
 };
 
 /**
