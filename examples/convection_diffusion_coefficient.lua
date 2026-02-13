@@ -25,7 +25,7 @@ function is_dirichlet(x, y)
 end
 
 function b1(x, y)
-   return 1. / 3
+   return 2. / 3
 end
 
 function b2(x, y)
