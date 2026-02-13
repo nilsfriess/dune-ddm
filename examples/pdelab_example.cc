@@ -2,9 +2,12 @@
 #include "config.h"
 #endif
 
+#define DUNE_DDM_HAVE_LUA 1
+
 #include "convection_diffusion_problems.hh"
 #include "ddm_utilities.hh"
 #include "generic_ddm_problem.hh"
+#include "linearelasticity.hh"
 #include "pdelab_schwarz.hh"
 #include "poisson_problems.hh"
 #include "problem_traits.hh"
@@ -79,13 +82,23 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
   problem->getX() -= v;
   Logger::get().endEvent(solve_event);
 
+  // First get the number of basis vectors from the debug rank
+  auto n_basis = prec->get_basis().size();
+  helper.getCommunication().broadcast(&n_basis, 1, ptree.get("debug_rank", 0));
+
   // Visualization
   if (ptree.get("visualise", true)) {
     Dune::SubsamplingVTKWriter writer(gv, Dune::refinementLevels(0));
-    const auto write_overlapping_vector = [&](const auto& vec, const std::string& name, bool zero_if_not_debug_rank = true) {
-      using DGF = Dune::PDELab::DiscreteGridFunction<typename Problem::GFS, typename Problem::Vec>;
-      using VTKF = Dune::PDELab::VTKGridFunctionAdapter<DGF>;
+    using DGF = std::conditional_t<Problem::Traits::vector_valued, Dune::PDELab::VectorDiscreteGridFunction<typename Problem::GFS, typename Problem::Vec>,
+                                   Dune::PDELab::DiscreteGridFunction<typename Problem::GFS, typename Problem::Vec>>;
+    using VTKF = Dune::PDELab::VTKGridFunctionAdapter<DGF>;
 
+    // Storage to keep visualization data alive until writer.write() is called
+    std::vector<std::shared_ptr<typename Prec::NativeVec>> vec_storage;
+    std::vector<std::shared_ptr<typename Problem::Vec>> gf_storage;
+    std::vector<std::shared_ptr<DGF>> dgf_storage;
+
+    const auto write_overlapping_vector = [&](const auto& vec, const std::string& name, bool zero_if_not_debug_rank = true) {
       auto vec_vis = vec;
       if (zero_if_not_debug_rank and (helper.rank() != ptree.get("debug_rank", 0))) vec_vis = 0;
       if (zero_if_not_debug_rank) prec->getOverlappingCommunication()->addOwnerCopyToAll(vec_vis, vec_vis);
@@ -96,10 +109,12 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
       gf->attach(vec_small);
       auto dgf = std::make_shared<DGF>(problem->getGFS(), gf);
       writer.addVertexData(std::make_shared<VTKF>(dgf, name));
-    };
 
-    using DGF = Dune::PDELab::DiscreteGridFunction<typename Problem::GFS, typename Problem::Vec>;
-    using VTKF = Dune::PDELab::VTKGridFunctionAdapter<DGF>;
+      // Keep the data alive
+      vec_storage.push_back(vec_small);
+      gf_storage.push_back(gf);
+      dgf_storage.push_back(dgf);
+    };
 
     // Write solution
     Dune::PDELab::addSolutionToVTKWriter(writer, *problem->getGFS(), problem->getXVec());
@@ -123,22 +138,30 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
     }
 
     // Visualise the basis vectors
-    // First get the number of basis vectors from the debug rank
-    auto n_basis = prec->get_basis().size();
-    helper.getCommunication().broadcast(&n_basis, 1, ptree.get("debug_rank", 0));
-
     for (std::size_t i = 0; i < n_basis; ++i) {
       auto istr = std::to_string(i);
       auto i_padded = std::string(4 - std::min(4UL, istr.length()), '0') + istr;
       auto name = "Basis " + i_padded;
 
-      if (helper.rank() == ptree.get("debug_rank", 0)) { write_overlapping_vector(prec->get_basis()[i], name); }
-      else {
-        typename Prec::NativeVec v(prec->getOverlappingCommunication()->indexSet().size());
-        v = 0;
-        write_overlapping_vector(v, name);
-      }
+      typename Prec::NativeVec v(prec->getOverlappingCommunication()->indexSet().size());
+      if (helper.rank() == ptree.get("debug_rank", 0)) v = prec->get_basis()[i];
+      else v = 0;
+      write_overlapping_vector(v, name);
     }
+
+    // Write A_neu * 1 (should be zero)
+    auto A_neu = problem->get_first_neumann_matrix();
+    typename Prec::NativeVec ones(A_neu->N()), rowsums(A_neu->N());
+    ones = 1;
+    rowsums = 0;
+    A_neu->mv(ones, rowsums);
+    typename Prec::NativeVec v1(prec->getOverlappingCommunication()->indexSet().size());
+    if (problem->get_neumann_region_to_subdomain().size() > 0)
+      for (std::size_t i = 0; i < problem->get_neumann_region_to_subdomain().size(); ++i) v1[problem->get_neumann_region_to_subdomain()[i]] = rowsums[i];
+    write_overlapping_vector(v1, "A_neu * 1");
+
+    // Write POU
+    write_overlapping_vector(prec->get_pou()->vector(), "POU");
 
     writer.write(ptree.get("filename", "pdelab_example"), Dune::VTK::appendedraw);
   }
@@ -180,6 +203,7 @@ int main(int argc, char* argv[])
 
       // Create grid
       using Grid = Dune::UGGrid<2>;
+      // using Grid = Dune::YaspGrid<2>;
       auto grid = DDMUtilities::make_grid<Grid>(ptree, helper, "");
       auto gv = grid->leafGridView();
       using GridView = decltype(gv);
@@ -221,6 +245,37 @@ int main(int argc, char* argv[])
       using Problem = GenericDDMProblem<GridView, Traits>;
 
       auto params = std::make_shared<ProblemParams>("poisson_coefficient.lua");
+
+      driver<GridView, Problem, ProblemParams, ProblemParams>(gv, helper, ptree, params);
+    }
+    else if (configptree.get<std::string>("problem") == "linearelasticity") {
+      logger::info("################################################################");
+      logger::info("##########     Running linear elasticity example      ##########");
+      logger::info("################################################################");
+      helper.getCommunication().barrier();
+
+      // Read parameters and create grid
+      Dune::ParameterTree ptree;
+      Dune::ParameterTreeParser ptreeparser;
+      ptreeparser.readINITree(configptree.get<std::string>("ini_file"), ptree);
+      ptreeparser.readOptions(argc, argv, ptree);
+
+      // Create grid
+      using Grid = Dune::UGGrid<3>;
+      const int gridsize = 3;
+      auto grid = Dune::StructuredGridFactory<Grid>::createSimplexGrid({0, 0, 0}, {10, 1, 1.5}, {10 * gridsize, gridsize, (unsigned int)(1.5 * gridsize)});
+
+      auto gv = grid->leafGridView();
+      auto part = Dune::ParMetisGridPartitioner<decltype(gv)>::partition(gv, helper);
+      grid->loadBalance(part, 0);
+      grid->globalRefine(ptree.get("refine", 0));
+      using GridView = decltype(gv);
+
+      using ProblemParams = LinearElasticityParametersLua<GridView>;
+      using Traits = LinearElasticityTraits<GridView, ProblemParams>;
+      using Problem = GenericDDMProblem<GridView, Traits>;
+
+      auto params = std::make_shared<ProblemParams>();
 
       driver<GridView, Problem, ProblemParams, ProblemParams>(gv, helper, ptree, params);
     }

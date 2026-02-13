@@ -26,24 +26,13 @@
 #include <dune/pdelab/finiteelementmap/pkfem.hh>
 #include <dune/pdelab/finiteelementmap/qkdg.hh>
 #include <dune/pdelab/finiteelementmap/qkfem.hh>
+#include <dune/pdelab/gridfunctionspace/vectorgridfunctionspace.hh>
 #include <dune/pdelab/localoperator/convectiondiffusiondg.hh>
 #include <dune/pdelab/localoperator/convectiondiffusionfem.hh>
 #include <dune/pdelab/localoperator/convectiondiffusionparameter.hh>
 #include <dune/pdelab/localoperator/linearelasticity.hh>
 #include <dune/pdelab/localoperator/linearelasticityparameter.hh>
 #include <type_traits>
-
-/**
- * @brief A class that can be used with the CRTP to mark a traits class as a elliptic PDE.
- *
- * @see LinearElasticityTraits for an example.
- */
-template <class Traits>
-struct SymmetrizeTraits {
-  using SymmetricModelProblem = typename Traits::ModelProblem;
-  using SymmetricLocalOperator = typename Traits::LocalOperator;
-  static constexpr bool is_symmetric = true;
-};
 
 /**
  * @brief Traits for Convection-Diffusion problems (scalar elliptic/parabolic PDEs)
@@ -114,6 +103,11 @@ struct ConvectionDiffusionTraits {
   /// Constraints: None for DG (no DOF coupling across elements), Conforming Dirichlet for CG
   using Constraints = std::conditional_t<UseDG, Dune::PDELab::NoConstraints, Dune::PDELab::ConformingDirichletConstraints>;
 
+  using DirichletExtensionAdapter = Dune::PDELab::ConvectionDiffusionDirichletExtensionAdapter<ModelProblem>;
+
+  using VBE = Dune::PDELab::ISTL::VectorBackend<Dune::PDELab::ISTL::Blocking::none>;
+  using GFS = Dune::PDELab::GridFunctionSpace<EntitySet, FEM, Constraints, VBE>;
+
   /// Default assembly parameters
   struct AssemblyDefaults {
     static constexpr int nonzeros_per_row = (2 * degree + 1) * (2 * degree + 1); ///< For 2D
@@ -126,6 +120,8 @@ struct ConvectionDiffusionTraits {
     if constexpr (UseDG) return std::make_unique<FEM>();
     else return std::make_unique<FEM>(es);
   }
+
+  static constexpr bool vector_valued = false;
 };
 
 /**
@@ -134,17 +130,13 @@ struct ConvectionDiffusionTraits {
  * Solves the linear elasticity equations for small deformations.
  * This is a vector-valued problem with dim unknowns per DOF.
  *
- * This class inherits from SymmetrizeTraits via CRTP to export the ModelProblem and LocalOperator also as
- * SymmetricModelProblem and SymmetricLocalOperator. This informs the GenericDDMProblem that this is an
- * elliptic PDE.
- *
  * @tparam GridView DUNE grid view type
  * @tparam ProblemParameters User-provided class defining material parameters (lambda, mu)
  *                           Must inherit from Dune::PDELab::LinearElasticityParameterInterface
  * @tparam degree Polynomial degree of finite elements (default: 1)
  */
 template <class GridView, class ProblemParameters, int degree = 1>
-struct LinearElasticityTraits : public SymmetrizeTraits<LinearElasticityTraits<GridView, ProblemParameters, degree>> {
+struct LinearElasticityTraits {
   using RF = double;
   using Grid = typename GridView::Grid;
   using DF = typename Grid::ctype;
@@ -165,14 +157,32 @@ struct LinearElasticityTraits : public SymmetrizeTraits<LinearElasticityTraits<G
   /// Local operator for linear elasticity
   using LocalOperator = Dune::PDELab::LinearElasticity<ModelProblem>;
 
+  /// Symmetric versions (for elliptic PDEs, same as non-symmetric)
+  using SymmetricModelProblem = ModelProblem;
+  using SymmetricLocalOperator = LocalOperator;
+
+  /// Convenience bool to mark this as a symmetric problem
+  static constexpr bool is_symmetric = true;
+
+  using BCType = ModelProblem;
+
+  using DirichletExtensionAdapter = Dune::PDELab::LinearElasticityDirichletExtensionAdapter<ModelProblem>;
+
   /// Constraints: Conforming Dirichlet constraints
   using Constraints = Dune::PDELab::ConformingDirichletConstraints;
+  using ComponentVectorBackend = Dune::PDELab::ISTL::VectorBackend<>;
+  using Mapper = Dune::PDELab::DefaultLeafOrderingTag;
+  using OrderingTag = Dune::PDELab::LexicographicOrderingTag;
+  using GFS = Dune::PDELab::VectorGridFunctionSpace<EntitySet, FEM, dim, Dune::PDELab::ISTL::VectorBackend<>, ComponentVectorBackend, Constraints, OrderingTag, Mapper>;
+  using CC = typename GFS::template ConstraintsContainer<double>::Type;
 
   /// Default assembly parameters
   struct AssemblyDefaults {
     static constexpr int nonzeros_per_row = dim * dim * (2 * degree + 1) * (2 * degree + 1);
     static constexpr int quadrature_order = 2 * degree;
   };
+
+  static constexpr bool vector_valued = true;
 
   /// A function to create the finite element map
   static std::unique_ptr<FEM> create_fem(const EntitySet& es) { return std::make_unique<FEM>(es); }
