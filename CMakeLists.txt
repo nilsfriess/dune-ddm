@@ -46,47 +46,9 @@ find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK CHOLMOD)
 find_package(STRUMPACK CONFIG)
 
 find_package(Eigen3 NO_MODULE REQUIRED)
-if (TARGET Eigen3::Eigen)
-  target_include_directories(duneddm INTERFACE
-                                     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/extern/spectra-1.2.0/include>
-                                     $<INSTALL_INTERFACE:extern/spectra-1.2.0/include>)
-  target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_SPECTRA)
-else()
-  message(STATUS "Eigen not found, Spectra eigensolver will not be available")
-endif()
 
-target_include_directories(duneddm INTERFACE
-                                   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/extern/taskflow>
-                                   $<INSTALL_INTERFACE:extern/taskflow>)
-target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_TASKFLOW=1)
-
-# Build vendored LuaJIT
-add_subdirectory(extern/luajit)
-
-# Link LuaJIT using full paths for both build and install trees
-# This ensures the library can be found when dune-ddm is used from either location
-target_include_directories(duneddm INTERFACE
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/extern/luajit/src>
-  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/dune-ddm/luajit>
-)
-
-# Use absolute path for build tree, relative for install tree
-target_link_libraries(duneddm INTERFACE
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/extern/luajit/src/libluajit.a>
-  $<INSTALL_INTERFACE:${CMAKE_INSTALL_LIBDIR}/libdune-ddm-luajit.a>
-)
-
-# Add system libraries needed by LuaJIT
-if(UNIX AND NOT APPLE)
-  target_link_libraries(duneddm INTERFACE dl m)
-elseif(APPLE)
-  target_link_libraries(duneddm INTERFACE m)
-endif()
-
-# Ensure luajit is built before anything that links against duneddm
-add_dependencies(duneddm luajit)
-
-target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_LUAJIT)
+# Set up external dependencies that are included as git submodules
+add_subdirectory(extern)
 
 add_subdirectory(examples)
 add_subdirectory(dune)

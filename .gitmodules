@@ -1,0 +1,12 @@
+[submodule "extern/luajit"]
+	path = extern/luajit
+	url = https://luajit.org/git/luajit.git
+[submodule "extern/spectra"]
+	path = extern/spectra
+	url = https://github.com/yixuan/spectra.git
+[submodule "extern/taskflow"]
+	path = extern/taskflow
+	url = https://github.com/taskflow/taskflow.git
+[submodule "extern/trl"]
+	path = extern/trl
+	url = https://github.com/nilsfriess/trl.git
