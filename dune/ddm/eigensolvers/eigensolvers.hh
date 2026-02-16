@@ -15,6 +15,9 @@
 template <class Mat1, class Mat2>
 std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solve_gevp(std::shared_ptr<Mat1> A, std::shared_ptr<Mat2> B, const Dune::ParameterTree& ptree)
 {
+  auto* eigensolver_event = Logger::get().registerOrGetEvent("Eigensolver", "solve");
+  Logger::ScopedLog sl(eigensolver_event);
+
   static_assert(std::is_convertible_v<Mat1, Mat2> or std::is_convertible_v<Mat1, Mat2>, "The two matrix types must be compatible");
   using Mat = std::remove_cvref_t<Mat1>;
 
@@ -29,6 +32,9 @@ template <class Mat1, class Mat2, class ConstraintSolver, class MaskVec>
 std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solve_gevp(std::shared_ptr<Mat1> A, std::shared_ptr<Mat2> B, std::shared_ptr<ConstraintSolver> constraint_solver,
                                                                         const MaskVec& subdomain_boundary, const Dune::ParameterTree& ptree)
 {
+  auto* eigensolver_event = Logger::get().registerOrGetEvent("Eigensolver", "solve (constraint)");
+  Logger::ScopedLog sl(eigensolver_event);
+
   static_assert(std::is_convertible_v<Mat1, Mat2> or std::is_convertible_v<Mat1, Mat2>, "The two matrix types must be compatible");
   using Mat = std::remove_cvref_t<Mat1>;
 

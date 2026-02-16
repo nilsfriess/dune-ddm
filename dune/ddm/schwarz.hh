@@ -77,6 +77,9 @@ public:
       , pou(std::move(pou))
       , boundary(this->Aovlp->N(), false)
   {
+    auto* init_event = Logger::get().registerOrGetEvent("Schwarz", "init");
+    Logger::ScopedLog sl(init_event);
+
     const auto& subtree = ptree.sub(subtree_name);
     auto type_string = subtree.get("type", "restricted");
     if (type_string == "restricted") type = SchwarzType::Restricted;
@@ -184,9 +187,6 @@ private:
     subdomain_solve_event = Logger::get().registerOrGetEvent("Schwarz", "local solve");
     get_defect_event = Logger::get().registerOrGetEvent("Schwarz", "get defect");
     add_solution_event = Logger::get().registerOrGetEvent("Schwarz", "add solution");
-    auto* init_event = Logger::get().registerOrGetEvent("Schwarz", "init");
-
-    Logger::ScopedLog sl(init_event);
 
     // Validate that remote indices match the overlapping matrix size
     const auto remote_indices_size = comm->indexSet().size();
