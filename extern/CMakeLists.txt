@@ -51,6 +51,7 @@ if(TARGET Eigen3::Eigen)
     $<INSTALL_INTERFACE:extern/spectra/include>
   )
   target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_SPECTRA=1)
+  target_link_libraries(duneddm INTERFACE Eigen3::Eigen)
 else()
   message(STATUS "Eigen not found, Spectra eigensolver will not be available")
 endif()
