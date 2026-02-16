@@ -11,6 +11,12 @@
  * The script must contain the following functions:
  * - `function alpha(x, y)` (2D) or `function alpha(x, y, z)` (3D).
  *   Must return a scalar. It will be used to define the permeability tensor as A(x) = alpha(x) * I.
+ * - `function b1(x, y)` or `function b1(x, y, z)`.
+ *   Must return a scalar. Defines the first component of the velocity field.
+ * - `function b2(x, y)` or `function b2(x, y, z)`.
+ *   Must return a scalar. Defines the second component of the velocity field.
+ * - `function b3(x, y, z)` (3D only).
+ *   Must return a scalar. Defines the third component of the velocity field.
  * - `function f(x, y)` or `function f(x, y, z)`.
  *   Must return a scalar. Defines the source term of the PDE.
  * - `function g(x, y)` or `function g(x, y, z)`.
@@ -57,10 +63,11 @@ public:
     if constexpr (make_elliptic) return v;
     else {
       auto xglobal = e.geometry().global(xlocal);
-      double b1 = call_lua_scalar_function("b1", xglobal);
-      double b2 = call_lua_scalar_function("b2", xglobal);
-      v[0] = b1;
-      v[1] = b2;
+      v[0] = call_lua_scalar_function("b1", xglobal);
+      v[1] = call_lua_scalar_function("b2", xglobal);
+      if constexpr (Traits::dimDomain == 3) {
+        v[2] = call_lua_scalar_function("b3", xglobal);
+      }
     }
     return v;
   }
