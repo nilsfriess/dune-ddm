@@ -243,7 +243,7 @@ public:
           ::assemble_overlapping_matrices(*As, *x, *symm_go, Dune::PDELab::Backend::native(*dirichlet_mask), ovlp_comm, first_neumann_region, second_neumann_region, overlap, neumann_size_as_dirichlet,
                                           Traits::assembled_matrix_is_consistent, novlp_comm);
 
-      A_dir = std::move(matrices.A_dir);
+      A_sub = std::move(matrices.A_sub);
       A_neu = std::move(matrices.A_neu);
       B_neu = std::move(matrices.B_neu);
       dirichlet_mask_ovlp = std::move(*dirichlet_mask_ovlp_);
@@ -289,24 +289,23 @@ public:
     // Communicate matrix structure and values
     CreateMatrixDataHandle cmdh(native(*As), comm.indexSet());
     varcomm.forward(cmdh);
-    A_dir = std::make_shared<NativeMat>(cmdh.getOverlappingMatrix());
+    A_sub = std::make_shared<NativeMat>(cmdh.getOverlappingMatrix());
 
-    AddMatrixDataHandle amdh(native(*As), *A_dir, comm.indexSet());
+    AddMatrixDataHandle amdh(native(*As), *A_sub, comm.indexSet());
     varcomm.forward(amdh);
 
     // Set up Dirichlet mask on overlapping subdomain
-    dirichlet_mask_ovlp = NativeVec(A_dir->N());
+    dirichlet_mask_ovlp = NativeVec(A_sub->N());
     dirichlet_mask_ovlp = 0;
     for (std::size_t i = 0; i < dirichlet_mask->N(); ++i) dirichlet_mask_ovlp[i] = native(*dirichlet_mask)[i];
     comm.addOwnerCopyToAll(dirichlet_mask_ovlp, dirichlet_mask_ovlp);
 
     // Eliminate Dirichlet dofs and subdomain boundary dofs symmetrically
-    IdentifyBoundaryDataHandle ibdh(*A_dir, comm.indexSet());
+    IdentifyBoundaryDataHandle ibdh(*A_sub, comm.indexSet());
     varcomm.forward(ibdh);
     const auto& boundary_mask = ibdh.get_boundary_mask();
 
-    eliminate_dirichlet(*A_dir, dirichlet_mask_ovlp);
-    // eliminate_dirichlet(*A_dir, boundary_mask, false); // false = don't eliminate symmetrically
+    eliminate_dirichlet(*A_sub, dirichlet_mask_ovlp);
   }
 
   /**
@@ -360,7 +359,7 @@ public:
   ///@{
   /** @name Accessors for DDM matrices */
 
-  std::shared_ptr<NativeMat> get_dirichlet_matrix() { return A_dir; }
+  std::shared_ptr<NativeMat> get_subdomain_matrix() { return A_sub; }
   std::shared_ptr<NativeMat> get_first_neumann_matrix() { return A_neu; }
   std::shared_ptr<NativeMat> get_second_neumann_matrix() { return B_neu; }
   const std::vector<std::size_t>& get_neumann_region_to_subdomain() const { return neumann_region_to_subdomain; }
@@ -397,7 +396,7 @@ private:
 
   ///@{
   /** @name DDM matrices and masks */
-  std::shared_ptr<NativeMat> A_dir;                     ///< Overlapping Dirichlet matrix
+  std::shared_ptr<NativeMat> A_sub;                     ///< The matrix that is obtained by extending the overlap
   std::shared_ptr<NativeMat> A_neu;                     ///< First Neumann matrix
   std::shared_ptr<NativeMat> B_neu;                     ///< Second/restricted Neumann matrix
   NativeVec dirichlet_mask_ovlp;                        ///< Dirichlet mask on overlapping subdomain

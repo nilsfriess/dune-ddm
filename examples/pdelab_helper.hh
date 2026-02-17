@@ -75,7 +75,7 @@ void eliminate_dirichlet(Mat& A, const Vec& dirichlet_mask, const std::vector<st
  */
 template <class Mat>
 struct OverlappingMatrices {
-  std::shared_ptr<Mat> A_dir; ///< The overlapping Dirichlet matrix
+  std::shared_ptr<Mat> A_sub; ///< The overlapping subdomain matrix
   std::shared_ptr<Mat> A_neu; ///< The "first" Neumann matrix
   std::shared_ptr<Mat> B_neu; ///< The "second" Neumann matrix
 };
@@ -135,10 +135,10 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   const auto& nAs = native(As);
   CreateMatrixDataHandle cmdh(nAs, comm.indexSet());
   varcomm.forward(cmdh);
-  auto A_dir = std::make_shared<Mat>(cmdh.getOverlappingMatrix());
+  auto A_sub = std::make_shared<Mat>(cmdh.getOverlappingMatrix());
 
   // Identify the boundary of the overlapping subdomain
-  IdentifyBoundaryDataHandle ibdh(*A_dir, paridxs);
+  IdentifyBoundaryDataHandle ibdh(*A_sub, paridxs);
   varcomm.forward(ibdh);
 
   // Now we know *our* subdomain boundary. We'll now create a vector on the overlapping
@@ -171,7 +171,7 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
     int current_dist = boundary_dst[current];
     if (current_dist >= max_distance) continue; // No need to explore further
 
-    for (auto cit = (*A_dir)[current].begin(); cit != (*A_dir)[current].end(); ++cit) {
+    for (auto cit = (*A_sub)[current].begin(); cit != (*A_sub)[current].end(); ++cit) {
       std::size_t neighbor = cit.index();
       if (boundary_dst[neighbor] > current_dist + 1) {
         boundary_dst[neighbor] = current_dist + 1;
@@ -180,12 +180,7 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
     }
   }
 
-  // for (int round = 0; round <= 8 * overlap; ++round) {
-  //   for (std::size_t i = 0; i < boundary_dst.size(); ++i)
-  //     for (auto cit = (*A_dir)[i].begin(); cit != (*A_dir)[i].end(); ++cit) boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cit.index()] + 1); // Increase distance from boundary by one
-  // }
-
-  std::vector<std::uint8_t> boundary_indicator(A_dir->N(), 0);
+  std::vector<std::uint8_t> boundary_indicator(A_sub->N(), 0);
   for (std::size_t i = 0; i < boundary_indicator.size(); ++i)
     if (boundary_dst[i] == 0) boundary_indicator[i] = 1;
     else boundary_indicator[i] = 2;
@@ -290,11 +285,11 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
 
   // Now we can assemble the overlapping matrix
 
-  AddMatrixDataHandle amdh(nAs, *A_dir, comm.indexSet());
+  AddMatrixDataHandle amdh(nAs, *A_sub, comm.indexSet());
   varcomm.forward(amdh);
 
   // Next, make sure that Dirichlet dofs are eliminated symmetrically
-  auto dirichlet_mask_ovlp = std::make_shared<Vec>(A_dir->N());
+  auto dirichlet_mask_ovlp = std::make_shared<Vec>(A_sub->N());
   *dirichlet_mask_ovlp = 0;
   for (std::size_t i = 0; i < dirichlet_mask.N(); ++i) (*dirichlet_mask_ovlp)[i] = dirichlet_mask[i];
   AddVectorDataHandle<Vec> advdh;
@@ -307,7 +302,7 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   std::vector<std::size_t> neumann_region_to_subdomain;
 
   if (first_neumann_region == NeumannRegion::All) {
-    A_neu = std::make_shared<Mat>(*A_dir);
+    A_neu = std::make_shared<Mat>(*A_sub);
     int corrections_applied = 0;
     int corrections_skipped = 0;
     double max_correction = 0.0;
@@ -336,9 +331,9 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
 
     if (matrix_size_eq_subdomain) {
       // First create a copy of the Dirichlet matrix, but only those entries in the extended overlap region
-      auto avg = A_dir->nonzeroes() / A_dir->N() + 2;
-      A_neu = std::make_shared<Mat>(A_dir->N(), A_dir->N(), avg, 0.2, Mat::implicit);
-      for (auto ri = A_dir->begin(); ri != A_dir->end(); ++ri) {
+      auto avg = A_sub->nonzeroes() / A_sub->N() + 2;
+      A_neu = std::make_shared<Mat>(A_sub->N(), A_sub->N(), avg, 0.2, Mat::implicit);
+      for (auto ri = A_sub->begin(); ri != A_sub->end(); ++ri) {
         if (boundary_dst[ri.index()] > neumann_region_width) continue;
 
         for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
@@ -384,12 +379,12 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
       for (std::size_t i = 0; i < neumann_region_to_subdomain.size(); ++i) subdomain_to_neumann_region[neumann_region_to_subdomain[i]] = i;
 
       // Then, build the matrix
-      auto avg = A_dir->nonzeroes() / A_dir->N() + 2;
+      auto avg = A_sub->nonzeroes() / A_sub->N() + 2;
       A_neu = std::make_shared<Mat>(n, n, avg, 0.2, Mat::implicit);
 
       for (std::size_t i = 0; i < neumann_region_to_subdomain.size(); ++i) {
         auto ri = neumann_region_to_subdomain[i];
-        for (auto ci = (*A_dir)[ri].begin(); ci != (*A_dir)[ri].end(); ++ci) {
+        for (auto ci = (*A_sub)[ri].begin(); ci != (*A_sub)[ri].end(); ++ci) {
           if (boundary_dst[ci.index()] > neumann_region_width) continue;
 
           A_neu->entry(i, subdomain_to_neumann_region[ci.index()]) = *ci;
@@ -431,8 +426,8 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   if (second_neumann_region == first_neumann_region) { B_neu = A_neu; }
   else if (second_neumann_region == NeumannRegion::Overlap) {
     // First create a copy of the Neumann matrix, but only those entries in the overlap region
-    auto avg = A_dir->nonzeroes() / A_dir->N() + 2;
-    B_neu = std::make_shared<Mat>(A_dir->N(), A_dir->N(), avg, 0.2, Mat::implicit);
+    auto avg = A_sub->nonzeroes() / A_sub->N() + 2;
+    B_neu = std::make_shared<Mat>(A_sub->N(), A_sub->N(), avg, 0.2, Mat::implicit);
     for (auto ri = A_neu->begin(); ri != A_neu->end(); ++ri) {
       if (boundary_dst[ri.index()] > 2 * overlap) continue;
 
@@ -454,10 +449,10 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   }
 
   // Symmetrically eliminate global Dirichlet dofs
-  eliminate_dirichlet(*A_dir, *dirichlet_mask_ovlp);
+  eliminate_dirichlet(*A_sub, *dirichlet_mask_ovlp);
 
   OverlappingMatrices<Dune::PDELab::Backend::Native<PDELabMat>> matrices;
-  matrices.A_dir = std::move(A_dir);
+  matrices.A_sub = std::move(A_sub);
   matrices.A_neu = std::move(A_neu);
   matrices.B_neu = std::move(B_neu);
   return {matrices, dirichlet_mask_ovlp, neumann_region_to_subdomain};
