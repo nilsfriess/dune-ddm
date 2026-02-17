@@ -17,11 +17,6 @@
 #include <dune/ddm/schwarz.hh>
 #include <dune/istl/preconditioner.hh>
 #include <dune/pdelab/backend/interface.hh>
-#include <random>
-
-#if DUNE_DDM_HAVE_TASKFLOW
-#include <taskflow/taskflow.hpp>
-#endif
 
 template <class X, class Y = X>
 class TwoLevelSchwarzPreconditioner : public Dune::Preconditioner<X, Y> {
@@ -60,7 +55,7 @@ public:
 
     if (coarsespace == "geneo" || coarsespace == "constraint_geneo") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::Overlap, overlap, true, novlp_comm_.get());
     else if (coarsespace == "msgfem") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::All, overlap, true, novlp_comm_.get());
-    else if (coarsespace == "pou" || coarsespace == "harmonic_extension" || coarsespace == "algebraic_geneo" || coarsespace == "algebraic_msgfem" || coarsespace == "none")
+    else if (coarsespace == "pou" || coarsespace == "algebraic_geneo" || coarsespace == "algebraic_msgfem" || coarsespace == "none")
       problem.assemble_dirichlet_matrix_only(*ovlp_comm_, novlp_comm_.get());
     else if (coarsespace == "geneo_ring") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, overlap, false, novlp_comm_.get());
     else if (coarsespace == "msgfem_ring") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::Overlap, NeumannRegion::Overlap, overlap, false, novlp_comm_.get());
@@ -80,9 +75,6 @@ public:
     // Create partition of unity
     logger::debug("Creating partition of unity");
     pou_ = std::make_shared<PartitionOfUnity>(*A_dir, *ovlp_comm_, ptree, overlap);
-
-    // Set up taskflow for coarse space construction
-    tf::Taskflow taskflow("Coarse space setup");
 
     // Create coarse space
     std::unique_ptr<CoarseSpaceBuilder<>> coarse_space = nullptr;
@@ -104,37 +96,24 @@ public:
 
     std::string coarse_space_ptree_prefix = "coarse_space";
 
-    if (coarsespace == "geneo") { coarse_space = std::make_unique<GenEOCoarseSpace<NativeMat>>(A_neu, B_neu, pou_, ptree, taskflow, coarse_space_ptree_prefix); }
+    if (coarsespace == "geneo") { coarse_space = std::make_unique<GenEOCoarseSpace<NativeMat>>(A_neu, B_neu, pou_, ptree, coarse_space_ptree_prefix); }
     else if (coarsespace == "constraint_geneo") {
       coarse_space = std::make_unique<ConstraintGenEOCoarseSpace<NativeMat, std::remove_reference_t<decltype(boundary_mask)>>>(schwarz->get_solver(), A_neu, B_neu, pou_, boundary_mask, ptree,
-                                                                                                                               taskflow, coarse_space_ptree_prefix);
+                                                                                                                               coarse_space_ptree_prefix);
     }
     else if (coarsespace == "geneo_ring") {
-      coarse_space = std::make_unique<GenEORingCoarseSpace<NativeMat>>(A_dir, A_neu, pou_, problem.get_neumann_region_to_subdomain(), ptree, taskflow, coarse_space_ptree_prefix);
+      coarse_space = std::make_unique<GenEORingCoarseSpace<NativeMat>>(A_dir, A_neu, pou_, problem.get_neumann_region_to_subdomain(), ptree, coarse_space_ptree_prefix);
     }
     else if (coarsespace == "msgfem") {
       coarse_space = std::make_unique<MsGFEMCoarseSpace<NativeMat, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>, std::remove_reference_t<decltype(boundary_mask)>>>(
-          A_neu, A_sub, pou_, problem.get_overlapping_dirichlet_mask(), boundary_mask, ptree, taskflow, coarse_space_ptree_prefix);
+          A_neu, A_sub, pou_, problem.get_overlapping_dirichlet_mask(), boundary_mask, ptree, coarse_space_ptree_prefix);
     }
     else if (coarsespace == "msgfem_ring") {
       coarse_space = std::make_unique<MsGFEMRingCoarseSpace<NativeMat, std::remove_reference_t<decltype(problem.get_overlapping_dirichlet_mask())>, std::remove_reference_t<decltype(boundary_mask)>>>(
-          A_sub, A_neu, overlap, pou_, problem.get_overlapping_dirichlet_mask(), boundary_mask, problem.get_neumann_region_to_subdomain(), ptree, taskflow, coarse_space_ptree_prefix);
+          A_sub, A_neu, overlap, pou_, problem.get_overlapping_dirichlet_mask(), boundary_mask, problem.get_neumann_region_to_subdomain(), ptree, coarse_space_ptree_prefix);
     }
     else if (coarsespace == "pou") {
-      coarse_space = std::make_unique<POUCoarseSpace<>>(pou_, taskflow);
-    }
-    else if (coarsespace == "harmonic_extension") {
-      const auto& subtree = ptree.sub(coarse_space_ptree_prefix);
-      int n_basis_vectors = subtree.get("n_basis_vectors", 8);
-
-      std::size_t n_boundary = std::count_if(boundary_mask.begin(), boundary_mask.end(), [](const auto& x) { return x != 0; });
-
-      std::mt19937 rng(ptree.get("seed", 1));
-      std::normal_distribution<double> dist;
-      auto basis_vectors = std::make_shared<std::vector<NativeVec>>(n_boundary, NativeVec(n_boundary));
-      std::for_each(basis_vectors->begin(), basis_vectors->end(), [&](auto& x) { std::generate(x.begin(), x.end(), [&]() { return dist(rng); }); });
-
-      coarse_space = std::make_unique<HarmonicExtensionCoarseSpace<>>(A_dir, pou_, basis_vectors, boundary_mask, taskflow);
+      coarse_space = std::make_unique<POUCoarseSpace<>>(pou_);
     }
     else if (coarsespace == "none") {
       logger::debug("No coarse space selected");
@@ -143,20 +122,11 @@ public:
       DUNE_THROW(Dune::NotImplemented, "Unknown coarse space type: " + coarsespace);
     }
 
-    // Execute taskflow to build coarse space
     if (coarse_space) {
       logger::debug("Building coarse space basis");
-      tf::Task prec_setup_task = taskflow.emplace([&]() {
-        basis_ = coarse_space->get_basis();
-        std::ranges::for_each(basis_, zero_at_dirichlet);
-        coarse = std::make_shared<CoarseLevel>(*A_dir, basis_, ovlp_comm_, ptree, "coarse_solver");
-      });
-
-      prec_setup_task.name("Build coarse preconditioner");
-      prec_setup_task.succeed(coarse_space->get_setup_task());
-
-      tf::Executor executor(ptree.get("taskflow_executor_threads", 1));
-      executor.run(taskflow).get();
+      basis_ = coarse_space->get_basis();
+      std::ranges::for_each(basis_, zero_at_dirichlet);
+      coarse = std::make_shared<CoarseLevel>(*A_dir, basis_, ovlp_comm_, ptree, "coarse_solver");
     }
 
     helper.getCommunication().barrier();

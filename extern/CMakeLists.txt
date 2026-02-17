@@ -56,13 +56,6 @@ else()
   message(STATUS "Eigen not found, Spectra eigensolver will not be available")
 endif()
 
-# Taskflow - header-only parallel task programming library
-target_include_directories(duneddm INTERFACE
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/taskflow>
-  $<INSTALL_INTERFACE:extern/taskflow>
-)
-target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_TASKFLOW=1)
-
 # TRL - header-only randomized linear algebra library
 # Requires Eigen3 and OpenMP (already found in root CMakeLists.txt)
 target_include_directories(duneddm INTERFACE

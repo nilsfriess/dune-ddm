@@ -10,7 +10,6 @@
 #include "helpers.hh"
 #include "logger.hh"
 #include "pou.hh"
-#include "strumpack.hh"
 
 #include <cstdint>
 #include <dune/common/exceptions.hh>
@@ -24,10 +23,6 @@
 #include <dune/istl/umfpack.hh>
 #include <memory>
 #include <mpi.h>
-
-#if DUNE_DDM_HAVE_TASKFLOW
-#include <taskflow/taskflow.hpp>
-#endif
 
 /**
  * @brief Type of Schwarz domain decomposition method.
@@ -162,14 +157,6 @@ public:
    */
   std::shared_ptr<Solver> get_solver() { return solver; }
 
-#if DUNE_DDM_HAVE_TASKFLOW
-  /**
-   * @brief Return the setup task.
-   * @return Reference to the setup task
-   */
-  tf::Task& get_setup_task() { return setup_task; }
-#endif
-
   std::shared_ptr<Communication> novlp_comm;
 
 private:
@@ -227,11 +214,6 @@ private:
   SchwarzType type; ///< Type of Schwarz method (standard or restricted)
 
   std::vector<bool> boundary;
-
-#if DUNE_DDM_HAVE_TASKFLOW
-  // Task-related
-  tf::Task setup_task;
-#endif
 
   // Performance monitoring events
   Logger::Event* apply_event{nullptr};           ///< Event for timing the apply method
