@@ -88,7 +88,16 @@ public:
     const auto& solver_subtree = subtree.sub(solver_subtree_name);
     if (not solver_subtree.hasKey("type"))
       DUNE_THROW(Dune::Exception, "You must specify the solver in the subtree " << get_parameter_tree_prefix(ptree) << subtree_name << "." << solver_subtree_name << " using the key 'type'");
-    solver = Dune::getSolverFromFactory(op, solver_subtree);
+
+    // We also handle one special case ourselves, namely a solver named umfpack_metis
+    // which we define as UMFPack with METIS reordering
+    if (solver_subtree["type"] == "umfpack_metis") {
+      solver = std::make_shared<Dune::UMFPack<Mat>>();
+      auto umfpack_solver = std::dynamic_pointer_cast<Dune::UMFPack<Mat>>(solver);
+      umfpack_solver->setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
+      umfpack_solver->setMatrix(*this->Aovlp);
+    }
+    else solver = Dune::getSolverFromFactory(op, solver_subtree);
     init();
   }
 
