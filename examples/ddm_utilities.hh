@@ -84,7 +84,7 @@ std::unique_ptr<Grid> make_grid(const Dune::ParameterTree& ptree, const Dune::MP
     // YaspGrid path
     auto gridsize = grid_ptree.get("gridsize", 32);
     if (grid_ptree.hasKey("gridsize_per_rank")) {
-      auto grid_sqrt = static_cast<int>(std::pow(helper.size(), 1.0 / dim));
+      auto grid_sqrt = static_cast<int>(std::llround(std::pow(helper.size(), 1.0 / dim)));
       gridsize = grid_ptree.get<int>("gridsize_per_rank") * grid_sqrt;
     }
 
@@ -118,7 +118,7 @@ std::unique_ptr<Grid> make_grid(const Dune::ParameterTree& ptree, const Dune::MP
     {
       auto gridsize = static_cast<unsigned int>(grid_ptree.get("gridsize", 32));
       if (grid_ptree.hasKey("gridsize_per_rank")) {
-        auto grid_sqrt = static_cast<int>(std::pow(helper.size(), 1.0 / dim));
+        auto grid_sqrt = static_cast<int>(std::llround(std::pow(helper.size(), 1.0 / dim)));
         gridsize = grid_ptree.get<int>("gridsize_per_rank") * grid_sqrt;
       }
 
