@@ -20,7 +20,7 @@ struct EigensolverParams {
     if (ptree.hasKey("nev")) nev = ptree.get<std::size_t>("nev");
     if (ptree.hasKey("ncv")) ncv = ptree.get<std::size_t>("ncv");
     else ncv = 2 * nev;
-    if (ptree.hasKey("nev_max")) ncv = ptree.get<std::size_t>("nev_max");
+    if (ptree.hasKey("nev_max")) nev_max = ptree.get<std::size_t>("nev_max");
     else nev_max = 2 * nev;
     if (ptree.hasKey("maxit")) maxit = ptree.get<std::size_t>("maxit");
     if (ptree.hasKey("tolerance")) tolerance = ptree.get<double>("tolerance");
