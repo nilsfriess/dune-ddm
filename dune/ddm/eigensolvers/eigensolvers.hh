@@ -1,45 +1,41 @@
 #pragma once
 
-#include "dune/common/exceptions.hh"
 #include "eigensolver_params.hh"
 #include "spectra.hh"
 #include "trl.hh"
 
+#include <dune/common/exceptions.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/bvector.hh>
 #include <dune/istl/solver.hh>
-#include <type_traits>
 #include <vector>
 
-template <class Mat1, class Mat2>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solve_gevp(std::shared_ptr<Mat1> A, std::shared_ptr<Mat2> B, const Dune::ParameterTree& ptree)
+template <class Scalar = double>
+std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> solve_gevp(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A, const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>> B,
+                                                                        const Dune::ParameterTree& ptree)
 {
   auto* eigensolver_event = Logger::get().registerOrGetEvent("Eigensolver", "solve");
   Logger::ScopedLog sl(eigensolver_event);
 
-  static_assert(std::is_convertible_v<Mat1, Mat2> or std::is_convertible_v<Mat1, Mat2>, "The two matrix types must be compatible");
-  using Mat = std::remove_cvref_t<Mat1>;
-
   EigensolverParams params(ptree);
 
-  if (params.type == EigensolverParams::Type::Spectra) return spectra_gevp(*A, *B, params);
-  if (params.type == EigensolverParams::Type::trl) return trl_gevp(*A, *B, params);
+  if (params.type == EigensolverParams::Type::Spectra) return spectra_gevp(A, B, params);
+  if (params.type == EigensolverParams::Type::trl) return trl_gevp(A, B, params);
   else DUNE_THROW(Dune::NotImplemented, "Eigensolver not implemented");
 }
 
-template <class Mat1, class Mat2, class ConstraintSolver, class MaskVec>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> solve_gevp(std::shared_ptr<Mat1> A, std::shared_ptr<Mat2> B, std::shared_ptr<ConstraintSolver> constraint_solver,
-                                                                        const MaskVec& subdomain_boundary, const Dune::ParameterTree& ptree)
+template <class Scalar = double>
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>>
+solve_gevp(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A, const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>> B,
+           Dune::InverseOperator<Dune::BlockVector<Dune::FieldVector<double, 1>>, Dune::BlockVector<Dune::FieldVector<double, 1>>>* constraint_solver, const std::vector<bool>& subdomain_boundary_mask,
+           const Dune::ParameterTree& ptree)
 {
   auto* eigensolver_event = Logger::get().registerOrGetEvent("Eigensolver", "solve (constraint)");
   Logger::ScopedLog sl(eigensolver_event);
 
-  static_assert(std::is_convertible_v<Mat1, Mat2> or std::is_convertible_v<Mat1, Mat2>, "The two matrix types must be compatible");
-  using Mat = std::remove_cvref_t<Mat1>;
-
   EigensolverParams params(ptree);
 
-  if (params.type == EigensolverParams::Type::trl) return trl_gevp(*A, *B, constraint_solver, subdomain_boundary, params);
+  if (params.type == EigensolverParams::Type::trl) return trl_gevp(A, B, constraint_solver, subdomain_boundary_mask, params);
   else DUNE_THROW(Dune::NotImplemented, "Eigensolver not implemented");
 }

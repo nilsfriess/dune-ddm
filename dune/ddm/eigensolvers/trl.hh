@@ -19,7 +19,7 @@ namespace detail {
 constexpr std::size_t align_up(std::size_t value, std::size_t alignment) { return (value + (alignment - 1)) & ~(alignment - 1); }
 } // namespace detail
 
-template <class Mat, unsigned int blocksize, class MaskVec = std::vector<bool>>
+template <class Mat, unsigned int blocksize>
 class TRLGEVP : public trl::openmp::EVPBase<typename Mat::field_type, blocksize> {
 public:
   using Base = trl::openmp::EVPBase<typename Mat::field_type, blocksize>;
@@ -37,7 +37,7 @@ public:
     solver = std::make_unique<UMFPackMultivecSolver>(A_minus_sigma_B);
   }
 
-  TRLGEVP(const Mat& A, const Mat& B, Dune::UMFPack<Mat>& constraint_solver_, const MaskVec* subdomain_boundary, double shift)
+  TRLGEVP(const Mat& A, const Mat& B, Dune::UMFPack<Mat>& constraint_solver_, const std::vector<bool>* subdomain_boundary, double shift)
       : Base(A.N())
       , B(B)
       , tmp((typename Mat::field_type*)std::aligned_alloc(64, sizeof(typename Mat::field_type) * detail::align_up(A.N() * blocksize, 64)))
@@ -106,7 +106,7 @@ public:
   BlockView tmp_view;
 
   std::unique_ptr<UMFPackMultivecSolver> constraint_solver{nullptr};
-  const MaskVec* subdomain_boundary = nullptr;
+  const std::vector<bool>* subdomain_boundary = nullptr;
   int apply_constraint_every = 1;
   int count = 0;
 };
@@ -180,14 +180,15 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> trl_gevp(const Mat&
   return ritz_vectors;
 }
 
-template <class Mat, class Solver, class MaskVec>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> trl_gevp(const Mat& A, const Mat& B, std::shared_ptr<Solver> constraint_solver, const MaskVec& subdomain_boundary,
-                                                                      const EigensolverParams& params)
+template <class Mat>
+std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>>
+trl_gevp(const Mat& A, const Mat& B, Dune::InverseOperator<Dune::BlockVector<Dune::FieldVector<double, 1>>, Dune::BlockVector<Dune::FieldVector<double, 1>>>* constraint_solver,
+         const std::vector<bool>& subdomain_boundary, const EigensolverParams& params)
 {
   constexpr unsigned int blocksize = 1;
-  using EVP = TRLGEVP<Mat, blocksize, MaskVec>;
+  using EVP = TRLGEVP<Mat, blocksize>;
 
-  if (auto umfpack_constraint_solver = std::dynamic_pointer_cast<Dune::UMFPack<Mat>>(constraint_solver)) {
+  if (auto umfpack_constraint_solver = dynamic_cast<Dune::UMFPack<Mat>*>(constraint_solver)) {
     auto evp = std::make_shared<EVP>(A, B, *umfpack_constraint_solver, &subdomain_boundary, params.shift);
 
     trl::EigensolverParams lanczos_params{.nev = params.nev, .ncv = params.ncv, .max_restarts = params.maxit, .tolerance = params.tolerance};
