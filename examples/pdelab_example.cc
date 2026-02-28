@@ -190,15 +190,17 @@ template <int dim>
 void run_convection_diffusion(const Dune::MPIHelper& helper, const Dune::ParameterTree& ptree, const Dune::ParameterTree& configptree)
 {
   using Grid = Dune::UGGrid<dim>;
-  auto grid = DDMUtilities::make_grid<Grid>(ptree, helper, "");
+  auto grid = DDMUtilities::make_grid<Grid>(ptree, helper, DDMUtilities::ElementType::Cube, "");
   auto gv = grid->leafGridView();
   using GridView = decltype(gv);
 
   using ProblemParams = LuaConvectionDiffusionProblem<GridView, double>;
   using SymmetricProblemParams = LuaConvectionDiffusionProblem<GridView, double, true>;
   static constexpr bool is_symmetric = false;
-  static constexpr bool use_dg = true;
-  using Traits = ConvectionDiffusionTraits<GridView, ProblemParams, SymmetricProblemParams, is_symmetric, use_dg>;
+  constexpr bool use_dg = true;
+  constexpr int degree = 1;
+  constexpr bool qk_elements = true;
+  using Traits = ConvectionDiffusionTraits<GridView, ProblemParams, SymmetricProblemParams, is_symmetric, use_dg, qk_elements>;
   using Problem = GenericDDMProblem<GridView, Traits>;
 
   auto convection_diffusion_coefficient_lua_file = configptree.get("convection_diffusion_coefficient", "convection_diffusion_coefficient.lua");
@@ -211,15 +213,18 @@ void run_convection_diffusion(const Dune::MPIHelper& helper, const Dune::Paramet
 template <int dim>
 void run_poisson(const Dune::MPIHelper& helper, const Dune::ParameterTree& ptree, const Dune::ParameterTree& configptree)
 {
-  using Grid = Dune::UGGrid<dim>;
-  auto grid = DDMUtilities::make_grid<Grid>(ptree, helper, "");
+  using Grid = Dune::YaspGrid<dim>;
+  auto grid = DDMUtilities::make_grid<Grid>(ptree, helper, DDMUtilities::ElementType::Cube, "");
   auto gv = grid->leafGridView();
   using GridView = decltype(gv);
 
   using ProblemParams = LuaProblem<GridView, double>;
-  static constexpr bool is_symmetric = true;
-  static constexpr bool use_dg = false;
-  using Traits = ConvectionDiffusionTraits<GridView, ProblemParams>;
+  constexpr bool is_symmetric = true;
+  constexpr bool use_dg = false;
+  constexpr int degree = 1;
+  constexpr bool qk_elements = true;
+
+  using Traits = ConvectionDiffusionTraits<GridView, ProblemParams, ProblemParams, is_symmetric, use_dg, degree, qk_elements>;
   using Problem = GenericDDMProblem<GridView, Traits>;
 
   auto poisson_coefficient_lua_file = configptree.get("poisson_coefficient", "poisson_coefficient.lua");

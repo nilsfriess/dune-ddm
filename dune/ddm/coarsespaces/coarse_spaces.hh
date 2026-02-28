@@ -1,34 +1,41 @@
 #pragma once
 
 /** @file coarse_spaces.hh
-    @brief Classes to create coarse space bases such as GenEO and MsGFEM spectral coarse spaces.
+    @brief Free functions to build coarse space bases such as GenEO and MsGFEM spectral coarse spaces.
 
-    This file provides a class-based interface for building various types of coarse spaces
-    used in domain decomposition methods. Each coarse space type is implemented as a separate
-    class that computes the basis vectors in its constructor and provides access via get_basis().
+    This file provides named free functions for building various types of coarse spaces
+    used in domain decomposition methods. The coarse spaces are organised along two independent
+    axes that can be configured from an ini file:
+
+      [coarsespace]
+      domain = full              # full | ring
+      constraint = none          # none | harmonic
+      constraint_evp = lagrange_multiplier  # lagrange_multiplier | alternating (only for constraint = harmonic)
+      ring_extension = from_ring            # from_ring | from_boundary (only for domain = ring)
+
+    The four resulting combinations are implemented by:
+      - build_geneo_coarse_space()           (domain = full,  constraint = none)
+      - build_geneo_ring_coarse_space()      (domain = ring,  constraint = none)
+      - build_msgfem_coarse_space()          (domain = full,  constraint = harmonic)
+      - build_msgfem_ring_coarse_space()     (domain = ring,  constraint = harmonic)
  */
 
 #include "../eigensolvers/eigensolvers.hh"
-#include "../eigensolvers/umfpack.hh"
 #include "../logger.hh"
 #include "../pou.hh"
-#include "dune/ddm/eigensolvers/spectra.hh"
 #include "energy_minimal_extension.hh"
 
-#include <Eigen/Dense>
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/indexset.hh>
 #include <dune/common/parallel/interface.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/common/timer.hh>
+#include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/bvector.hh>
 #include <dune/istl/matrixmarket.hh>
 #include <dune/istl/solver.hh>
-#include <fstream>
+#include <dune/istl/umfpack.hh>
 #include <mpi.h>
-#include <ostream>
-#include <sstream>
-#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -78,756 +85,663 @@ void scale_matrix_with_pou(Mat& C, const Vec& pou, const std::vector<std::size_t
   }
 }
 
+enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
+
+struct DOFPartition {
+  std::vector<DOFType> partition;
+
+  std::size_t n_interior;
+  std::size_t n_boundary;
+  std::size_t n_dirichlet;
+};
+
 template <class Mat>
-inline void scale_matrix_with_pou(Mat& C, const PartitionOfUnity& pou, const std::vector<std::size_t>& index_mapping = {})
+DOFPartition partition_dofs(const Mat& A, const std::vector<bool>& subdomain_boundary_mask, const std::vector<bool>& dirichlet_mask)
 {
-  for (auto ri = C.begin(); ri != C.end(); ++ri) {
-    for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-      std::size_t i_idx = index_mapping.empty() ? ri.index() : index_mapping[ri.index()];
-      std::size_t j_idx = index_mapping.empty() ? ci.index() : index_mapping[ci.index()];
-      *ci *= pou[i_idx] * pou[j_idx];
+  std::vector<DOFType> dof_partitioning(A.N());
+
+  std::size_t num_interior = 0;
+  std::size_t num_boundary = 0;
+  std::size_t num_dirichlet = 0;
+  for (std::size_t i = 0; i < A.N(); ++i) {
+    if (dirichlet_mask[i] > 0) {
+      dof_partitioning[i] = DOFType::Dirichlet;
+      num_dirichlet++;
+    }
+    else if (subdomain_boundary_mask[i]) {
+      dof_partitioning[i] = DOFType::Boundary;
+      num_boundary++;
+    }
+    else {
+      dof_partitioning[i] = DOFType::Interior;
+      num_interior++;
     }
   }
+  logger::trace_all("Partitioned dofs, have {} in interior, {} on subdomain boundary, {} on Dirichlet boundary", num_interior, num_boundary, num_dirichlet);
+
+  return DOFPartition{
+      .partition = std::move(dof_partitioning),
+      .n_interior = num_interior,
+      .n_boundary = num_boundary,
+      .n_dirichlet = num_dirichlet,
+  };
+}
+
+/** @brief Wrapper struct for the data returned by get_ring_info()
+ *
+ *  @note Both sets defined in this struct use subdomain-local indices, not ring-local indices.
+ */
+struct RingInfo {
+  std::unordered_map<std::size_t, std::size_t> subdomain_to_ring; ///< Maps subdomain indices (that exist in the ring) to ring-local indices
+  std::unordered_set<std::size_t> inner_boundary;                 ///< The DOFs on the boundary between ring and interior
+  std::unordered_set<std::size_t> behind_inner_boundary;          ///< DOFs one layer into the ring (from the inner boundary)
+};
+
+/** @brief Analyse the ring region and find DOFs on the inner boundary and DOFs one layer into the ring.
+ */
+template <class Mat>
+RingInfo get_ring_info(const Mat& A_sub, const std::vector<std::size_t>& ring_region_to_subdomain)
+{
+  RingInfo ring_info;
+
+  // First we create a subdomain -> ring mapping
+  ring_info.subdomain_to_ring.reserve(ring_region_to_subdomain.size());
+  for (std::size_t i = 0; i < ring_region_to_subdomain.size(); ++i) ring_info.subdomain_to_ring[ring_region_to_subdomain[i]] = i;
+
+  // Next identify the inner boundary: These are the DOFs in the ring that have neighbours (in terms of the matrix graph
+  // of A_sub) that are not in the ring.
+  for (auto ring_dof : ring_region_to_subdomain) {
+    for (auto ci = A_sub[ring_dof].begin(); ci != A_sub[ring_dof].end(); ++ci)
+      if ((ci.index() != ring_dof) and not ring_info.subdomain_to_ring.contains(ci.index())) {
+        ring_info.inner_boundary.insert(ring_dof);
+        break;
+      }
+  }
+
+  // Finally, identify the DOFs one layer into the ring. These are DOFs that are:
+  // - inside the ring
+  // - not on the boundary of the ring
+  // - connected to a boundary DOF
+  for (auto ring_dof : ring_region_to_subdomain) {
+    if (ring_info.inner_boundary.contains(ring_dof)) continue;
+    for (auto ci = A_sub[ring_dof].begin(); ci != A_sub[ring_dof].end(); ++ci)
+      if ((ci.index() != ring_dof) and ring_info.inner_boundary.contains(ci.index())) {
+        ring_info.behind_inner_boundary.insert(ring_dof);
+        break;
+      }
+  }
+
+  logger::debug_all("Created ring info: have {} DOFs on inner ring boundary, {} DOFs one layer into the ring", ring_info.inner_boundary.size(), ring_info.behind_inner_boundary.size());
+
+  return ring_info;
+}
+
+/** @brief Create a modified partition of unity for the ring coarse spaces
+ *
+ * Takes the given partition of unity and creates a std::vector<Scalar> that represents a
+ * modified partition of unity function that only lives on the ring and vanishes on the
+ * inner boundary of the ring, as required by the ring-type coarse spaces.
+ */
+template <class Scalar>
+std::vector<Scalar> make_ring_pou(const PartitionOfUnity& pou, const std::vector<std::size_t>& ring_region_to_subdomain, const RingInfo& ring_info)
+{
+  std::vector<Scalar> ring_pou(ring_region_to_subdomain.size());
+  for (std::size_t i = 0; i < ring_pou.size(); ++i) {
+    auto index_in_subdomain = ring_region_to_subdomain[i];
+    if (ring_info.inner_boundary.contains(index_in_subdomain)) ring_pou[i] = 0;
+    else ring_pou[i] = pou[index_in_subdomain];
+  }
+  return ring_pou;
+}
+
+/**
+ * @brief Extract the ring-local submatrix from a full subdomain matrix.
+ *
+ * Given a matrix A defined on the full subdomain and a mapping from ring indices
+ * to subdomain indices, extracts the submatrix corresponding to ring-ring couplings
+ * using ring-local indexing.
+ *
+ * @param A Full subdomain matrix.
+ * @param ring_region_to_subdomain Mapping from ring-local indices to subdomain indices.
+ * @param ring_info Ring information containing the subdomain-to-ring map.
+ * @return Ring-local submatrix.
+ */
+template <class Scalar>
+Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>> extract_ring_submatrix(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A, const std::vector<std::size_t>& ring_region_to_subdomain,
+                                                                         const RingInfo& ring_info)
+{
+  using Matrix = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>;
+  const auto n_ring = ring_region_to_subdomain.size();
+  const auto avg = A.nonzeroes() / A.N() + 1;
+
+  Matrix A_ring(n_ring, n_ring, avg, 0.2, Matrix::implicit);
+  for (std::size_t i = 0; i < n_ring; ++i) {
+    auto sub_i = ring_region_to_subdomain[i];
+    for (auto cit = A[sub_i].begin(); cit != A[sub_i].end(); ++cit) {
+      auto it = ring_info.subdomain_to_ring.find(cit.index());
+      if (it != ring_info.subdomain_to_ring.end()) A_ring.entry(i, it->second) = *cit;
+    }
+  }
+  A_ring.compress();
+  return A_ring;
+}
+
+/**
+ * @brief Solve an MsGFEM-type saddle-point eigenvalue problem.
+ *
+ * Assembles and solves the constrained eigenvalue problem with Lagrange multipliers
+ * that enforces A-harmonicity in the interior DOFs. This is the core computation
+ * shared between MsGFEM and MsGFEM-ring coarse spaces.
+ *
+ * @param A_neu Matrix for the eigenproblem (LHS main block and RHS base).
+ * @param A_constraint Matrix for the harmonicity constraint (interior rows).
+ * @param partition DOF partition into Interior/Boundary/Dirichlet.
+ * @param pou POU values indexed by original matrix indices (anything with operator[]).
+ * @param eig_ptree Eigensolver parameters.
+ * @return Eigenvectors in original matrix indexing (Dirichlet DOFs set to 0).
+ */
+template <class Scalar, class POU>
+std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> solve_msgfem_saddle_point_evp(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_neu,
+                                                                                           const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_constraint, const DOFPartition& partition,
+                                                                                           const POU& pou, const Dune::ParameterTree& eig_ptree)
+{
+  using Matrix = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>;
+  using Vector = Dune::BlockVector<Dune::FieldVector<Scalar, 1>>;
+
+  // Create a reordered index set: first interior dofs, then boundary dofs, then Dirichlet dofs
+  std::vector<std::size_t> reordering(A_neu.N());
+  std::size_t cnt_interior = 0;
+  std::size_t cnt_boundary = partition.n_interior;
+  std::size_t cnt_dirichlet = partition.n_interior + partition.n_boundary;
+  for (std::size_t i = 0; i < reordering.size(); ++i)
+    if (partition.partition[i] == DOFType::Interior) reordering[i] = cnt_interior++;
+    else if (partition.partition[i] == DOFType::Boundary) reordering[i] = cnt_boundary++;
+    else reordering[i] = cnt_dirichlet++;
+
+  // Assemble the left-hand side of the eigenproblem
+  Matrix A_lhs;
+  const auto n_big = partition.n_interior + partition.n_boundary + partition.n_interior;
+  const auto avg = 2 * (A_constraint.nonzeroes() / A_constraint.N());
+  A_lhs.setBuildMode(Matrix::implicit);
+  A_lhs.setImplicitBuildModeParameters(avg, 0.2);
+  A_lhs.setSize(n_big, n_big);
+
+  // Assemble the part corresponding to the a-harmonic constraint
+  for (auto rit = A_constraint.begin(); rit != A_constraint.end(); ++rit) {
+    auto ii = rit.index();
+    auto ri = reordering[ii];
+    if (partition.partition[ii] != DOFType::Interior) continue;
+
+    for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
+      auto jj = cit.index();
+      auto rj = reordering[jj];
+
+      if (partition.partition[jj] != DOFType::Dirichlet) {
+        A_lhs.entry(rj, partition.n_interior + partition.n_boundary + ri) = *cit;
+        A_lhs.entry(partition.n_interior + partition.n_boundary + ri, rj) = *cit;
+      }
+    }
+  }
+
+  // Assemble the remaining part of the matrix
+  for (auto rit = A_neu.begin(); rit != A_neu.end(); ++rit) {
+    auto ii = rit.index();
+    auto ri = reordering[ii];
+    if (partition.partition[ii] == DOFType::Dirichlet) continue;
+
+    for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
+      auto jj = cit.index();
+      auto rj = reordering[jj];
+
+      if (partition.partition[jj] != DOFType::Dirichlet) A_lhs.entry(ri, rj) = *cit;
+    }
+  }
+  A_lhs.compress();
+
+  // Next, assemble the right-hand side of the eigenproblem
+  Matrix B;
+  B.setBuildMode(Matrix::implicit);
+  B.setImplicitBuildModeParameters(avg, 0.2);
+  B.setSize(n_big, n_big);
+
+  for (auto rit = A_neu.begin(); rit != A_neu.end(); ++rit) {
+    auto ii = rit.index();
+    auto ri = reordering[ii];
+    if (partition.partition[ii] != DOFType::Interior) continue;
+
+    for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
+      auto jj = cit.index();
+      auto rj = reordering[jj];
+
+      if (partition.partition[jj] == DOFType::Interior) B.entry(ri, rj) = pou[ii] * pou[jj] * (*cit);
+    }
+  }
+  B.compress();
+
+  // Solve the eigenproblem
+  auto eigvecs = solve_gevp(A_lhs, B, eig_ptree);
+
+  // Extract the actual eigenvectors (map from reordered to original indexing)
+  Vector zero(A_neu.N());
+  zero = 0;
+  std::vector<Vector> result(eigvecs.size(), zero);
+  for (std::size_t k = 0; k < result.size(); ++k) {
+    for (std::size_t i = 0; i < A_neu.N(); ++i)
+      if (partition.partition[i] != DOFType::Dirichlet) result[k][i] = eigvecs[k][reordering[i]];
+  }
+
+  return result;
+}
+
+/**
+ * @brief Extend ring eigenvectors to the full subdomain using energy-minimal extension.
+ *
+ * Takes eigenvectors defined on the ring region and extends them to the full subdomain
+ * by operator-harmonically extending from one layer into the ring (behind_inner_boundary)
+ * to the subdomain interior and inner ring boundary.
+ *
+ * @param ring_eigenvectors Eigenvectors defined on the ring region.
+ * @param A_sub Full subdomain matrix (for the extension operator).
+ * @param ring_region_to_subdomain Mapping from ring indices to subdomain indices.
+ * @param ring_info Ring region information (inner boundary, behind inner boundary).
+ * @return Eigenvectors defined on the full subdomain.
+ */
+template <class Scalar>
+std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> extend_ring_eigenvectors(const std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>& ring_eigenvectors,
+                                                                                      const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_sub,
+                                                                                      const std::vector<std::size_t>& ring_region_to_subdomain, const RingInfo& ring_info)
+{
+  using Matrix = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>;
+  using Vector = Dune::BlockVector<Dune::FieldVector<Scalar, 1>>;
+
+  // We create two index sets:
+  // 1. the interior part of the subdomain combined with the inner boundary of the ring
+  // 2. the DOFs one layer into the ring
+  // The eigenvectors are then extended by taking their values on the index set 2. and extending them to the index set 1.
+  // On the remaining part of the ring, their original values are taken
+  std::vector<std::size_t> extension_boundary(ring_info.behind_inner_boundary.begin(), ring_info.behind_inner_boundary.end());
+  std::vector<std::size_t> extension_interior(A_sub.N() - ring_region_to_subdomain.size() + ring_info.inner_boundary.size());
+  std::size_t cnt = 0;
+  for (std::size_t i = 0; i < A_sub.N(); ++i)
+    if (ring_info.inner_boundary.contains(i) or not ring_info.subdomain_to_ring.contains(i)) extension_interior[cnt++] = i;
+  assert(cnt == extension_interior.size());
+
+  EnergyMinimalExtension<Matrix, Vector> extension(A_sub, extension_interior, extension_boundary);
+
+  Vector zero(A_sub.N());
+  zero = 0;
+  std::vector<Vector> combined_vectors(ring_eigenvectors.size(), zero);
+
+  Vector dirichlet_data(ring_info.behind_inner_boundary.size());
+  for (std::size_t k = 0; k < ring_eigenvectors.size(); ++k) {
+    const auto& evec = ring_eigenvectors[k];
+
+    std::size_t cnt = 0;
+    for (auto idx : ring_info.behind_inner_boundary) dirichlet_data[cnt++] = evec[ring_info.subdomain_to_ring.at(idx)];
+
+    auto interior_vec = extension.extend(dirichlet_data);
+
+    // First set the values in the ring
+    for (std::size_t i = 0; i < evec.N(); ++i) combined_vectors[k][ring_region_to_subdomain[i]] = evec[i];
+
+    // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
+    for (std::size_t i = 0; i < interior_vec.N(); ++i) combined_vectors[k][extension_interior[i]] = interior_vec[i];
+  }
+
+  return combined_vectors;
 }
 
 } // namespace detail
 
-/**
- * @brief Abstract base class for coarse space builders.
- *
- * This class provides a common interface for all coarse space construction methods.
- * Derived classes implement specific algorithms (GenEO, MsGFEM, etc.) and compute
- * the basis vectors in their constructors.
- *
- * @tparam Vec Vector type for basis vectors (default: Dune::BlockVector<Dune::FieldVector<double, 1>>)
- */
-template <class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
-class CoarseSpaceBuilder {
-public:
-  virtual ~CoarseSpaceBuilder() = default;
-
-  // Disable copy/move operations for base class
-  CoarseSpaceBuilder(const CoarseSpaceBuilder&) = delete;
-  CoarseSpaceBuilder& operator=(const CoarseSpaceBuilder&) = delete;
-  CoarseSpaceBuilder(CoarseSpaceBuilder&&) = delete;
-  CoarseSpaceBuilder& operator=(CoarseSpaceBuilder&&) = delete;
-
-  /**
-   * @brief Get the computed coarse space basis vectors.
-   * @return Const reference to vector of basis vectors.
-   */
-  virtual const std::vector<Vec>& get_basis() const { return basis_; }
-
-  /**
-   * @brief Get the number of basis vectors.
-   * @return Size of the coarse space.
-   */
-  virtual std::size_t size() const { return basis_.size(); }
-
-protected:
-  CoarseSpaceBuilder() = default;
-
-  /// Storage for computed basis vectors
-  std::vector<Vec> basis_;
-};
+// ============================================================================
+//  Free functions to build spectral coarse spaces
+// ============================================================================
 
 /**
- * @brief GenEO (Generalized Eigenproblems in the Overlaps) coarse space builder.
+ * @brief Build a GenEO coarse space (domain = full, constraint = none).
  *
- * Constructs the classical GenEO coarse space by solving the generalized eigenproblem
- * \f$ Ax = \lambda DBDx \f$, where A and B are matrices and D is a diagonal matrix
- * representing a partition of unity.
+ * Computes a few eigenvectors corresponding to the smallest eigenvalues of
+ * $Ax = \lambda DBDx$, where $A$ and $B$ are the provided matrices and $D$ is a diagonal
+ * partition of unity matrix. The computed eigenvectors are scaled by the partition of unity
+ * and normalised.
  *
- * @tparam Mat Matrix type
- * @tparam Vec Vector type for basis vectors
+ * @param A Neumann matrix on the overlapping subdomain (left-hand side of eigenproblem).
+ * @param B Matrix defined in the overlap region (used to construct right-hand side).
+ * @param pou Partition of unity vector (diagonal of D matrix).
+ * @param ptree ParameterTree containing solver and selection parameters.
+ * @param ptree_prefix Prefix for parameter subtree (default "coarse_space").
+ * @return Vector of coarse basis vectors.
  */
-template <class Mat, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
-class GenEOCoarseSpace : public CoarseSpaceBuilder<Vec> {
-public:
-  /**
-   * @brief Construct GenEO coarse space.
-   *
-   * @param A Neumann matrix on the overlapping subdomain (left-hand side of eigenproblem).
-   * @param B Neumann matrix defined in the overlap region (used to construct right-hand side).
-   * @param pou Partition of unity vector (diagonal of D matrix).
-   * @param ptree ParameterTree containing solver and selection parameters.
-   * @param ptree_prefix Prefix for parameter subtree (default: "geneo").
-   */
-  GenEOCoarseSpace(std::shared_ptr<const Mat> A, std::shared_ptr<const Mat> B, std::shared_ptr<const PartitionOfUnity> pou, const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "geneo")
-  {
-    const auto& subtree = ptree.sub(ptree_prefix);
-    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+template <class Scalar = double>
+std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> build_geneo_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A,
+                                                                                      const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& B, const PartitionOfUnity& pou,
+                                                                                      const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "coarse_space")
+{
+  Logger::ScopedLog setup_sl{Logger::get().registerOrGetEvent("Coarse space", "setup")};
 
-    setup_geneo_impl(A, B, pou, eig_ptree);
-  }
+  const auto& subtree = ptree.sub(ptree_prefix);
+  Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
 
-  /**
-   * @brief Alternative constructor that defers task creation to the caller.
-   *
-   * This allows external code to create the task and call setup_geneo_impl() directly,
-   * enabling composition with other tasks (e.g., building Neumann matrices first).
-   */
-  GenEOCoarseSpace() = default;
+  auto C = B;
+  detail::scale_matrix_with_pou(C, pou);
 
-protected:
-  /**
-   * @brief Core implementation of GenEO setup - can be called from any task context.
-   */
-  void setup_geneo_impl(std::shared_ptr<const Mat> A, std::shared_ptr<const Mat> B, std::shared_ptr<const PartitionOfUnity> pou, const Dune::ParameterTree& eig_ptree)
-  {
-    logger::info("Setting up GenEO coarse space");
+  auto basis = solve_gevp(A, C, eig_ptree);
 
-    if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
-
-    auto C = std::make_shared<Mat>(*B); // The rhs of the eigenproblem
-    detail::scale_matrix_with_pou(*C, *pou);
-
-    this->basis_ = solve_gevp(A, C, eig_ptree);
-
-    detail::finalize_eigenvectors(this->basis_, *pou);
-  }
-};
-
-template <class Mat, class MaskVec, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
-class ConstraintGenEOCoarseSpace : public CoarseSpaceBuilder<Vec> {
-public:
-  /**
-   * @brief Construct GenEO coarse space.
-   *
-   * @param A Neumann matrix on the overlapping subdomain (left-hand side of eigenproblem).
-   * @param B Neumann matrix defined in the overlap region (used to construct right-hand side).
-   * @param pou Partition of unity vector (diagonal of D matrix).
-   * @param ptree ParameterTree containing solver and selection parameters.
-   * @param ptree_prefix Prefix for parameter subtree (default: "geneo").
-   */
-  // TODO: Pass the references as shared_ptrs as well.
-  template <class Solver>
-  ConstraintGenEOCoarseSpace(std::shared_ptr<Solver> solver, std::shared_ptr<const Mat> A, std::shared_ptr<const Mat> B, std::shared_ptr<const PartitionOfUnity> pou, const MaskVec& subdomain_boundary,
-                             const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "constraint_geneo")
-  {
-    const auto& subtree = ptree.sub(ptree_prefix);
-    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
-
-    logger::info("Setting up GenEO coarse space with manual constraint");
-    if (pou->size() != A->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
-
-    auto C = std::make_shared<Mat>(*B); // The rhs of the eigenproblem
-    detail::scale_matrix_with_pou(*C, *pou);
-
-    this->basis_ = solve_gevp(A, C, solver, subdomain_boundary, eig_ptree);
-
-    detail::finalize_eigenvectors(this->basis_, *pou);
-  }
-};
+  detail::finalize_eigenvectors(basis, pou);
+  return basis;
+}
 
 /**
- * @brief GenEO ring coarse space builder.
+ * @brief Build a GenEO-Ring coarse space (domain = ring, constraint = none). See arXiv:2510.26548.
  *
- * Constructs a GenEO coarse space by solving the generalized eigenproblem on a ring
- * (overlap region), then extending the eigenvectors energy-minimally to the interior.
- * This is computationally cheaper than the classical GenEO method.
+ * Like the standard GenEO coarse space, the basis vectors are eigenvectors of $Ax = \lambda DBDx$,
+ * but $A$ and $B$ are only defined on a ring region around the subdomain boundary, leading to a
+ * cheaper eigenproblem. The partition of unity @p pou should be defined on the full subdomain;
+ * the ring-local POU is extracted via @p ring_region_to_subdomain.
  *
- * @tparam Mat Matrix type
- * @tparam Vec Vector type for basis vectors
+ * After solving the ring eigenproblem, the eigenvectors must be extended to the full subdomain.
+ * The extension mode is read from `ptree.sub(ptree_prefix).get("ring_extension", "from_ring")`:
+ * - `"from_ring"`: Energy-minimal extension from one layer into the ring to the subdomain interior,
+ *   as described in arXiv:2510.26548. Requires @p A_sub.
+ * - `"from_boundary"`: Extends from the overlapping subdomain boundary using $A_\text{sub}^{-1}$.
+ *   The resulting basis vectors are operator-harmonic on the whole subdomain by construction.
+ *   This variant has not been theoretically analysed but has practical advantages (the inverse
+ *   is usually already available from the fine level). Requires @p A_sub_inv and @p subdomain_boundary_mask.
+ *
+ * @param A Neumann matrix on the ring region (left-hand side of eigenproblem).
+ * @param B Matrix defined on the ring region (used to construct right-hand side).
+ * @param ring_region_to_subdomain Mapping from ring-local indices to subdomain indices.
+ * @param pou Partition of unity vector on the full subdomain.
+ * @param A_sub Full subdomain matrix (needed for ring analysis and energy-minimal extension).
+ * @param ptree ParameterTree containing solver and selection parameters.
+ * @param ptree_prefix Prefix for parameter subtree (default "coarse_space").
+ * @param A_sub_inv Inverse of the subdomain matrix (needed only for ring_extension = from_boundary).
+ * @param subdomain_boundary_mask Boolean mask for subdomain boundary DOFs (needed only for ring_extension = from_boundary).
+ * @return Vector of coarse basis vectors.
  */
-template <class Mat, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
-class GenEORingCoarseSpace : public CoarseSpaceBuilder<Vec> {
-public:
-  /**
-   * @brief Construct GenEO ring coarse space.
-   *
-   * @param A_dir Dirichlet matrix for energy-minimal extension and connectivity analysis.
-   * @param A Matrix for eigenproblem (typically Neumann matrix on the ring).
-   * @param pou Partition of unity vector.
-   * @param ring_to_subdomain Mapping from ring dofs to subdomain indices.
-   * @param ptree ParameterTree containing solver and selection parameters.
-   * @param ptree_prefix Prefix for parameter subtree (default: "geneo_ring").
-   */
-  GenEORingCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A_neu, std::shared_ptr<const PartitionOfUnity> pou, const std::vector<std::size_t>& ring_to_subdomain,
-                       const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "geneo_ring")
+template <class Scalar = double>
+std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> build_geneo_ring_coarse_space(
+    const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A, const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& B, const std::vector<std::size_t>& ring_region_to_subdomain,
+    const PartitionOfUnity& pou, const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_sub, const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "coarse_space",
+    Dune::InverseOperator<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>, Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>* A_sub_inv = nullptr, const std::vector<bool>& subdomain_boundary_mask = {})
+{
+  using Vector = Dune::BlockVector<Dune::FieldVector<Scalar, 1>>;
+
+  Logger::ScopedLog setup_sl{Logger::get().registerOrGetEvent("Coarse space", "setup")};
+
+  const auto& subtree = ptree.sub(ptree_prefix);
+  Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+  auto ring_extension = subtree.get("ring_extension", "from_ring");
+
+  auto* ring_eigensolver_event = Logger::get().registerOrGetEvent("Ring coarse space", "solve evp");
+  auto* ring_extend_event = Logger::get().registerOrGetEvent("Ring coarse space", "extend");
+
+  // Identify important regions within the ring (e.g. the inner boundary)
+  auto ring_info = detail::get_ring_info(A_sub, ring_region_to_subdomain);
+
+  // Modified partition of unity that vanishes at the inner boundary of the ring region
+  auto ring_pou = detail::make_ring_pou<Scalar>(pou, ring_region_to_subdomain, ring_info);
+
+  // Solve the ring eigenproblem
+  std::vector<Vector> basis;
   {
-    const auto& subtree = ptree.sub(ptree_prefix);
-    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+    Logger::ScopedLog sl{ring_eigensolver_event};
 
-    logger::info("Setting up GenEO ring coarse space");
-
-    // We first create a modified partition of unity that vanishes in the interior (i.e. the region outside the "ring")
-    // and on the inner boundary of the ring. We also create a interior-to-subdomain mapping.
-
-    subdomain_to_ring.clear();
-    for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) subdomain_to_ring[ring_to_subdomain[i]] = i;
-
-    interior_to_subdomain.resize(A_dir->N() - ring_to_subdomain.size());
-    inner_ring_boundary_to_subdomain.clear();
-    inner_ring_boundary_dofs.clear(); // For fast lookup
-    inner_ring_boundary_to_subdomain.reserve(ring_to_subdomain.size());
-
-    mod_pou = std::make_unique<PartitionOfUnity>(*pou);
-    std::size_t cnt = 0;
-    for (std::size_t i = 0; i < mod_pou->size(); ++i) {
-      if (not subdomain_to_ring.contains(i)) { // Zero in the interior
-        interior_to_subdomain[cnt++] = i;
-        (*mod_pou)[i] = 0;
-      }
-      else {
-        for (auto ci = (*A_dir)[i].begin(); ci != (*A_dir)[i].end(); ++ci) {
-          if (not subdomain_to_ring.contains(ci.index())) {
-            // A neighbouring dof of dof i is outside the ring => dof i is on the ring boundary
-            inner_ring_boundary_dofs.insert(i);
-            inner_ring_boundary_to_subdomain.push_back(i);
-            (*mod_pou)[i] = 0;
-            break;
-          }
-        }
-      }
-    }
-    assert(cnt == interior_to_subdomain.size());
-
-    auto C = std::make_shared<Mat>(*A_neu); // The rhs of the eigenproblem
-    detail::scale_matrix_with_pou(*C, *mod_pou, ring_to_subdomain);
-
-    // Now we can solve the eigenproblem
-    eigenvectors_ring = solve_gevp(A_neu, C, eig_ptree);
-
-    // Now we have computed a set of eigenvectors on the ring. To obtain basis vectors on the full
-    // subdomain, we extend those eigenvectors energy-minimally to the interior. However, we don't
-    // extend from the inner ring boundary but from one layer within the ring, as required by the
-    // theory.
-    // TODO: Allow to extend from the inner ring boundary to compare the effect in the numerical results.
-    inside_ring_boundary_to_subdomain.clear();
-    inside_ring_boundary_to_subdomain.reserve(ring_to_subdomain.size());
-    for (auto i : ring_to_subdomain) {
-      for (auto ci = (*A_dir)[i].begin(); ci != (*A_dir)[i].end(); ++ci) {
-        // Check if a neighbouring dof of dof i lies on the inner ring boundary but i itself does not
-        if (inner_ring_boundary_dofs.contains(ci.index()) and not inner_ring_boundary_dofs.contains(i)) inside_ring_boundary_to_subdomain.push_back(i);
-      }
-    }
-
-    // Of course we then also have to extend the "interior" to also include the inner ring boundary
-    extended_interior_to_subdomain.resize(interior_to_subdomain.size() + inner_ring_boundary_to_subdomain.size());
-    cnt = 0;
-    for (auto i : interior_to_subdomain) extended_interior_to_subdomain[cnt++] = i;
-    for (auto i : inner_ring_boundary_to_subdomain) extended_interior_to_subdomain[cnt++] = i;
-
-    // Set up energy-minimal extension
-    ext = std::make_unique<EnergyMinimalExtension<Mat, Vec>>(*A_dir, extended_interior_to_subdomain, inside_ring_boundary_to_subdomain);
-
-    // Here we create another map from 'inside ring boundary' to 'ring' to avoid too many hash map lookups below
-    std::vector<std::size_t> inside_boundary_to_ring(inside_ring_boundary_to_subdomain.size());
-    for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) inside_boundary_to_ring[i] = subdomain_to_ring[inside_ring_boundary_to_subdomain[i]];
-
-    Vec zero(A_dir->N());
-    zero = 0;
-    std::vector<Vec> combined_vectors(eigenvectors_ring.size(), zero);
-
-    Vec dirichlet_data(inside_ring_boundary_to_subdomain.size()); // Will be set each iteration
-    for (std::size_t k = 0; k < eigenvectors_ring.size(); ++k) {
-      const auto& evec = eigenvectors_ring[k];
-
-      for (std::size_t i = 0; i < inside_boundary_to_ring.size(); ++i) dirichlet_data[i] = evec[inside_boundary_to_ring[i]];
-
-      auto interior_vec = ext->extend(dirichlet_data);
-
-      // First set the values in the ring
-      for (std::size_t i = 0; i < evec.N(); ++i) combined_vectors[k][ring_to_subdomain[i]] = evec[i];
-
-      // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
-      for (std::size_t i = 0; i < interior_vec.N(); ++i) combined_vectors[k][extended_interior_to_subdomain[i]] = interior_vec[i];
-    }
-
-    this->basis_ = std::move(combined_vectors);
-    detail::finalize_eigenvectors(this->basis_, *pou);
+    auto C = B;
+    detail::scale_matrix_with_pou(C, ring_pou);
+    basis = solve_gevp(A, C, eig_ptree);
   }
 
-private:
-  std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
-  std::vector<std::size_t> interior_to_subdomain;
-  std::vector<std::size_t> inner_ring_boundary_to_subdomain;
-  std::unordered_set<std::size_t> inner_ring_boundary_dofs;
-  std::unique_ptr<PartitionOfUnity> mod_pou;
-  std::vector<std::size_t> inside_ring_boundary_to_subdomain;
-  std::vector<std::size_t> extended_interior_to_subdomain;
-  std::vector<Vec> eigenvectors_ring;
-  std::unique_ptr<EnergyMinimalExtension<Mat, Vec>> ext;
-};
+  // Extend the eigenvectors to the whole subdomain
+  {
+    Logger::ScopedLog sl{ring_extend_event};
+
+    if (ring_extension == "from_ring") { basis = detail::extend_ring_eigenvectors<Scalar>(basis, A_sub, ring_region_to_subdomain, ring_info); }
+    else if (ring_extension == "from_boundary") {
+      if (!A_sub_inv) DUNE_THROW(Dune::Exception, "ring_extension = from_boundary requires A_sub_inv to be provided");
+      if (subdomain_boundary_mask.empty()) DUNE_THROW(Dune::Exception, "ring_extension = from_boundary requires subdomain_boundary_mask to be provided");
+
+      Vector rhs(A_sub.N());
+      Vector zero(A_sub.N());
+      zero = 0;
+      std::vector<Vector> extended_vectors(basis.size(), zero);
+
+      for (std::size_t i = 0; i < extended_vectors.size(); ++i) {
+        rhs = 0;
+        for (std::size_t j = 0; j < ring_region_to_subdomain.size(); ++j)
+          if (subdomain_boundary_mask[ring_region_to_subdomain[j]]) rhs[ring_region_to_subdomain[j]] = basis[i][j];
+
+        Dune::InverseOperatorResult res;
+        A_sub_inv->apply(extended_vectors[i], rhs, res);
+      }
+
+      std::swap(basis, extended_vectors);
+    }
+    else DUNE_THROW(Dune::NotImplemented, "Unknown ring_extension mode: " + ring_extension + " (expected 'from_ring' or 'from_boundary')");
+  }
+
+  detail::finalize_eigenvectors(basis, pou);
+  return basis;
+}
 
 /**
- * @brief MsGFEM (Multiscale Generalized Finite Element Method) coarse space builder.
+ * @brief Build an MsGFEM coarse space (domain = full, constraint = harmonic).
  *
- * Constructs the MsGFEM coarse space by solving a constrained generalized eigenproblem where
- * eigenvectors satisfy an A-harmonicity constraint. This is achieved by formulating a saddle
- * point system with Lagrange multipliers that enforce Au = 0 in the interior.
+ * Computes eigenvectors of $Ax = \lambda DADx$ restricted to the $A$-harmonic subspace.
+ * For details see:
+ * - https://doi.org/10.1007/s10208-025-09711-z
+ * - https://doi.org/10.1016/j.jcp.2024.113013
  *
- * @tparam Mat Matrix type
- * @tparam MaskVec1 Type for Dirichlet mask vector
- * @tparam MaskVec2 Type for subdomain boundary mask vector
- * @tparam Vec Vector type for basis vectors
+ * The matrices @p A_neu (eigenproblem) and @p A_sub (harmonic constraint) can differ.
+ * For symmetric problems they are usually the same; for non-symmetric problems, @p A_neu
+ * usually corresponds to a symmetric part of the operator.
+ *
+ * The variant for solving the constrained eigenproblem is read from
+ * `ptree.sub(ptree_prefix).get("constraint_evp", "lagrange_multiplier")`:
+ * - `"lagrange_multiplier"`: Enforce the constraint weakly using Lagrange multipliers,
+ *   leading to a saddle-point eigenproblem of twice the original size. Requires @p A_sub
+ *   and @p dirichlet_mask.
+ * - `"alternating"`: Apply $P^T A P$ on-the-fly using $A_\text{sub}^{-1}$ to project
+ *   into the harmonic subspace in each eigensolver iteration. Usually faster if the
+ *   factorised $A_\text{sub}^{-1}$ is already available. Requires @p A_sub_inv.
+ *
+ * @param A_neu Neumann matrix on the overlapping subdomain.
+ * @param pou Partition of unity vector (diagonal of D matrix).
+ * @param subdomain_boundary_mask Boolean mask for subdomain boundary DOFs.
+ * @param ptree ParameterTree containing solver and selection parameters.
+ * @param ptree_prefix Prefix for parameter subtree (default "coarse_space").
+ * @param A_sub Subdomain matrix (needed for constraint_evp = lagrange_multiplier).
+ * @param dirichlet_mask Boolean mask for global Dirichlet boundary DOFs (needed for constraint_evp = lagrange_multiplier).
+ * @param A_sub_inv Inverse of subdomain matrix (needed for constraint_evp = alternating).
+ * @return Vector of coarse basis vectors.
  */
-template <class Mat, class MaskVec1, class MaskVec2, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
-class MsGFEMCoarseSpace : public CoarseSpaceBuilder<Vec> {
-public:
-  /**
-   * @brief Construct MsGFEM coarse space.
-   *
-   * @param A Neumann matrix on the overlapping subdomain.
-   * @param pou Partition of unity vector (diagonal of D matrix).
-   * @param dirichlet_mask Mask vector indicating Dirichlet boundary DOFs (>0 means Dirichlet).
-   * @param subdomain_boundary_mask Mask vector indicating subdomain boundary DOFs (>0 means boundary).
-   * @param ptree ParameterTree containing solver and selection parameters.
-   * @param ptree_prefix Prefix for parameter subtree (default: "msgfem").
-   */
-  MsGFEMCoarseSpace(std::shared_ptr<const Mat> A, std::shared_ptr<const PartitionOfUnity> pou, const MaskVec1& dirichlet_mask, const MaskVec2& subdomain_boundary_mask,
-                    const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "msgfem")
-  {
-    const auto& subtree = ptree.sub(ptree_prefix);
-    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+template <class Scalar = double>
+std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>
+build_msgfem_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_neu, const PartitionOfUnity& pou, const std::vector<bool>& subdomain_boundary_mask,
+                          const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "coarse_space", const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>* A_sub = nullptr,
+                          const std::vector<bool>& dirichlet_mask = {},
+                          Dune::InverseOperator<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>, Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>* A_sub_inv = nullptr)
+{
+  using Matrix = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>;
+  using Vector = Dune::BlockVector<Dune::FieldVector<Scalar, 1>>;
 
-    setup_msgfem_impl(A, A, pou, dirichlet_mask, subdomain_boundary_mask, eig_ptree);
+  Logger::ScopedLog setup_sl{Logger::get().registerOrGetEvent("Coarse space", "setup")};
+
+  const auto& subtree = ptree.sub(ptree_prefix);
+  Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+  auto constraint_evp = subtree.get("constraint_evp", "lagrange_multiplier");
+
+  std::vector<Vector> basis;
+
+  if (constraint_evp == "lagrange_multiplier") {
+    if (!A_sub) DUNE_THROW(Dune::Exception, "constraint_evp = lagrange_multiplier requires A_sub to be provided");
+    if (A_sub->N() != A_neu.N()) DUNE_THROW(Dune::Exception, "The two matrices must have the same size");
+    if (dirichlet_mask.size() != A_sub->N()) DUNE_THROW(Dune::Exception, "The matrix and the Dirichlet mask must have the same size");
+    if (pou.size() != A_sub->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
+
+    auto partition = detail::partition_dofs(*A_sub, subdomain_boundary_mask, dirichlet_mask);
+    basis = detail::solve_msgfem_saddle_point_evp<Scalar>(A_neu, *A_sub, partition, pou, eig_ptree);
   }
+  else if (constraint_evp == "alternating") {
+    if (!A_sub_inv) DUNE_THROW(Dune::Exception, "constraint_evp = alternating requires A_sub_inv to be provided");
+    if (pou.size() != A_neu.N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
 
-  MsGFEMCoarseSpace(std::shared_ptr<const Mat> A_neu, std::shared_ptr<const Mat> A_dir, std::shared_ptr<const PartitionOfUnity> pou, const MaskVec1& dirichlet_mask,
-                    const MaskVec2& subdomain_boundary_mask, const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "msgfem")
-  {
-    const auto& subtree = ptree.sub(ptree_prefix);
-    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
-
-    setup_msgfem_impl(A_neu, A_dir, pou, dirichlet_mask, subdomain_boundary_mask, eig_ptree);
+    Matrix C(A_neu);
+    detail::scale_matrix_with_pou(C, pou);
+    basis = solve_gevp(A_neu, C, A_sub_inv, subdomain_boundary_mask, eig_ptree);
   }
+  else DUNE_THROW(Dune::NotImplemented, "Unknown constraint_evp mode: " + constraint_evp + " (expected 'lagrange_multiplier' or 'alternating')");
 
-  /**
-   * @brief Default constructor for deferred task creation.
-   */
-  MsGFEMCoarseSpace() = default;
-
-protected:
-  /**
-   * @brief Core implementation of MsGFEM setup - can be called from any task context.
-   */
-  template <class MV1, class MV2>
-  void setup_msgfem_impl(std::shared_ptr<const Mat> A_neu, std::shared_ptr<const Mat> A_dir, std::shared_ptr<const PartitionOfUnity> pou, const MV1& dirichlet_mask, const MV2& subdomain_boundary_mask,
-                         const Dune::ParameterTree& eig_ptree)
-  {
-    logger::info("Setting up MsGFEM coarse space");
-
-    if (A_dir->N() != A_neu->N()) DUNE_THROW(Dune::Exception, "The two matrices must have the same size");
-
-    if (dirichlet_mask.N() != A_dir->N()) DUNE_THROW(Dune::Exception, "The matrix and the Dirichlet mask must have the same size");
-
-    if (pou->size() != A_dir->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
-
-    // Partition the degrees of freedom
-    enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
-    std::vector<DOFType> dof_partitioning(A_dir->N());
-    std::size_t num_interior = 0;
-    std::size_t num_boundary = 0;
-    std::size_t num_dirichlet = 0;
-    for (std::size_t i = 0; i < A_dir->N(); ++i) {
-      if (dirichlet_mask[i] > 0) {
-        dof_partitioning[i] = DOFType::Dirichlet;
-        num_dirichlet++;
-      }
-      else if (subdomain_boundary_mask[i]) {
-        dof_partitioning[i] = DOFType::Boundary;
-        num_boundary++;
-      }
-      else {
-        dof_partitioning[i] = DOFType::Interior;
-        num_interior++;
-      }
-    }
-    logger::debug_all("Partitioned dofs, have {} in interior, {} on subdomain boundary, {} on Dirichlet boundary", num_interior, num_boundary, num_dirichlet);
-
-    // Create a reordered index set: first interior dofs, then boundary dofs, then Dirichlet dofs
-    std::vector<std::size_t> reordering(A_dir->N());
-    std::size_t cnt_interior = 0;
-    std::size_t cnt_boundary = num_interior;
-    std::size_t cnt_dirichlet = num_interior + num_boundary;
-    for (std::size_t i = 0; i < reordering.size(); ++i)
-      if (dof_partitioning[i] == DOFType::Interior) reordering[i] = cnt_interior++;
-      else if (dof_partitioning[i] == DOFType::Boundary) reordering[i] = cnt_boundary++;
-      else reordering[i] = cnt_dirichlet++;
-
-    // Assemble the left-hand side of the eigenproblem
-    auto A_lhs = std::make_shared<Mat>();
-    const auto n_big = num_interior + num_boundary + num_interior; // size of the big eigenproblem, including the harmonicity constraint
-    const auto avg = 2 * (A_dir->nonzeroes() / A_dir->N());
-    A_lhs->setBuildMode(Mat::implicit);
-    A_lhs->setImplicitBuildModeParameters(avg, 0.2);
-    A_lhs->setSize(n_big, n_big);
-
-    // Assemble the part corresponding to the a-harmonic constraint
-    for (auto rit = A_dir->begin(); rit != A_dir->end(); ++rit) {
-      auto ii = rit.index();
-      auto ri = reordering[ii];
-      if (dof_partitioning[ii] != DOFType::Interior) continue;
-
-      for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
-        auto jj = cit.index();
-        auto rj = reordering[jj];
-
-        if (dof_partitioning[jj] != DOFType::Dirichlet) {
-          A_lhs->entry(rj, num_interior + num_boundary + ri) = *cit;
-          A_lhs->entry(num_interior + num_boundary + ri, rj) = *cit;
-        }
-      }
-    }
-
-    // Assemble the remaining part of the matrix
-    for (auto rit = A_neu->begin(); rit != A_neu->end(); ++rit) {
-      auto ii = rit.index();
-      auto ri = reordering[ii];
-      if (dof_partitioning[ii] == DOFType::Dirichlet) // Skip Dirchlet dofs
-        continue;
-
-      for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
-        auto jj = cit.index();
-        auto rj = reordering[jj];
-
-        if (dof_partitioning[jj] != DOFType::Dirichlet) A_lhs->entry(ri, rj) = *cit;
-      }
-    }
-    A_lhs->compress();
-
-    // Next, assemble the right-hand side of the eigenproblem
-    auto B = std::make_shared<Mat>();
-    B->setBuildMode(Mat::implicit);
-    B->setImplicitBuildModeParameters(avg, 0.2);
-    B->setSize(n_big, n_big);
-
-    for (auto rit = A_neu->begin(); rit != A_neu->end(); ++rit) {
-      auto ii = rit.index();
-      auto ri = reordering[ii];
-      if (dof_partitioning[ii] != DOFType::Interior) continue;
-
-      for (auto cit = rit->begin(); cit != rit->end(); ++cit) {
-        auto jj = cit.index();
-        auto rj = reordering[jj];
-
-        if (dof_partitioning[jj] == DOFType::Interior) B->entry(ri, rj) = (*pou)[ii] * (*pou)[jj] * (*cit);
-      }
-    }
-    B->compress();
-
-    // Now we can solve the eigenproblem
-    auto eigenvectors = solve_gevp(A_lhs, B, eig_ptree);
-
-    // Finally, extract the actual eigenvectors
-    Vec v(A_dir->N());
-    v = 0;
-    std::vector<Vec> eigenvectors_actual(eigenvectors.size(), v);
-    for (std::size_t k = 0; k < eigenvectors.size(); ++k) {
-      for (std::size_t i = 0; i < A_dir->N(); ++i)
-        if (dof_partitioning[i] != DOFType::Dirichlet) eigenvectors_actual[k][i] = eigenvectors[k][reordering[i]];
-    }
-
-    this->basis_ = std::move(eigenvectors_actual);
-    detail::finalize_eigenvectors(this->basis_, *pou);
-  }
-};
+  detail::finalize_eigenvectors(basis, pou);
+  return basis;
+}
 
 /**
- * @brief MsGFEM ring coarse space builder.
+ * @brief Build an MsGFEM-Ring coarse space (domain = ring, constraint = harmonic).
  *
- * Constructs a MsGFEM coarse space by solving the constrained generalized eigenproblem on a ring
- * (overlap region), then extending the eigenvectors energy-minimally to the interior.
- * Combines the A-harmonic constraint from MsGFEM with the computational efficiency of the ring approach.
+ * Combines the MsGFEM approach (constrained eigenproblem enforcing $A$-harmonicity)
+ * with the ring approach (restricting the eigenproblem to a ring region around the subdomain
+ * boundary). The inner boundary of the ring is treated as a subdomain boundary of the ring
+ * sub-problem, while the actual subdomain boundary forms the other boundary.
  *
- * @tparam Mat Matrix type
- * @tparam MaskVec1 Type for Dirichlet mask vector
- * @tparam MaskVec2 Type for subdomain boundary mask vector
- * @tparam Vec Vector type for basis vectors
+ * The DOFs within the ring are partitioned as follows:
+ * - Interior: ring DOFs not on the inner ring boundary, not on the subdomain boundary, and not
+ *   on the Dirichlet boundary. The $A$-harmonicity constraint is enforced for these DOFs.
+ * - Boundary: ring DOFs on the inner ring boundary or on the subdomain boundary (but not Dirichlet).
+ *   These are free (unconstrained) DOFs in the eigenproblem.
+ * - Dirichlet: ring DOFs on the global Dirichlet boundary. These are excluded from the system.
+ *
+ * The variant for solving the constrained eigenproblem is read from
+ * `ptree.sub(ptree_prefix).get("constraint_evp", "lagrange_multiplier")`:
+ * - `"lagrange_multiplier"`: The $A$-harmonicity constraint is assembled using the ring-local
+ *   restriction of the full subdomain matrix @p A_sub, leading to a saddle-point eigenproblem.
+ *   This is important for non-symmetric problems where @p A_neu and @p A_sub correspond to
+ *   different PDEs. Requires @p dirichlet_mask.
+ * - `"alternating"`: Apply $P^T A P$ on-the-fly using an internally constructed UMFPack solver
+ *   on the ring-local matrix to project into the harmonic subspace during each eigensolver
+ *   iteration. Does not require an externally provided solver.
+ *
+ * After solving the constrained eigenproblem on the ring, the eigenvectors are extended to the
+ * full subdomain. The extension mode is read from
+ * `ptree.sub(ptree_prefix).get("ring_extension", "from_ring")`:
+ * - `"from_ring"`: Energy-minimal extension from one layer into the ring to the subdomain interior,
+ *   as in the GenEO-Ring coarse space.
+ * - `"from_boundary"`: Extends from the overlapping subdomain boundary using $A_\text{sub}^{-1}$.
+ *   Requires @p A_sub_inv.
+ *
+ * @param A_neu Neumann matrix on the ring region (for the eigenproblem LHS main block and RHS).
+ * @param ring_region_to_subdomain Mapping from ring-local indices to subdomain indices.
+ * @param pou Partition of unity vector on the full subdomain.
+ * @param A_sub Full subdomain matrix (for the harmonicity constraint, ring info, and extension).
+ * @param dirichlet_mask Boolean mask (full subdomain) for global Dirichlet boundary DOFs (needed for constraint_evp = lagrange_multiplier).
+ * @param subdomain_boundary_mask Boolean mask (full subdomain) for subdomain boundary DOFs.
+ * @param ptree ParameterTree containing solver and selection parameters.
+ * @param ptree_prefix Prefix for parameter subtree (default "coarse_space").
+ * @param A_sub_inv Inverse of the subdomain matrix (needed only for ring_extension = from_boundary).
+ * @return Vector of coarse basis vectors.
  */
-template <class Mat, class MaskVec1, class MaskVec2, class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
-class MsGFEMRingCoarseSpace : public CoarseSpaceBuilder<Vec> {
-public:
-  /**
-   * @brief Construct MsGFEM ring coarse space.
-   *
-   * @param A_dir Dirichlet matrix for energy-minimal extension.
-   * @param A Matrix for the eigenproblem (typically the Neumann matrix on the extended overlap region).
-   * @param overlap Overlap parameter.
-   * @param pou Partition of unity vector.
-   * @param dirichlet_mask Mask vector indicating Dirichlet boundary DOFs (>0 means Dirichlet).
-   * @param subdomain_boundary_mask Mask vector indicating subdomain boundary DOFs (>0 means boundary).
-   * @param ring_to_subdomain Mapping from ring dofs to subdomain indices.
-   * @param ptree ParameterTree containing solver and selection parameters.
-   * @param ptree_prefix Prefix for parameter subtree (default: "msgfem_ring").
-   */
-  MsGFEMRingCoarseSpace(std::shared_ptr<const Mat> A_dir, std::shared_ptr<const Mat> A_neu, int overlap, std::shared_ptr<const PartitionOfUnity> pou, const MaskVec1& dirichlet_mask,
-                        const MaskVec2& subdomain_boundary_mask, const std::vector<std::size_t>& ring_to_subdomain, const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "msgfem_ring")
-  {
-    const auto& subtree = ptree.sub(ptree_prefix);
-    Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+template <class Scalar = double>
+std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>
+build_msgfem_ring_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_neu, const std::vector<std::size_t>& ring_region_to_subdomain, const PartitionOfUnity& pou,
+                               const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_sub, const std::vector<bool>& dirichlet_mask, const std::vector<bool>& subdomain_boundary_mask,
+                               const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "coarse_space",
+                               Dune::InverseOperator<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>, Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>* A_sub_inv = nullptr)
+{
+  using Vector = Dune::BlockVector<Dune::FieldVector<Scalar, 1>>;
 
-    logger::info("Setting up MsGFEM ring coarse space");
+  Logger::ScopedLog setup_sl{Logger::get().registerOrGetEvent("Coarse space", "setup")};
 
-    // Handle edge case: empty ring
-    if (ring_to_subdomain.empty()) DUNE_THROW(Dune::Exception, "The ring to subdomain mapping is empty, cannot build MsGFEM ring coarse space");
+  const auto& subtree = ptree.sub(ptree_prefix);
+  Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+  auto ring_extension = subtree.get("ring_extension", "from_ring");
+  auto constraint_evp = subtree.get("constraint_evp", "lagrange_multiplier");
 
-    subdomain_to_ring.clear();
-    for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) subdomain_to_ring[ring_to_subdomain[i]] = i;
+  auto* ring_eigensolver_event = Logger::get().registerOrGetEvent("MsGFEM-Ring coarse space", "solve evp");
+  auto* ring_extend_event = Logger::get().registerOrGetEvent("MsGFEM-Ring coarse space", "extend");
 
-    interior_to_subdomain.resize(A_dir->N() - ring_to_subdomain.size());
-    inner_ring_boundary_to_subdomain.clear();
-    inner_ring_boundary_dofs.clear(); // For fast lookup
-    inner_ring_boundary_to_subdomain.reserve(ring_to_subdomain.size());
+  // Identify important regions within the ring (inner boundary, behind inner boundary)
+  auto ring_info = detail::get_ring_info(A_sub, ring_region_to_subdomain);
 
-    auto mod_pou = *pou;
-    std::size_t cnt = 0;
-    for (std::size_t i = 0; i < mod_pou.size(); ++i) {
-      if (not subdomain_to_ring.contains(i)) { // Zero in the interior
-        interior_to_subdomain[cnt++] = i;
-        mod_pou[i] = 0;
-      }
-      else {
-        for (auto ci = (*A_dir)[i].begin(); ci != (*A_dir)[i].end(); ++ci) {
-          if (not subdomain_to_ring.contains(ci.index())) {
-            // A neighbouring dof of dof i is outside the ring => dof i is on the ring boundary
-            inner_ring_boundary_dofs.insert(i);
-            inner_ring_boundary_to_subdomain.push_back(i);
-            mod_pou[i] = 0;
-            break;
-          }
-        }
-      }
-    }
-
-    // Create subdomain-to-ring map
-    std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
-    for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) subdomain_to_ring[ring_to_subdomain[i]] = i;
-
-    // Partition DOFs in ring: Interior (ring interior), Boundary (ring boundary + inside ring boundary), Dirichlet
-    enum class DOFType : std::uint8_t { Interior, Boundary, Dirichlet };
-    std::vector<DOFType> dof_partitioning(ring_to_subdomain.size());
-    std::size_t num_interior = 0;
-    std::size_t num_boundary = 0;
-    std::size_t num_dirichlet = 0;
-
-    for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-      auto subdomain_idx = ring_to_subdomain[i];
-
-      if (dirichlet_mask[subdomain_idx] > 0) {
-        dof_partitioning[i] = DOFType::Dirichlet;
-        num_dirichlet++;
-      }
-      else if (subdomain_boundary_mask[subdomain_idx] || inner_ring_boundary_dofs.contains(subdomain_idx)) {
-        dof_partitioning[i] = DOFType::Boundary;
-        num_boundary++;
-      }
-      else {
-        dof_partitioning[i] = DOFType::Interior;
-        num_interior++;
-      }
-    }
-
-    logger::debug_all("Partitioned ring dofs, have {} in interior, {} on boundary, {} on Dirichlet boundary", num_interior, num_boundary, num_dirichlet);
-
-    // Create reordered index set: interior, then boundary, then Dirichlet
-    std::vector<std::size_t> reordering(ring_to_subdomain.size());
-    std::size_t cnt_interior = 0;
-    std::size_t cnt_boundary = num_interior;
-    std::size_t cnt_dirichlet = num_interior + num_boundary;
-
-    for (std::size_t i = 0; i < reordering.size(); ++i)
-      if (dof_partitioning[i] == DOFType::Interior) reordering[i] = cnt_interior++;
-      else if (dof_partitioning[i] == DOFType::Boundary) reordering[i] = cnt_boundary++;
-      else reordering[i] = cnt_dirichlet++;
-
-    // Assemble left-hand side matrix (constrained system with A-harmonic constraint)
-    const auto n_big = num_interior + num_boundary + num_interior; // Include Lagrange multipliers
-    const auto avg = 2 * (A_neu->nonzeroes() / A_neu->N());
-    auto A_lhs = std::make_shared<Mat>();
-    A_lhs->setBuildMode(Mat::implicit);
-    A_lhs->setImplicitBuildModeParameters(avg, 0.2);
-    A_lhs->setSize(n_big, n_big);
-
-    // Assemble A-harmonic constraint: A*u = 0 for interior DOFs
-    for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-      if (dof_partitioning[i] != DOFType::Interior) continue;
-
-      auto ri = reordering[i];
-
-      for (auto cit = (*A_dir)[ring_to_subdomain[i]].begin(); cit != (*A_dir)[ring_to_subdomain[i]].end(); ++cit) {
-        auto j = subdomain_to_ring[cit.index()]; // j is also a ring index
-
-        if (dof_partitioning[j] != DOFType::Dirichlet) {
-          auto rj = reordering[j];
-          // Add constraint entries: A^T on top, A on bottom
-          A_lhs->entry(rj, num_interior + num_boundary + ri) = *cit;
-          A_lhs->entry(num_interior + num_boundary + ri, rj) = *cit;
-        }
-      }
-    }
-
-    // Assemble main matrix block
-    for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-      if (dof_partitioning[i] == DOFType::Dirichlet) continue;
-
-      auto ri = reordering[i];
-
-      for (auto cit = (*A_neu)[i].begin(); cit != (*A_neu)[i].end(); ++cit) {
-        auto j = cit.index(); // j is also a ring index
-
-        if (dof_partitioning[j] != DOFType::Dirichlet) {
-          auto rj = reordering[j];
-          A_lhs->entry(ri, rj) = *cit;
-        }
-      }
-    }
-    A_lhs->compress();
-
-    // Assemble right-hand side matrix (weighted with partition of unity)
-    auto B = std::make_shared<Mat>();
-    B->setBuildMode(Mat::implicit);
-    B->setImplicitBuildModeParameters(avg, 0.2);
-    B->setSize(n_big, n_big);
-
-    for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i) {
-      if (dof_partitioning[i] == DOFType::Dirichlet) continue;
-
-      auto subdomain_ii = ring_to_subdomain[i];
-      auto ri = reordering[i];
-
-      for (auto cit = (*A_neu)[i].begin(); cit != (*A_neu)[i].end(); ++cit) {
-        auto j = cit.index(); // j is also a ring index
-        auto subdomain_jj = ring_to_subdomain[j];
-
-        if (dof_partitioning[j] != DOFType::Dirichlet) {
-          auto rj = reordering[j];
-          B->entry(ri, rj) = mod_pou[subdomain_ii] * mod_pou[subdomain_jj] * (*cit);
-        }
-      }
-    }
-    B->compress();
-
-    // Solve constrained eigenproblem
-    auto eigenvectors_constrained = solve_gevp(A_lhs, B, eig_ptree);
-
-    // Extract actual eigenvectors (first part of constrained solution)
-    Vec v_ring(ring_to_subdomain.size());
-    v_ring = 0;
-    eigenvectors_ring.resize(eigenvectors_constrained.size(), v_ring);
-
-    for (std::size_t k = 0; k < eigenvectors_constrained.size(); ++k) {
-      for (std::size_t i = 0; i < ring_to_subdomain.size(); ++i)
-        if (dof_partitioning[i] != DOFType::Dirichlet) eigenvectors_ring[k][i] = eigenvectors_constrained[k][reordering[i]];
-    }
-
-    inside_ring_boundary_to_subdomain.clear();
-    inside_ring_boundary_to_subdomain.reserve(ring_to_subdomain.size());
-    for (auto i : ring_to_subdomain) {
-      for (auto ci = (*A_dir)[i].begin(); ci != (*A_dir)[i].end(); ++ci) {
-        // Check if a neighbouring dof of dof i lies on the inner ring boundary but i itself does not
-        if (inner_ring_boundary_dofs.contains(ci.index()) and not inner_ring_boundary_dofs.contains(i)) inside_ring_boundary_to_subdomain.push_back(i);
-      }
-    }
-
-    // Of course we then also have to extend the "interior" to also include the inner ring boundary
-    extended_interior_to_subdomain.resize(interior_to_subdomain.size() + inner_ring_boundary_to_subdomain.size());
-    cnt = 0;
-    for (auto i : interior_to_subdomain) extended_interior_to_subdomain[cnt++] = i;
-    for (auto i : inner_ring_boundary_to_subdomain) extended_interior_to_subdomain[cnt++] = i;
-
-    // Set up energy-minimal extension
-    ext = std::make_unique<EnergyMinimalExtension<Mat, Vec>>(*A_dir, extended_interior_to_subdomain, inside_ring_boundary_to_subdomain);
-
-    // Here we create another map from 'inside ring boundary' to 'ring' to avoid too many hash map lookups below
-    std::vector<std::size_t> inside_boundary_to_ring(inside_ring_boundary_to_subdomain.size());
-    for (std::size_t i = 0; i < inside_ring_boundary_to_subdomain.size(); ++i) inside_boundary_to_ring[i] = subdomain_to_ring[inside_ring_boundary_to_subdomain[i]];
-
-    Vec zero(A_dir->N());
-    zero = 0;
-    std::vector<Vec> combined_vectors(eigenvectors_ring.size(), zero);
-
-    Vec dirichlet_data(inside_ring_boundary_to_subdomain.size()); // Will be set each iteration
-    for (std::size_t k = 0; k < eigenvectors_ring.size(); ++k) {
-      const auto& evec = eigenvectors_ring[k];
-
-      for (std::size_t i = 0; i < inside_boundary_to_ring.size(); ++i) dirichlet_data[i] = evec[inside_boundary_to_ring[i]];
-
-      auto interior_vec = ext->extend(dirichlet_data);
-
-      // First set the values in the ring
-      for (std::size_t i = 0; i < evec.N(); ++i) combined_vectors[k][ring_to_subdomain[i]] = evec[i];
-
-      // Next fill the interior values (note that the interior and ring now overlap, so this overrides some values)
-      for (std::size_t i = 0; i < interior_vec.N(); ++i) combined_vectors[k][extended_interior_to_subdomain[i]] = interior_vec[i];
-    }
-
-    this->basis_ = std::move(combined_vectors);
-    detail::finalize_eigenvectors(this->basis_, *pou);
+  // Create ring-local boundary mask. The inner boundary of the ring is treated as subdomain boundary.
+  const auto n_ring = ring_region_to_subdomain.size();
+  std::vector<bool> ring_boundary_mask(n_ring);
+  for (std::size_t i = 0; i < n_ring; ++i) {
+    auto sub_idx = ring_region_to_subdomain[i];
+    ring_boundary_mask[i] = ring_info.inner_boundary.contains(sub_idx) || subdomain_boundary_mask[sub_idx];
   }
 
-private:
-  std::unordered_map<std::size_t, std::size_t> subdomain_to_ring;
-  std::vector<std::size_t> interior_to_subdomain;
-  std::vector<std::size_t> inner_ring_boundary_to_subdomain;
-  std::unordered_set<std::size_t> inner_ring_boundary_dofs;
-  std::unique_ptr<PartitionOfUnity> mod_pou;
-  std::vector<std::size_t> inside_ring_boundary_to_subdomain;
-  std::vector<std::size_t> extended_interior_to_subdomain;
+  // Create ring POU: project full POU to ring indices
+  std::vector<Scalar> ring_pou(n_ring);
+  for (std::size_t i = 0; i < n_ring; ++i) ring_pou[i] = pou[ring_region_to_subdomain[i]];
 
-  std::vector<std::size_t> extension_interior_to_subdomain;
-  std::vector<std::size_t> extension_boundary_to_subdomain;
-  std::vector<Vec> eigenvectors_ring;
-  std::unique_ptr<EnergyMinimalExtension<Mat, Vec>> ext;
-};
+  // Extract the ring-local restriction of A_sub for the harmonicity constraint
+  auto A_sub_ring = detail::extract_ring_submatrix<Scalar>(A_sub, ring_region_to_subdomain, ring_info);
 
-/**
- * @brief Partition of Unity (POU) coarse space builder.
- *
- * Constructs a simple coarse space consisting of a single basis vector that is
- * constant 1 on each subdomain, scaled by the partition of unity and normalized.
- * This provides a basic coarse space that captures the constant mode on each subdomain.
- *
- * @tparam Vec Vector type for basis vectors
- */
-template <class Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>>
-class POUCoarseSpace : public CoarseSpaceBuilder<Vec> {
-public:
-  /**
-   * @brief Construct POU coarse space.
-   *
-   * @param pou Partition of unity vector for scaling.
-   */
-  explicit POUCoarseSpace(std::shared_ptr<const PartitionOfUnity> pou)
+  // Solve the constrained eigenproblem on the ring
+  std::vector<Vector> basis;
   {
-    logger::info("Setting up POU coarse space");
+    Logger::ScopedLog sl{ring_eigensolver_event};
 
-    // Create a single basis vector that is constant 1, scaled by partition of unity
-    this->basis_.resize(1);
-    this->basis_[0].resize(pou->size());
+    if (constraint_evp == "lagrange_multiplier") {
+      // Create ring-local Dirichlet mask (only needed for the saddle-point formulation)
+      std::vector<bool> ring_dirichlet_mask(n_ring);
+      for (std::size_t i = 0; i < n_ring; ++i) ring_dirichlet_mask[i] = dirichlet_mask[ring_region_to_subdomain[i]];
 
-    // Initialize with constant 1
-    for (std::size_t i = 0; i < pou->size(); ++i) this->basis_[0][i] = 1.0;
+      auto partition = detail::partition_dofs(A_neu, ring_boundary_mask, ring_dirichlet_mask);
+      basis = detail::solve_msgfem_saddle_point_evp<Scalar>(A_neu, A_sub_ring, partition, ring_pou, eig_ptree);
+    }
+    else if (constraint_evp == "alternating") {
+      // Construct a UMFPack solver on the ring-local matrix. We need to modify the matrix by
+      // eliminating the ring boundary DOFs, which are treated as Dirichlet DOFs in the projection.
+      // This is done by setting the corresponding rows and columns to zero and putting ones
+      // on the diagonal. We can modify the matrix in-place since it's not used for anything else.
+      for (std::size_t i = 0; i < n_ring; ++i) {
+        if (ring_boundary_mask[i]) {
+          for (auto it = A_sub_ring[i].begin(); it != A_sub_ring[i].end(); ++it) *it = 0;
+          A_sub_ring.entry(i, i) = 1;
+        }
+      }
 
-    // Apply partition of unity scaling and normalization
-    detail::finalize_eigenvectors(this->basis_, *pou);
+      using RingMatrix = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>;
+      auto ring_solver = std::make_shared<Dune::UMFPack<RingMatrix>>();
+      ring_solver->setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
+      ring_solver->setOption(UMFPACK_IRSTEP, 0);
+      ring_solver->setMatrix(A_sub_ring);
+
+      RingMatrix C(A_neu);
+      detail::scale_matrix_with_pou(C, ring_pou);
+      basis = solve_gevp(A_neu, C, ring_solver.get(), ring_boundary_mask, eig_ptree);
+    }
+    else DUNE_THROW(Dune::NotImplemented, "Unknown constraint_evp mode: " + constraint_evp + " (expected 'lagrange_multiplier' or 'alternating')");
   }
 
-  /**
-   * @brief Construct POU coarse space.
-   *
-   * @param pou Partition of unity vector for scaling.
-   */
-  explicit POUCoarseSpace(const PartitionOfUnity& pou)
+  // Extend the eigenvectors to the whole subdomain
   {
-    logger::info("Setting up POU coarse space");
+    Logger::ScopedLog sl{ring_extend_event};
 
-    // Create a single basis vector that is constant 1, scaled by partition of unity
-    this->basis_.resize(1);
-    this->basis_[0].resize(pou.size());
+    if (ring_extension == "from_ring") { basis = detail::extend_ring_eigenvectors<Scalar>(basis, A_sub, ring_region_to_subdomain, ring_info); }
+    else if (ring_extension == "from_boundary") {
+      if (!A_sub_inv) DUNE_THROW(Dune::Exception, "ring_extension = from_boundary requires A_sub_inv to be provided");
 
-    // Initialize with constant 1
-    for (std::size_t i = 0; i < pou.size(); ++i) this->basis_[0][i] = 1.0;
+      Vector rhs(A_sub.N());
+      Vector zero(A_sub.N());
+      zero = 0;
+      std::vector<Vector> extended_vectors(basis.size(), zero);
 
-    // Apply partition of unity scaling and normalization
-    detail::finalize_eigenvectors(this->basis_, pou);
+      for (std::size_t i = 0; i < extended_vectors.size(); ++i) {
+        rhs = 0;
+        for (std::size_t j = 0; j < ring_region_to_subdomain.size(); ++j)
+          if (subdomain_boundary_mask[ring_region_to_subdomain[j]]) rhs[ring_region_to_subdomain[j]] = basis[i][j];
+
+        Dune::InverseOperatorResult res;
+        A_sub_inv->apply(extended_vectors[i], rhs, res);
+      }
+
+      std::swap(basis, extended_vectors);
+    }
+    else DUNE_THROW(Dune::NotImplemented, "Unknown ring_extension mode: " + ring_extension + " (expected 'from_ring' or 'from_boundary')");
   }
 
-  POUCoarseSpace(std::vector<Vec>& template_vecs, const PartitionOfUnity& pou)
-  {
-    this->basis_ = template_vecs;
-    detail::finalize_eigenvectors(this->basis_, pou);
-  }
-};
+  detail::finalize_eigenvectors(basis, pou);
+  return basis;
+}

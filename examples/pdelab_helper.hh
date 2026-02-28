@@ -278,10 +278,10 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   MPI_Waitall(static_cast<int>(requests.size()), requests.data(), MPI_STATUSES_IGNORE);
 
   // Log correction statistics before communication
-  logger::debug_all("Rank {}: Sending corrections to {} ranks", ownrank, triples_for_rank.size() - 1);
+  logger::trace_all("Sending corrections to {} ranks", triples_for_rank.size() - 1);
   for (const auto& [rank, triples] : triples_for_rank)
-    if (rank >= 0) logger::debug_all("Rank {}: Sending {} correction entries to rank {}", ownrank, triples.size(), rank);
-    else logger::debug_all("Rank {}: {} local correction entries", ownrank, triples.size());
+    if (rank >= 0) logger::trace_all("Sending {} correction entries to rank {}", triples.size(), rank);
+    else logger::trace_all("{} local correction entries", triples.size());
 
   // Now we can assemble the overlapping matrix
 

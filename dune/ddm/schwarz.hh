@@ -95,6 +95,7 @@ public:
       solver = std::make_shared<Dune::UMFPack<Mat>>();
       auto umfpack_solver = std::dynamic_pointer_cast<Dune::UMFPack<Mat>>(solver);
       umfpack_solver->setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
+      umfpack_solver->setOption(UMFPACK_IRSTEP, 0); // Disable iterative refinement for performance
       umfpack_solver->setMatrix(*this->Aovlp);
     }
     else solver = Dune::getSolverFromFactory(op, solver_subtree);

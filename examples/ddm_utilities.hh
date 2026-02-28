@@ -14,6 +14,7 @@
  */
 
 #include <cmath>
+#include <dune/common/exceptions.hh>
 #include <dune/common/parallel/mpihelper.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/grid/utility/parmetisgridpartitioner.hh>
@@ -44,6 +45,8 @@ constexpr bool isYaspGrid()
   return requires(Grid g) { g.torus(); };
 }
 
+enum class ElementType { Simplex, Cube };
+
 /**
  * @brief Create and partition a grid based on configuration
  *
@@ -69,7 +72,7 @@ constexpr bool isYaspGrid()
  * - verbose: Verbosity level for mesh loading
  */
 template <class Grid>
-std::unique_ptr<Grid> make_grid(const Dune::ParameterTree& ptree, const Dune::MPIHelper& helper, const std::string& subtree_name = "")
+std::unique_ptr<Grid> make_grid(const Dune::ParameterTree& ptree, const Dune::MPIHelper& helper, ElementType element_type, const std::string& subtree_name = "")
 {
   auto* event = Logger::get().registerEvent("Grid", "create");
   Logger::ScopedLog sl(event);
@@ -81,6 +84,8 @@ std::unique_ptr<Grid> make_grid(const Dune::ParameterTree& ptree, const Dune::MP
   std::unique_ptr<Grid> grid;
 
   if constexpr (isYaspGrid<Grid>()) {
+    if (element_type != ElementType::Cube) logger::warn("Called make_grid for YaspGrid but with element_type != Cube which is not supported. Ignoring element_type paramter");
+
     // YaspGrid path
     auto gridsize = grid_ptree.get("gridsize", 32);
     if (grid_ptree.hasKey("gridsize_per_rank")) {
@@ -123,8 +128,17 @@ std::unique_ptr<Grid> make_grid(const Dune::ParameterTree& ptree, const Dune::MP
       }
 
       // Create structured grid based on dimension
-      if constexpr (dim == 2) grid = Dune::StructuredGridFactory<Grid>::createCubeGrid({0.0, 0.0}, {1.0, 1.0}, {gridsize, gridsize});
-      else if constexpr (dim == 3) grid = Dune::StructuredGridFactory<Grid>::createCubeGrid({0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}, {gridsize, gridsize, gridsize});
+      if (element_type == ElementType::Cube) {
+        if constexpr (dim == 2) grid = Dune::StructuredGridFactory<Grid>::createCubeGrid({0.0, 0.0}, {1.0, 1.0}, {gridsize, gridsize});
+        else if constexpr (dim == 3) grid = Dune::StructuredGridFactory<Grid>::createCubeGrid({0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}, {gridsize, gridsize, gridsize});
+      }
+      else if (element_type == ElementType::Simplex) {
+        if constexpr (dim == 2) grid = Dune::StructuredGridFactory<Grid>::createSimplexGrid({0.0, 0.0}, {1.0, 1.0}, {gridsize, gridsize});
+        else if constexpr (dim == 3) grid = Dune::StructuredGridFactory<Grid>::createSimplexGrid({0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}, {gridsize, gridsize, gridsize});
+      }
+      else {
+        DUNE_THROW(Dune::NotImplemented, "make_grid(): Element type not supported");
+      }
     }
 
     // Partition with ParMETIS and load balance

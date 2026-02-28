@@ -246,7 +246,9 @@ public:
       A_sub = std::move(matrices.A_sub);
       A_neu = std::move(matrices.A_neu);
       B_neu = std::move(matrices.B_neu);
-      dirichlet_mask_ovlp = std::move(*dirichlet_mask_ovlp_);
+      // Convert the Dirichlet mask (which is a DUNE vector) to a std::vector<bool> mask
+      dirichlet_mask_ovlp.resize(dirichlet_mask_ovlp_->N());
+      std::transform(dirichlet_mask_ovlp_->begin(), dirichlet_mask_ovlp_->end(), dirichlet_mask_ovlp.begin(), [&](auto& x) { return x != 0; });
       neumann_region_to_subdomain = std::move(neumann_region_to_subdomain_);
     }
     else {
@@ -257,7 +259,9 @@ public:
 
       A_neu = std::move(matrices.A_neu);
       B_neu = std::move(matrices.B_neu);
-      dirichlet_mask_ovlp = std::move(*dirichlet_mask_ovlp_);
+      // Convert the Dirichlet mask (which is a DUNE vector) to a std::vector<bool> mask
+      dirichlet_mask_ovlp.resize(dirichlet_mask_ovlp_->N());
+      std::transform(dirichlet_mask_ovlp_->begin(), dirichlet_mask_ovlp_->end(), dirichlet_mask_ovlp.begin(), [&](auto& x) { return x != 0; });
       neumann_region_to_subdomain = std::move(neumann_region_to_subdomain_);
 
       // Now we have the Neumann matrix corresponding to the symmetric part, we still need the Dirichlet matrix corresponding to the actual problem
@@ -295,10 +299,13 @@ public:
     varcomm.forward(amdh);
 
     // Set up Dirichlet mask on overlapping subdomain
-    dirichlet_mask_ovlp = NativeVec(A_sub->N());
-    dirichlet_mask_ovlp = 0;
-    for (std::size_t i = 0; i < dirichlet_mask->N(); ++i) dirichlet_mask_ovlp[i] = native(*dirichlet_mask)[i];
-    comm.addOwnerCopyToAll(dirichlet_mask_ovlp, dirichlet_mask_ovlp);
+    NativeVec dirichlet_mask_ovlp_(A_sub->N());
+    dirichlet_mask_ovlp_ = 0;
+    for (std::size_t i = 0; i < dirichlet_mask->N(); ++i) dirichlet_mask_ovlp_[i] = native(*dirichlet_mask)[i];
+    comm.addOwnerCopyToAll(dirichlet_mask_ovlp_, dirichlet_mask_ovlp_);
+    // Convert the Dirichlet mask (which is a DUNE vector) to a std::vector<bool> mask
+    dirichlet_mask_ovlp.resize(dirichlet_mask_ovlp_.N());
+    std::transform(dirichlet_mask_ovlp_.begin(), dirichlet_mask_ovlp_.end(), dirichlet_mask_ovlp.begin(), [&](auto& x) { return x != 0; });
 
     // Eliminate Dirichlet dofs and subdomain boundary dofs symmetrically
     IdentifyBoundaryDataHandle ibdh(*A_sub, comm.indexSet());
@@ -344,7 +351,7 @@ public:
   NativeVec& getD() const { return Dune::PDELab::Backend::native(*d); }
   Vec& getDVec() const { return *d; }
   const Vec& getDirichletMask() const { return *dirichlet_mask; }
-  const NativeVec& get_overlapping_dirichlet_mask() const { return dirichlet_mask_ovlp; }
+  const std::vector<bool>& get_overlapping_dirichlet_mask() const { return dirichlet_mask_ovlp; }
   const Mat& getA() const { return *As; }
   ///@}
 
@@ -399,7 +406,7 @@ private:
   std::shared_ptr<NativeMat> A_sub;                     ///< The matrix that is obtained by extending the overlap
   std::shared_ptr<NativeMat> A_neu;                     ///< First Neumann matrix
   std::shared_ptr<NativeMat> B_neu;                     ///< Second/restricted Neumann matrix
-  NativeVec dirichlet_mask_ovlp;                        ///< Dirichlet mask on overlapping subdomain
+  std::vector<bool> dirichlet_mask_ovlp;                ///< Dirichlet mask on overlapping subdomain
   std::vector<std::size_t> neumann_region_to_subdomain; ///< Index mapping for ring coarse spaces
   ///@}
 };
