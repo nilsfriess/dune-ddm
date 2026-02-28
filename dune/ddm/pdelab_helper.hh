@@ -3,14 +3,14 @@
 #include "dune/ddm/logger.hh"
 
 #include <dune/grid/common/gridenums.hh>
+#include <dune/istl/owneroverlapcopy.hh>
 #include <dune/istl/solvercategory.hh>
+#include <memory>
 
 #if HAVE_DUNE_PDELAB
 
-#include <dune/istl/owneroverlapcopy.hh>
 #include <dune/pdelab/backend/interface.hh>
 #include <dune/pdelab/gridfunctionspace/genericdatahandle.hh>
-#include <memory>
 
 template <class GFS>
 auto make_communication(const GFS& gfs)
@@ -74,9 +74,7 @@ auto make_communication(const GFS& gfs)
   unsigned int public_count = 0;
   for (std::size_t i = 0; i < giv.N(); ++i) {
     bool owned = native(rank_partition)[i] == rank;
-    paridxs.add(native(giv)[i], {i, owned ? Dune::OwnerOverlapCopyAttributeSet::owner : Dune::OwnerOverlapCopyAttributeSet::copy, native(isPublic)[i]}
-
-    );
+    paridxs.add(native(giv)[i], {i, owned ? Dune::OwnerOverlapCopyAttributeSet::owner : Dune::OwnerOverlapCopyAttributeSet::copy, native(isPublic)[i]});
     if (native(isPublic)[i]) public_count++;
   }
   paridxs.endResize();
