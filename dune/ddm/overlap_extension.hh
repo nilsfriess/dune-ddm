@@ -14,11 +14,34 @@
 #include <mpi.h>
 #include <unordered_set>
 
-/** @brief Creates an overlapping communication object from a non-overlapping one.
+/** @brief Increases the overlap of a communication object by adding additional overlap layers.
  *
  *  This function extends the communication pattern by adding overlap layers to the
- *  domain decomposition. It takes a non-overlapping communication object and creates
- *  a new communication object with extended index sets and remote indices.
+ *  domain decomposition. It takes any communication object (non-overlapping or already
+ *  overlapping) and creates a new communication object with further extended index sets
+ *  and remote indices.
+ *
+ *  The input communicator can be:
+ *  - A non-overlapping communicator (initial overlap extension), or
+ *  - An already-overlapping communicator with a matrix built on it (incremental extension).
+ *
+ *  This is analogous to PETSc's MatIncreaseOverlap: given a communication object and a
+ *  matrix defining the graph structure, extend the overlap by the specified number of layers.
+ *
+ *  Incremental usage example:
+ *  @code
+ *    // Step 1: Extend from non-overlapping by (n-1) layers
+ *    auto [comm1, bnd1] = increase_overlap(novlp_comm, A_novlp, n - 1);
+ *
+ *    // Step 2: Build the overlapping matrix on comm1
+ *    // ... CreateMatrixDataHandle + AddMatrixDataHandle ...
+ *
+ *    // Step 3: Extend by 1 more layer using the new matrix's graph
+ *    auto [comm2, bnd2] = increase_overlap(*comm1, A_ovlp, 1);
+ *
+ *    // Step 4: Build a second overlapping matrix on comm2
+ *    // ... CreateMatrixDataHandle + AddMatrixDataHandle ...
+ *  @endcode
  *
  *  The algorithm works by:
  *  1. Identifying boundary DOFs using matrix graph structure
@@ -28,28 +51,37 @@
  *  @tparam Communication The type of the communication object (e.g., OwnerOverlapCopyCommunication)
  *  @tparam Mat The matrix type (must support row iteration via A[i].begin()/end())
  *
- *  @param novlp_comm The non-overlapping communication object. Must have:
- *                    - remoteIndices().sourceIndexSet().size() == A.N()
- *                    - Non-overlapping partitioning (no shared DOFs between ranks)
- *  @param A The matrix defining the graph structure for overlap extension
- *  @param overlap The number of overlap layers to add. Must be > 0.
+ *  @param input_comm The input communication object (non-overlapping or already overlapping).
+ *                    Must satisfy: remoteIndices().sourceIndexSet().size() == A.N()
+ *  @param A The matrix defining the graph structure for overlap extension. Its size must
+ *           match the input communicator's index set.
+ *  @param overlap The number of additional overlap layers to add. Must be > 0.
+ *  @param buffer_size_mb Size of the MPI variable-size communication buffer in MB (default: 10).
  *
  *  @return A pair containing:
- *          - First: shared_ptr to the new overlapping Communication object
+ *          - First: shared_ptr to the new extended Communication object
  *          - Second: vector<bool> boundary mask where true indicates DOFs on the
  *                    outermost layer of the extended overlap region (useful for
  *                    applying boundary conditions in Schwarz methods)
  *
  *  @pre overlap > 0
- *  @pre novlp_comm.remoteIndices().sourceIndexSet().size() == A.N()
+ *  @pre input_comm.remoteIndices().sourceIndexSet().size() == A.N()
  *
  *  @note Memory usage: Allocates approximately buffer_size_mb MB per rank for
  *        variable-size communication buffers (configurable, default 10 MB).
  *  @note Complexity: O(overlap * (|V| + |E|)) where |V| is number of DOFs and
  *        |E| is number of matrix non-zeros.
+ *
+ *  @todo When calling incrementally, the second call uses the new matrix's graph,
+ *        which may introduce links not present in the original. Verify this produces
+ *        correct results for all cases and document the behavior.
+ *  @todo Consider exposing intermediate overlap states (e.g., returning both inner
+ *        and outer overlap communicators in a single call) for use cases where two
+ *        concentric overlap levels are needed, such as RAS with extended overlap
+ *        for eigenvalue assembly.
  */
 template <class Communication, class Mat>
-auto make_overlapping_communication(const Communication& novlp_comm, const Mat& A, int overlap, std::size_t buffer_size_mb = 10)
+auto increase_overlap(const Communication& input_comm, const Mat& A, int overlap, std::size_t buffer_size_mb = 10)
 {
   using RemoteIndices = typename Communication::RemoteIndices;
   using ParallelIndexSet = typename RemoteIndices::ParallelIndexSet;
@@ -61,19 +93,19 @@ auto make_overlapping_communication(const Communication& novlp_comm, const Mat& 
   auto* extend_event = Logger::get().registerOrGetEvent("OverlapExtension", "extend overlap");
   Logger::ScopedLog sl{extend_event};
 
-  const auto& novlp_remoteids = novlp_comm.remoteIndices();
-  MPI_Comm comm = novlp_remoteids.communicator();
+  const auto& input_remoteids = input_comm.remoteIndices();
+  MPI_Comm comm = input_remoteids.communicator();
   int rank{};
   MPI_CHECK(MPI_Comm_rank(comm, &rank));
 
   // Validate overlap parameter
   if (overlap <= 0) {
-    logger::error_all("make_overlapping_communication: overlap must be positive, got {}", overlap);
+    logger::error_all("increase_overlap: overlap must be positive, got {}", overlap);
     MPI_Abort(comm, 1);
   }
 
-  if (novlp_remoteids.sourceIndexSet().size() != A.N()) {
-    logger::error_all("make_overlapping_communication: Index set and matrix don't match, index set has size {}, matrix has size {}", novlp_remoteids.sourceIndexSet().size(), A.N());
+  if (input_remoteids.sourceIndexSet().size() != A.N()) {
+    logger::error_all("increase_overlap: Index set and matrix don't match, index set has size {}, matrix has size {}", input_remoteids.sourceIndexSet().size(), A.N());
     MPI_Abort(comm, 1);
   }
 
@@ -89,25 +121,25 @@ auto make_overlapping_communication(const Communication& novlp_comm, const Mat& 
 
   // Create communicator data structures
   Dune::Interface comm_if;
-  comm_if.build(novlp_remoteids, all_att, all_att);
+  comm_if.build(input_remoteids, all_att, all_att);
   auto varcomm = std::make_unique<Dune::VariableSizeCommunicator<>>(comm_if);
 
   // Initialize the local-to-global and global-to-local maps
   std::vector<GlobalIndex> ltg;
   std::unordered_set<GlobalIndex> gis;
-  ltg.resize(novlp_remoteids.sourceIndexSet().size());
-  for (const auto& it : novlp_remoteids.sourceIndexSet()) {
+  ltg.resize(input_remoteids.sourceIndexSet().size());
+  for (const auto& it : input_remoteids.sourceIndexSet()) {
     ltg[it.local().local()] = it.global();
     gis.insert(it.global());
   }
 
   // Initialize the "boundary distance map" using BFS from boundary DOFs
   // This computes shortest path distance to boundary in the matrix graph
-  IdentifyBoundaryDataHandle ibdh(A, novlp_remoteids.sourceIndexSet());
+  IdentifyBoundaryDataHandle ibdh(A, input_remoteids.sourceIndexSet());
   varcomm->forward(ibdh);
   const auto& boundary_mask = ibdh.get_boundary_mask();
 
-  std::vector<int> boundary_distance(novlp_remoteids.sourceIndexSet().size(), std::numeric_limits<int>::max() - 1);
+  std::vector<int> boundary_distance(input_remoteids.sourceIndexSet().size(), std::numeric_limits<int>::max() - 1);
 
   // BFS initialization: enqueue all boundary DOFs with distance 0
   std::vector<std::size_t> bfs_queue;
@@ -175,7 +207,7 @@ auto make_overlapping_communication(const Communication& novlp_comm, const Mat& 
   // The value (overlap + 2) was determined empirically to be sufficient.
   // Using exactly (overlap) causes RemoteIndices rebuild failures.
   // TODO: Derive the exact mathematical bound or simplify the algorithm.
-  ext_indexset = modify_parindexset_public_state(novlp_remoteids.sourceIndexSet(), [&](int li) { return boundary_distance[li] <= overlap + 2; });
+  ext_indexset = modify_parindexset_public_state(input_remoteids.sourceIndexSet(), [&](int li) { return boundary_distance[li] <= overlap + 2; });
 
   // Set up the extended remote indices
   std::vector<int> nbs(nbs_set.begin(), nbs_set.end());
@@ -225,8 +257,8 @@ auto make_overlapping_communication(const Communication& novlp_comm, const Mat& 
     reqs.resize(2 * new_nbs.size());
     sendcount.resize(new_nbs.size());
     recvcount.resize(new_nbs.size());
-    std::size_t req_idx = 0;  // Counter for reqs
-    std::size_t msg_idx = 0;  // Counter for send/recvcount
+    std::size_t req_idx = 0; // Counter for reqs
+    std::size_t msg_idx = 0; // Counter for send/recvcount
     for (const auto& [p, pnbs] : new_nbs) {
       sendcount[msg_idx] = pnbs.size();
       MPI_CHECK(MPI_Irecv(&(recvcount[msg_idx]), 1, Dune::MPITraits<std::size_t>::getType(), p, 1, comm, &(reqs[req_idx++])));
@@ -280,4 +312,82 @@ auto make_overlapping_communication(const Communication& novlp_comm, const Mat& 
   for (std::size_t i = index_set_sizes[overlap - 1]; i < index_set_sizes[overlap]; ++i) ext_boundary_mask[i] = true;
 
   return std::make_pair(ovlp_comm, ext_boundary_mask);
+}
+
+/** @brief Creates an overlapping communication object from a non-overlapping one.
+ *
+ *  Convenience wrapper around increase_overlap() for the common case of extending
+ *  from a non-overlapping communicator. See increase_overlap() for full documentation.
+ *
+ *  @tparam Communication The type of the communication object (e.g., OwnerOverlapCopyCommunication)
+ *  @tparam Mat The matrix type (must support row iteration via A[i].begin()/end())
+ *
+ *  @param novlp_comm The non-overlapping communication object.
+ *  @param A The matrix defining the graph structure for overlap extension.
+ *  @param overlap The number of overlap layers to add. Must be > 0.
+ *  @param buffer_size_mb Size of the MPI variable-size communication buffer in MB (default: 10).
+ *
+ *  @return A pair containing:
+ *          - First: shared_ptr to the new overlapping Communication object
+ *          - Second: vector<bool> boundary mask for the outermost overlap layer
+ *
+ *  @see increase_overlap
+ */
+template <class Communication, class Mat>
+auto make_overlapping_communication(const Communication& novlp_comm, const Mat& A, int overlap, std::size_t buffer_size_mb = 10)
+{
+  return increase_overlap(novlp_comm, A, overlap, buffer_size_mb);
+}
+
+/** @brief Result of create_overlapping_matrix: communication, matrix, and boundary mask. */
+template <class Communication, class Mat>
+struct OverlapExtensionResult {
+  std::shared_ptr<Communication> comm;     ///< The extended overlapping communication object
+  std::shared_ptr<Mat> matrix;             ///< The overlapping matrix (structure + values)
+  std::vector<bool> boundary_mask;         ///< true for DOFs on the outermost overlap layer
+};
+
+/** @brief Extends overlap and creates the corresponding overlapping matrix in one step.
+ *
+ *  Convenience function that combines increase_overlap() with the overlapping matrix
+ *  construction (CreateMatrixDataHandle + AddMatrixDataHandle). This encapsulates the
+ *  common pattern of extending overlap and immediately building the matrix on the
+ *  extended communicator.
+ *
+ *  @tparam Communication The type of the communication object (e.g., OwnerOverlapCopyCommunication)
+ *  @tparam Mat The matrix type (must support row iteration and BCRSMatrix interface)
+ *
+ *  @param input_comm The input communication object (non-overlapping or already overlapping).
+ *                    Must satisfy: remoteIndices().sourceIndexSet().size() == A.N()
+ *  @param A The matrix defining the graph structure and providing values for the overlapping matrix.
+ *  @param overlap The number of additional overlap layers to add. Must be > 0.
+ *  @param buffer_size_mb Size of the MPI variable-size communication buffer in MB (default: 10).
+ *
+ *  @return An OverlapExtensionResult containing the extended communication object,
+ *          the overlapping matrix, and the boundary mask.
+ *
+ *  @see increase_overlap
+ */
+template <class Communication, class Mat>
+auto create_overlapping_matrix(const Communication& input_comm, const Mat& A, int overlap, std::size_t buffer_size_mb = 10)
+    -> OverlapExtensionResult<Communication, Mat>
+{
+  auto [ovlp_comm, boundary_mask] = increase_overlap(input_comm, A, overlap, buffer_size_mb);
+
+  // Build communication interface on the extended index set
+  typename Communication::AllSet allset;
+  Dune::Interface interface;
+  interface.build(ovlp_comm->remoteIndices(), allset, allset);
+  auto varcomm = std::make_unique<Dune::VariableSizeCommunicator<>>(interface);
+
+  // Create the overlapping matrix structure
+  CreateMatrixDataHandle cmdh(A, ovlp_comm->indexSet());
+  varcomm->forward(cmdh);
+  auto A_ovlp = std::make_shared<Mat>(cmdh.getOverlappingMatrix());
+
+  // Fill the overlapping matrix with values
+  AddMatrixDataHandle amdh(A, *A_ovlp, ovlp_comm->indexSet());
+  varcomm->forward(amdh);
+
+  return {std::move(ovlp_comm), std::move(A_ovlp), std::move(boundary_mask)};
 }

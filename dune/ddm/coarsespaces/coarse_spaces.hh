@@ -427,6 +427,10 @@ std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> build_geneo_coarse_
 
   auto basis = solve_gevp(A, C, eig_ptree);
 
+  if (basis.empty())
+    logger::warn_all("build_geneo_coarse_space: Eigensolver returned no basis vectors. "
+                     "The coarse space will be empty. Check eigensolver parameters (shift, threshold, nev).");
+
   detail::finalize_eigenvectors(basis, pou);
   return basis;
 }
@@ -591,6 +595,11 @@ build_msgfem_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>
     basis = solve_gevp(A_neu, C, A_sub_inv, subdomain_boundary_mask, eig_ptree);
   }
   else DUNE_THROW(Dune::NotImplemented, "Unknown constraint_evp mode: " + constraint_evp + " (expected 'lagrange_multiplier' or 'alternating')");
+
+  if (basis.empty())
+    logger::warn_all("build_msgfem_coarse_space: Eigensolver returned no basis vectors. "
+                     "The coarse space will be empty and no Galerkin preconditioner will be set up. "
+                     "Check eigensolver parameters (shift, threshold, nev).");
 
   detail::finalize_eigenvectors(basis, pou);
   return basis;

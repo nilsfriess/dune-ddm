@@ -136,6 +136,11 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> trl_gevp(const Mat&
   // Debug output
   const auto& eigenvalues = evp->get_current_eigenvalues();
 
+  if (eigenvalues.empty()) {
+    logger::warn_all("TRL eigensolver produced no eigenvalues. Returning empty basis.");
+    return {};
+  }
+
   // Format eigenvalues into a string. Note that we have to transform them, because of the shift-invert transformation.
   // So here we compute lamda = 1 / (mu + shift) where mu is the Ritz value from the Lanczos process.
   std::ostringstream eval_stream;
@@ -143,7 +148,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> trl_gevp(const Mat&
     if (i > 0) eval_stream << ", ";
     eval_stream << 1 / eigenvalues[i] + params.shift;
   }
-  logger::debug_all("Computed {} eigenvalues: {}", eigenvalues.size(), eval_stream.str());
+  logger::info_all("Computed {} eigenvalues: {}", eigenvalues.size(), eval_stream.str());
 
   // Compute Ritz vectors: z_j = V * y_j where y_j is the j-th column of Y
   // V has (A.N() rows) x (params.ncv / blocksize blocks)
@@ -221,6 +226,11 @@ trl_gevp(const Mat& A, const Mat& B, Dune::InverseOperator<Dune::BlockVector<Dun
     // Debug output
     const auto& eigenvalues = evp->get_current_eigenvalues();
 
+    if (eigenvalues.empty()) {
+      logger::warn_all("TRL eigensolver (constrained) produced no eigenvalues. Returning empty basis.");
+      return {};
+    }
+
     // Format eigenvalues into a string. Note that we have to transform them, because of the shift-invert transformation.
     // So here we compute lamda = 1 / (mu + shift) where mu is the Ritz value from the Lanczos process.
     std::ostringstream eval_stream;
@@ -228,7 +238,7 @@ trl_gevp(const Mat& A, const Mat& B, Dune::InverseOperator<Dune::BlockVector<Dun
       if (i > 0) eval_stream << ", ";
       eval_stream << 1 / eigenvalues[i] + params.shift;
     }
-    logger::debug_all("Computed {} eigenvalues: {}", eigenvalues.size(), eval_stream.str());
+    logger::info_all("Computed {} eigenvalues: {}", eigenvalues.size(), eval_stream.str());
 
     // Compute Ritz vectors: z_j = V * y_j where y_j is the j-th column of Y
     // V has (A.N() rows) x (params.ncv / blocksize blocks)

@@ -116,7 +116,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> spectra_gevp_op(OpT
   auto shift = params.shift;
   auto tolerance = params.tolerance;
   double threshold = params.threshold;
-  bool done = threshold < 0; // In user has not provided a treshold, then we're done after one iteration
+  bool done = threshold <= 0; // If threshold is not positive, no adaptive nev doubling — just compute once
 
   using Vec = Dune::BlockVector<Dune::FieldVector<double, 1>>;
   std::vector<Vec> eigenvectors;
@@ -154,7 +154,11 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> spectra_gevp_op(OpT
       const auto evalues = geigs.eigenvalues();
       const auto evecs = geigs.eigenvectors();
 
-      if (evalues[nconv - 1] >= threshold or nev >= nev_max) {
+      // If threshold is positive, we adaptively compute more eigenvalues until the largest
+      // exceeds the threshold (or nev_max is reached). If threshold <= 0, it is ignored
+      // and we simply take all nev computed eigenvalues.
+      bool have_enough = (threshold <= 0) or (evalues[nconv - 1] >= threshold) or (nev >= nev_max);
+      if (have_enough) {
         if (threshold > 0) {
           // If this parameter is set, we only keep those eigenvectors that correspond to eigenvalues below the threshold.
           long cnt = 0;
@@ -185,7 +189,12 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> spectra_gevp_op(OpT
       }
       if (!done) {
         nev *= 2;
-        logger::debug_all("Eigensolver did not compute enough eigenvalues, largest is {}, now trying with nev = {}", evalues[nconv - 1], nev);
+        logger::debug_all("Eigensolver did not compute enough eigenvalues (largest: {}, threshold: {}), now trying with nev = {}", evalues[nconv - 1], threshold, nev);
+      }
+      else {
+        logger::warn_all("Eigensolver computed {} eigenvalues but the largest ({}) did not reach the threshold ({}), "
+                         "and nev ({}) reached nev_max ({}). Returning empty basis. Consider adjusting 'shift', 'threshold', or 'nev_max'.",
+                         nconv, evalues[nconv - 1], threshold, nev, nev_max);
       }
     }
     else if (geigs.info() == Spectra::CompInfo::NotConverging) {
@@ -210,6 +219,9 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> spectra_gevp_op(OpT
       MPI_Abort(MPI_COMM_WORLD, 14);
     }
   } while (not done);
+
+  if (eigenvectors.empty())
+    logger::warn_all("Eigensolver returned an empty set of eigenvectors. The coarse space will not be set up.");
 
   return eigenvectors;
 }
