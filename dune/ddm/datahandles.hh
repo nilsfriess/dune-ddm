@@ -174,10 +174,7 @@ public:
     }
   }
 
-  const std::vector<bool>& get_boundary_mask() const
-  {
-    return boundary_mask;
-  }
+  const std::vector<bool>& get_boundary_mask() const { return boundary_mask; }
 
   const std::map<int, std::vector<bool>>& getBoundaryMaskForRank() const { return boundaryMaskForRank; }
 
