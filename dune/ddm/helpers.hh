@@ -7,6 +7,9 @@
 #include <dune/common/parallel/mpitraits.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/istl/bcrsmatrix.hh>
+#include <dune/istl/matrixredistribute.hh>
+#include <dune/istl/owneroverlapcopy.hh>
+#include <dune/istl/repartition.hh>
 #include <dune/istl/scalarproducts.hh>
 #include <iostream>
 #include <memory>
@@ -338,6 +341,175 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
   return Mat{};
 }
 
+/** @brief Return value of buildDistributedCommunication.
+ *
+ *  Contains everything needed to subsequently redistribute matrix entries and vectors
+ *  from rank 0 to the full communicator via Dune::redistributeMatrix() and
+ *  RedistributeInformation::redistribute().
+ *
+ * @tparam GlobalIndex Integer type used for global indices.
+ */
+template <class GlobalIndex = int>
+struct DistributedCommunicationResult {
+  using Comm = Dune::OwnerOverlapCopyCommunication<GlobalIndex>;
+  /// Communication describing the original layout (rank 0 owns all indices).
+  /// Must be kept alive while redistInf is in use.
+  std::shared_ptr<Comm> inputComm;
+  /// Communication describing the redistributed layout.
+  /// Has an empty index set on inactive ranks.
+  std::shared_ptr<Comm> comm;
+  /// Redistribution metadata. Pass to Dune::redistributeMatrix() and ri.redistribute()
+  /// together with inputComm and comm to move data.
+  Dune::RedistributeInformation<Comm> redistInf;
+  /// True if this rank owns at least one index in the new distribution.
+  bool active = false;
+};
+
+/** @brief Builds a distributed OwnerOverlapCopyCommunication from a matrix held entirely on rank 0.
+ *
+ *  Intended for loading serial test matrices and distributing them at startup. Rank 0 must hold
+ *  the full matrix; all other ranks must pass an empty (default-constructed) matrix.
+ *
+ *  On rank 0, serial METIS (via the ParMETIS header) partitions the matrix sparsity graph into
+ *  \p nparts parts. The resulting partition vector is then passed to Dune::buildCommunication,
+ *  which exchanges index ownership information via pure MPI communication and constructs a new
+ *  OwnerOverlapCopyCommunication describing the distributed layout.
+ *
+ *  If ParMETIS / METIS 5 is unavailable at compile time, a simple contiguous block partition
+ *  is used as fallback.
+ *
+ *  @note All ranks must call this function collectively.
+ *  @note This does **not** scatter the matrix entries themselves; use
+ *        Dune::redistributeMatrix() with the returned redistInf, inputComm and comm for that,
+ *        or call distributeMatrixFrom0() which does everything in one step.
+ *  @note Not intended for large-scale use: rank 0 holds the entire matrix in memory and
+ *        Dune::buildCommunication has O(P * nnz) work on rank 0.
+ *
+ *  @tparam Matrix      A Dune BCRSMatrix type.
+ *  @tparam GlobalIndex Integer type used for global indices (default: int).
+ *  @param  A           The matrix. Fully populated on rank 0; empty on all other ranks.
+ *  @param  mpiComm     The MPI communicator (called collectively).
+ *  @param  nparts      Desired number of parts; should equal the communicator size.
+ *  @return             A DistributedCommunicationResult containing inputComm, the redistributed
+ *                      comm, the RedistributeInformation, and an activity flag.
+ */
+template <class Matrix, class GlobalIndex = int>
+DistributedCommunicationResult<GlobalIndex> buildDistributedCommunication(const Matrix& A, MPI_Comm mpiComm, int nparts)
+{
+  int rank = 0;
+  MPI_CHECK(MPI_Comm_rank(mpiComm, &rank));
+
+  using Comm = Dune::OwnerOverlapCopyCommunication<GlobalIndex>;
+
+  DistributedCommunicationResult<GlobalIndex> result;
+
+  // Build the initial communication: rank 0 owns all N indices, other ranks have none.
+  result.inputComm = std::make_shared<Comm>(mpiComm);
+  result.inputComm->indexSet().beginResize();
+  if (rank == 0)
+    for (std::size_t i = 0; i < A.N(); ++i) result.inputComm->indexSet().add(static_cast<GlobalIndex>(i), {i, Dune::OwnerOverlapCopyAttributeSet::owner});
+  result.inputComm->indexSet().endResize();
+  result.inputComm->remoteIndices().template rebuild<false>();
+  // buildGlobalLookup is required by buildCommunication's internal getOwnerOverlapVec traversal.
+  result.inputComm->buildGlobalLookup(A.N());
+
+  // Compute a partition vector on rank 0; other ranks leave it empty.
+  std::vector<int> setPartition;
+  if (rank == 0) {
+    const auto numRows = static_cast<int>(A.N());
+    setPartition.resize(static_cast<std::size_t>(numRows));
+
+#if HAVE_PARMETIS && defined(METIS_NOPTIONS)
+    if (nparts > 1) {
+      using IdxT = Dune::Metis::idx_t;
+
+      // Build a CSR adjacency list without self-loops (METIS does not allow them).
+      std::vector<IdxT> xadj;
+      std::vector<IdxT> adjncy;
+      xadj.reserve(static_cast<std::size_t>(numRows) + 1);
+      xadj.push_back(IdxT{0});
+      for (auto row = A.begin(); row != A.end(); ++row) {
+        for (auto col = row->begin(); col != row->end(); ++col)
+          if (col.index() != row.index()) adjncy.push_back(static_cast<IdxT>(col.index()));
+        xadj.push_back(static_cast<IdxT>(adjncy.size()));
+      }
+
+      IdxT n = static_cast<IdxT>(numRows);
+      IdxT ncon = 1;
+      IdxT npartsMetis = static_cast<IdxT>(nparts);
+      IdxT edgecut = 0;
+      std::vector<IdxT> part(static_cast<std::size_t>(numRows));
+      std::array<IdxT, METIS_NOPTIONS> options{};
+      METIS_SetDefaultOptions(options.data());
+      METIS_PartGraphKway(&n, &ncon, xadj.data(), adjncy.data(), nullptr, nullptr, nullptr, &npartsMetis, nullptr, nullptr, options.data(), &edgecut, part.data());
+      logger::debug("buildDistributedCommunication: METIS edge cut: {}", edgecut);
+
+      for (int i = 0; i < numRows; ++i) setPartition[static_cast<std::size_t>(i)] = static_cast<int>(part[static_cast<std::size_t>(i)]);
+    }
+    else
+#endif
+    {
+      // Fallback: assign rows to ranks in contiguous blocks.
+      for (int i = 0; i < numRows; ++i) setPartition[static_cast<std::size_t>(i)] = (i * nparts) / numRows;
+    }
+  }
+
+  // MatrixGraph requires a non-const reference (DUNE convention); const_cast is safe here
+  // because buildCommunication only reads the graph.
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+  Dune::Amg::MatrixGraph<Matrix> graph(const_cast<Matrix&>(A));
+
+  result.active = Dune::buildCommunication(graph, setPartition, *result.inputComm, result.comm, result.redistInf.getInterface(), false);
+  result.redistInf.setSetup();
+  return result;
+}
+
+/** @brief Return value of distributeMatrixFrom0. */
+template <class Matrix, class GlobalIndex = int>
+struct DistributedMatrixResult {
+  using Comm = Dune::OwnerOverlapCopyCommunication<GlobalIndex>;
+  /// Communication describing the redistributed layout.
+  std::shared_ptr<Comm> comm;
+  /// Local portion of the redistributed matrix on this rank. Empty on inactive ranks.
+  std::shared_ptr<Matrix> matrix;
+  /// True if this rank owns at least one row.
+  bool active = false;
+};
+
+/** @brief Partitions a matrix (held entirely on rank 0) and distributes it across all ranks.
+ *
+ *  Combines buildDistributedCommunication() with Dune::redistributeMatrix() into a single call.
+ *  On return, each active rank holds its local portion of the matrix in result.matrix and a
+ *  matching OwnerOverlapCopyCommunication in result.comm.
+ *
+ *  @note All ranks must call this function collectively.
+ *  @note Not intended for large-scale use; see buildDistributedCommunication() for caveats.
+ *
+ *  @tparam Matrix      A Dune BCRSMatrix type.
+ *  @tparam GlobalIndex Integer type used for global indices (default: int).
+ *  @param  A           The matrix. Fully populated on rank 0; empty on all other ranks.
+ *  @param  mpiComm     The MPI communicator (called collectively).
+ *  @param  nparts      Desired number of parts; should equal the communicator size.
+ *  @return             A DistributedMatrixResult with the redistributed comm, the local matrix
+ *                      portion, and an activity flag.
+ */
+template <class Matrix, class GlobalIndex = int>
+DistributedMatrixResult<Matrix, GlobalIndex> distributeMatrixFrom0(const Matrix& A, MPI_Comm mpiComm, int nparts)
+{
+  auto commResult = buildDistributedCommunication<Matrix, GlobalIndex>(A, mpiComm, nparts);
+
+  DistributedMatrixResult<Matrix, GlobalIndex> result;
+  result.comm = commResult.comm;
+  result.active = commResult.active;
+  result.matrix = std::make_shared<Matrix>();
+
+  // redistributeMatrix is collective: all ranks participate via the origComm communicator.
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+  Dune::redistributeMatrix(const_cast<Matrix&>(A), *result.matrix, *commResult.inputComm, *commResult.comm, commResult.redistInf);
+
+  return result;
+}
+
 template <class Vec, class Communication>
 class MaskedScalarProduct : public Dune::ScalarProduct<Vec> {
   using Base = Dune::ScalarProduct<Vec>;
@@ -373,6 +545,39 @@ private:
 
   Logger::Event* dot_event;
 };
+
+/** @brief Detect Dirichlet DOFs from the matrix structure.
+ *
+ *  A DOF is considered a Dirichlet DOF if its matrix row is an identity row,
+ *  i.e., the diagonal entry is 1 and all off-diagonal entries are 0.
+ *  This is the standard way Dirichlet BCs are enforced in FE codes.
+ *
+ *  @param A The matrix to inspect
+ *  @return A vector<bool> of size A.N() where true indicates a Dirichlet DOF
+ */
+template <class Mat>
+std::vector<bool> detect_dirichlet_dofs(const Mat& A)
+{
+  std::vector<bool> dirichlet(A.N(), false);
+  std::size_t cnt = 0;
+  for (auto ri = A.begin(); ri != A.end(); ++ri) {
+    if (A[ri.index()][ri.index()] != 1.) continue;
+
+    bool is_identity_row = true;
+    for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+      if (ri.index() != ci.index() && *ci != 0.) {
+        is_identity_row = false;
+        break;
+      }
+    }
+    if (is_identity_row) {
+      dirichlet[ri.index()] = true;
+      ++cnt;
+    }
+  }
+  logger::debug_all("Detected {} Dirichlet DOFs (identity rows) out of {} total DOFs", cnt, A.N());
+  return dirichlet;
+}
 
 /** The prefix_ parameter of a Dune::ParameterTree is protected, this function allows to get it
  *  anyway by creating a class that derives from ParameterTree and the exposes the prefix.

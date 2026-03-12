@@ -130,13 +130,22 @@ public:
 
     if (ts[0].N() != A.N()) DUNE_THROW(Dune::Exception, "Template vectors must match size of matrix");
 
+    // Zero out template vectors at Dirichlet DOFs (identity rows in the matrix).
+    // Without this, the coarse correction injects nonzero values at Dirichlet DOFs,
+    // which the outer Krylov solver then has to undo, increasing iteration counts.
+    auto dirichlet = detect_dirichlet_dofs(A);
+
     std::size_t max_num_t = ts.size();
     MPI_Allreduce(MPI_IN_PLACE, &max_num_t, 1, MPI_UNSIGNED_LONG, MPI_MAX, this->comm->communicator());
 
     Vec zero(ts[0].N());
     zero = 0;
     restr_vecs.resize(max_num_t, Vec(ts[0].N()));
-    for (int i = 0; i < num_t; ++i) restr_vecs[i] = ts[i];
+    for (int i = 0; i < num_t; ++i) {
+      restr_vecs[i] = ts[i];
+      for (std::size_t j = 0; j < restr_vecs[i].N(); ++j)
+        if (dirichlet[j]) restr_vecs[i][j] = 0;
+    }
 
     logger::debug("Setting up GalerkinPreconditioner with {} template vector{} (max. one rank has is {})", num_t, (num_t == 1 ? "" : "s"), max_num_t);
 

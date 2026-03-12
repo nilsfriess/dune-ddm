@@ -59,6 +59,12 @@ public:
       : shrink_(shrink)
       , type_(pou_type)
   {
+    // Make sure that the size of the index set in the communication object matches the matrix size
+    if (comm.indexSet().size() != A.N()) {
+      logger::error_all("PartitionOfUnity constructor: Size of communication index set ({}) does not match matrix size ({})", comm.indexSet().size(), A.N());
+      MPI_Abort(MPI_COMM_WORLD, 16);
+    }
+
     pou_vector_.resize(A.N()); // Initialize partition of unity vector
 
     // Identify boundary DOFs (except for trivial partition which doesn't need them)

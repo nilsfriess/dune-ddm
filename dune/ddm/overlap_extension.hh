@@ -24,8 +24,6 @@
  *  1. Identifying boundary DOFs using matrix graph structure
  *  2. Computing boundary distance via BFS from boundary DOFs
  *  3. Iteratively extending the index set by communicating matrix graph neighbors
- *  4. Tracking which ranks know which indices for communication setup
- *  5. Rebuilding remote indices after each extension round
  *
  *  @tparam Communication The type of the communication object (e.g., OwnerOverlapCopyCommunication)
  *  @tparam Mat The matrix type (must support row iteration via A[i].begin()/end())

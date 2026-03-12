@@ -11,6 +11,7 @@
 #include "logger.hh"
 #include "pou.hh"
 
+#include <cstddef>
 #include <cstdint>
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/communicator.hh>
@@ -70,7 +71,6 @@ public:
       : Aovlp(std::move(Aovlp))
       , comm(std::move(comm))
       , pou(std::move(pou))
-      , boundary(this->Aovlp->N(), false)
   {
     auto* init_event = Logger::get().registerOrGetEvent("Schwarz", "init");
     Logger::ScopedLog sl(init_event);
@@ -197,19 +197,8 @@ private:
     d_ovlp = std::make_unique<Vec>(Aovlp->N());
     x_ovlp = std::make_unique<Vec>(Aovlp->N());
 
-    // Initialise the boundary mask
-    for (auto ri = Aovlp->begin(); ri != Aovlp->end(); ++ri) {
-      if ((*Aovlp)[ri.index()][ri.index()] != 1.) continue;
-
-      bool at_boundary = true;
-      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-        if (ri.index() != ci.index() && *ci != 0.) {
-          at_boundary = false;
-          break;
-        }
-      }
-      if (at_boundary) boundary[ri.index()] = true;
-    }
+    // Initialise the boundary mask (detect Dirichlet DOFs from identity rows)
+    boundary = detect_dirichlet_dofs(*Aovlp);
   }
 
   std::shared_ptr<Mat> Aovlp; ///< Overlapping subdomain matrix
