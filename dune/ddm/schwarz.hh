@@ -71,6 +71,9 @@ public:
       : Aovlp(std::move(Aovlp))
       , comm(std::move(comm))
       , pou(std::move(pou))
+      , subtree_name(subtree_name)
+      , solver_subtree_name(solver_subtree_name)
+      , ptree(ptree)
   {
     auto* init_event = Logger::get().registerOrGetEvent("Schwarz", "init");
     Logger::ScopedLog sl(init_event);
@@ -81,24 +84,9 @@ public:
     else if (type_string == "standard") type = SchwarzType::Standard;
     else DUNE_THROW(Dune::NotImplemented, "Unknown Schwarz type '" + type_string + "'");
 
-    Dune::initSolverFactories<Op>();
-    auto op = std::make_shared<Op>(this->Aovlp);
-    // Since the error message that Dune gives us when there is no 'type' key in the solver_subtree
-    // is useless, we check ourselves first and tell the user what they need to do.
-    const auto& solver_subtree = subtree.sub(solver_subtree_name);
-    if (not solver_subtree.hasKey("type"))
-      DUNE_THROW(Dune::Exception, "You must specify the solver in the subtree " << get_parameter_tree_prefix(ptree) << subtree_name << "." << solver_subtree_name << " using the key 'type'");
+    auto defer_setup_solver = subtree.get("defer_setup_solver", false);
+    if (!defer_setup_solver) setup_solver();
 
-    // We also handle one special case ourselves, namely a solver named umfpack_metis
-    // which we define as UMFPack with METIS reordering
-    if (solver_subtree["type"] == "umfpack_metis") {
-      solver = std::make_shared<Dune::UMFPack<Mat>>();
-      auto umfpack_solver = std::dynamic_pointer_cast<Dune::UMFPack<Mat>>(solver);
-      umfpack_solver->setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
-      umfpack_solver->setOption(UMFPACK_IRSTEP, 0); // Disable iterative refinement for performance
-      umfpack_solver->setMatrix(*this->Aovlp);
-    }
-    else solver = Dune::getSolverFromFactory(op, solver_subtree);
     init();
   }
 
@@ -123,6 +111,8 @@ public:
    */
   void apply(Vec& x, const Vec& d) override
   {
+    setup_solver();
+
     Logger::ScopedLog sl(apply_event);
 
     // 1. Copy local values from non-overlapping to overlapping defect
@@ -165,11 +155,44 @@ public:
    * @brief Get reference to the local subdomain solver.
    * @return Reference to the solver instance
    */
-  std::shared_ptr<Solver> get_solver() { return solver; }
+  std::shared_ptr<Solver> get_solver()
+  {
+    setup_solver(); // Setup solver if not already done
+    return solver;
+  }
 
   std::shared_ptr<Communication> novlp_comm;
 
 private:
+  void setup_solver()
+  {
+    if (solver) return;
+
+    auto* init_event = Logger::get().registerOrGetEvent("Schwarz", "init"); // We count the solver setup as part of the init
+    Logger::ScopedLog sl(init_event);
+
+    const auto& subtree = ptree.sub(subtree_name);
+
+    Dune::initSolverFactories<Op>();
+    auto op = std::make_shared<Op>(this->Aovlp);
+    // Since the error message that Dune gives us when there is no 'type' key in the solver_subtree
+    // is useless, we check ourselves first and tell the user what they need to do.
+    const auto& solver_subtree = subtree.sub(solver_subtree_name);
+    if (not solver_subtree.hasKey("type"))
+      DUNE_THROW(Dune::Exception, "You must specify the solver in the subtree " << get_parameter_tree_prefix(ptree) << subtree_name << "." << solver_subtree_name << " using the key 'type'");
+
+    // We also handle one special case ourselves, namely a solver named umfpack_metis
+    // which we define as UMFPack with METIS reordering
+    if (solver_subtree["type"] == "umfpack_metis") {
+      solver = std::make_shared<Dune::UMFPack<Mat>>();
+      auto umfpack_solver = std::dynamic_pointer_cast<Dune::UMFPack<Mat>>(solver);
+      umfpack_solver->setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
+      umfpack_solver->setOption(UMFPACK_IRSTEP, 0); // Disable iterative refinement for performance
+      umfpack_solver->setMatrix(*this->Aovlp);
+    }
+    else solver = Dune::getSolverFromFactory(op, solver_subtree);
+  }
+
   /**
    * @brief Initialize the preconditioner.
    *
@@ -204,15 +227,19 @@ private:
   std::shared_ptr<Mat> Aovlp; ///< Overlapping subdomain matrix
   std::shared_ptr<Communication> comm;
 
-  std::shared_ptr<Solver> solver; ///< Local subdomain solver
-  std::unique_ptr<Vec> d_ovlp;    ///< Defect on overlapping index set
-  std::unique_ptr<Vec> x_ovlp;    ///< Solution on overlapping index set
+  std::shared_ptr<Solver> solver{nullptr}; ///< Local subdomain solver
+  std::unique_ptr<Vec> d_ovlp;             ///< Defect on overlapping index set
+  std::unique_ptr<Vec> x_ovlp;             ///< Solution on overlapping index set
 
   std::shared_ptr<PartitionOfUnity> pou{nullptr}; ///< Partition of unity (might be null)
 
   SchwarzType type; ///< Type of Schwarz method (standard or restricted)
 
   std::vector<bool> boundary;
+
+  std::string subtree_name;
+  std::string solver_subtree_name;
+  const Dune::ParameterTree& ptree;
 
   // Performance monitoring events
   Logger::Event* apply_event{nullptr};           ///< Event for timing the apply method

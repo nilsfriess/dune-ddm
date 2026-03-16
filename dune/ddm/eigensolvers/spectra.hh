@@ -131,11 +131,11 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> spectra_gevp_op(OpT
     geigs.init();
 
     // Find largest eigenvalue of the shifted problem (which corresponds to the smallest of the original problem)
-    // with max. 1000 iterations and sort the resulting eigenvalues from small to large.
+    // with max. params.maxit iterations and sort the resulting eigenvalues from small to large.
     Eigen::Index nconv{};
     try {
-      const auto maxit = 100;
-      nconv = geigs.compute(Spectra::SortRule::LargestMagn, maxit, tolerance, Spectra::SortRule::SmallestAlge);
+      const auto maxit = params.maxit;
+      nconv = geigs.compute(Spectra::SortRule::LargestMagn, maxit, tolerance, Spectra::SortRule::SmallestMagn);
     }
     catch (const std::runtime_error& e) {
       logger::error_all("ERROR: Computation of eigenvalues failed, reason: {}, tries left {}", e.what(), tries);

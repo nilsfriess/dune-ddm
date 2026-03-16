@@ -342,9 +342,9 @@ auto make_overlapping_communication(const Communication& novlp_comm, const Mat& 
 /** @brief Result of create_overlapping_matrix: communication, matrix, and boundary mask. */
 template <class Communication, class Mat>
 struct OverlapExtensionResult {
-  std::shared_ptr<Communication> comm;     ///< The extended overlapping communication object
-  std::shared_ptr<Mat> matrix;             ///< The overlapping matrix (structure + values)
-  std::vector<bool> boundary_mask;         ///< true for DOFs on the outermost overlap layer
+  std::shared_ptr<Communication> comm; ///< The extended overlapping communication object
+  std::shared_ptr<Mat> matrix;         ///< The overlapping matrix (structure + values)
+  std::vector<bool> boundary_mask;     ///< true for DOFs on the outermost overlap layer
 };
 
 /** @brief Extends overlap and creates the corresponding overlapping matrix in one step.
@@ -369,8 +369,7 @@ struct OverlapExtensionResult {
  *  @see increase_overlap
  */
 template <class Communication, class Mat>
-auto create_overlapping_matrix(const Communication& input_comm, const Mat& A, int overlap, std::size_t buffer_size_mb = 10)
-    -> OverlapExtensionResult<Communication, Mat>
+auto create_overlapping_matrix(const Communication& input_comm, const Mat& A, int overlap, std::size_t buffer_size_mb = 10) -> OverlapExtensionResult<Communication, Mat>
 {
   auto [ovlp_comm, boundary_mask] = increase_overlap(input_comm, A, overlap, buffer_size_mb);
 
@@ -390,4 +389,21 @@ auto create_overlapping_matrix(const Communication& input_comm, const Mat& A, in
   varcomm->forward(amdh);
 
   return {std::move(ovlp_comm), std::move(A_ovlp), std::move(boundary_mask)};
+}
+
+/// Algebraic Neumann matrix construction, aligned with PETSc PCHPDDM block_splitting.
+///
+/// TODO: This differs from what is described in the paper, understand why.
+template <class Communication, class Mat>
+Mat make_algebraic_neumann(const Communication& comm, const Mat& A)
+{
+  auto [comm_next, A_next, boundary_next] = create_overlapping_matrix(comm, A, 1);
+  Mat A_neumann = A;
+  for (std::size_t i = 0; i < A.N(); ++i) {
+    double off_diag_sum = 0;
+    for (auto cit = (*A_next)[i].begin(); cit != (*A_next)[i].end(); ++cit)
+      if (cit.index() >= A.N()) off_diag_sum += (*cit)[0][0];
+    if (A_neumann.exists(i, i)) A_neumann[i][i] += off_diag_sum;
+  }
+  return A_neumann;
 }

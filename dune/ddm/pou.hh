@@ -187,7 +187,7 @@ private:
   {
     const auto& subtree = ptree.sub(subtree_name);
     auto shrink = subtree.get("shrink", 0);
-    if (shrink < 0 or shrink >= overlap) DUNE_THROW(Dune::Exception, "Invalid value for shrink: " + std::to_string(shrink) + " (must be >= 0 and < overlap size " + std::to_string(overlap) + ")");
+    if (shrink < 0 or shrink >= overlap) logger::warn("Invalid value for shrink: " + std::to_string(shrink) + " (should be >= 0 and < overlap size " + std::to_string(overlap) + ")");
     return shrink;
   }
 

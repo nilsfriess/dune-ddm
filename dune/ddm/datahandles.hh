@@ -437,7 +437,7 @@ public:
       : A(A)
       , paridxs(paridxs)
       , glis(paridxs)
-      , Aovlp(paridxs.size(), paridxs.size(), max_row_size(A), 0.4, Mat::implicit)
+      , Aovlp(paridxs.size(), paridxs.size(), max_row_size(A), 1.0, Mat::implicit)
   {
     for (auto rIt = A.begin(); rIt != A.end(); ++rIt)
       for (auto cIt = rIt->begin(); cIt != rIt->end(); ++cIt) Aovlp.entry(rIt.index(), cIt.index()) = 0.0;
@@ -485,14 +485,6 @@ public:
   }
 
 private:
-  static std::size_t max_row_size(const Mat& M)
-  {
-    std::size_t max_size = 0;
-    for (auto rIt = M.begin(); rIt != M.end(); ++rIt)
-      max_size = std::max(max_size, static_cast<std::size_t>(rIt->size()));
-    return max_size;
-  }
-
   const Mat& A;
   const ParallelIndexSet& paridxs;
   Dune::GlobalLookupIndexSet<ParallelIndexSet> glis;

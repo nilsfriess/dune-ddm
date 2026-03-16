@@ -358,15 +358,15 @@ private:
   }
 
   std::shared_ptr<Communication> comm;
-  std::shared_ptr<Solver> solver;   ///  Direct solver for the coarse problem (UMFPack by default)
-  std::vector<Vec> restr_vecs;      ///  Template vectors used to build the restriction matrix
-  std::size_t n;                    ///  Size of the overlapping index set
-  Vec d_ovlp;                       ///  Overlapping defect vector for temporary storage
-  Vec x_ovlp;                       ///  Overlapping solution vector for temporary storage
-  int num_t;                        ///  Number of template vectors owned by this rank
-  int total_num_t{};                ///  Total number of template vectors across all ranks
-  std::vector<int> num_t_per_rank;  ///  Number of template vectors per rank
-  std::vector<int> offset_per_rank; ///  Offset for each rank's template vectors in global numbering
+  std::shared_ptr<Solver> solver;      ///  Direct solver for the coarse problem (UMFPack by default)
+  std::vector<Vec> restr_vecs;         ///  Template vectors used to build the restriction matrix
+  std::size_t n;                       ///  Size of the overlapping index set
+  Vec d_ovlp;                          ///  Overlapping defect vector for temporary storage
+  Vec x_ovlp;                          ///  Overlapping solution vector for temporary storage
+  int num_t;                           ///  Number of template vectors owned by this rank
+  int total_num_t{};                   ///  Total number of template vectors across all ranks
+  std::vector<int> num_t_per_rank;     ///  Number of template vectors per rank
+  std::vector<int> offset_per_rank;    ///  Offset for each rank's template vectors in global numbering
   Logger::Event* apply_event{};        ///  Logging event for timing the apply method
   Logger::Event* build_solver_event{}; ///  Logging event for timing the solver building process
 };
