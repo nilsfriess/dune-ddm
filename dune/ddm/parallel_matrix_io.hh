@@ -289,4 +289,47 @@ ParallelMatrixData<Scalar> readMatrixMarketParallel(const MPIHelper& helper, con
   return data;
 }
 
+/** @brief Load a dense vector from a .npy file and distribute it to match a parallel partition.
+ *
+ *  Every rank loads the full vector, then extracts only the entries
+ *  corresponding to its local indices (owner + copy) using the
+ *  communication's parallel index set.
+ *
+ *  @param comm     The OwnerOverlapCopyCommunication from the partitioned matrix.
+ *  @param filename Path to a .npy file containing a 1-D numpy array.
+ *  @return A BlockVector with entries distributed to match the partition.
+ */
+template <class Scalar = double, class GlobalIndex = std::size_t, class LocalIndex = int>
+BlockVector<FieldVector<Scalar, 1>> readVectorParallel(const OwnerOverlapCopyCommunication<GlobalIndex, LocalIndex>& comm, const std::string& filename)
+{
+  using Vector = BlockVector<FieldVector<Scalar, 1>>;
+
+  // Every rank loads the full vector (vectors are small compared to sparse matrices)
+  cnpy::NpyArray arr = cnpy::npy_load(filename);
+
+  const size_t n = arr.num_vals;
+  std::vector<Scalar> full_vec(n);
+  if (arr.word_size == sizeof(double)) {
+    const auto* vals = arr.data<double>();
+    for (size_t i = 0; i < n; ++i) full_vec[i] = static_cast<Scalar>(vals[i]);
+  }
+  else {
+    const auto* vals = arr.data<float>();
+    for (size_t i = 0; i < n; ++i) full_vec[i] = static_cast<Scalar>(vals[i]);
+  }
+
+  // Extract local entries using the communication's index set
+  const auto& indexSet = comm.indexSet();
+  Vector b(indexSet.size());
+  b = 0;
+  for (auto it = indexSet.begin(); it != indexSet.end(); ++it) {
+    auto globalIdx = it->global();
+    auto localIdx = it->local().local();
+    b[localIdx] = full_vec[globalIdx];
+  }
+
+  logger::info_all("Loaded RHS vector: global size {}, local size {}", n, b.N());
+  return b;
+}
+
 } // namespace Dune

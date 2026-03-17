@@ -145,10 +145,16 @@ int main(int argc, char** argv)
     solver_subtree["verbose"] = rank == 0 ? solver_subtree["verbose"] : "0";
     auto solver = Dune::getSolverFromFactory(op, solver_subtree, prec);
 
-    // Solve linear system A x = b with random rhs
+    // Load or create right-hand side
     Vector x(localA->N());
     Vector b(localA->N());
-    b = 1.0;
+    if (ptree.hasKey("input_rhs")) {
+      auto rhs_filename = ptree.get<std::string>("input_rhs");
+      b = readVectorParallel(*novlp_comm, rhs_filename);
+    }
+    else {
+      b = 1.0;
+    }
 
     {
       Logger::ScopedLog sl(Logger::get().registerOrGetEvent("Solver", "apply"));
