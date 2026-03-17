@@ -289,14 +289,14 @@ ParallelMatrixData<Scalar> readMatrixMarketParallel(const MPIHelper& helper, con
   return data;
 }
 
-/** @brief Load a dense vector from a .npy file and distribute it to match a parallel partition.
+/** @brief Load a dense vector from a .npy or .npz file and distribute it to match a parallel partition.
  *
  *  Every rank loads the full vector, then extracts only the entries
  *  corresponding to its local indices (owner + copy) using the
  *  communication's parallel index set.
  *
  *  @param comm     The OwnerOverlapCopyCommunication from the partitioned matrix.
- *  @param filename Path to a .npy file containing a 1-D numpy array.
+ *  @param filename Path to a .npy or .npz file containing a 1-D numpy array.
  *  @return A BlockVector with entries distributed to match the partition.
  */
 template <class Scalar = double, class GlobalIndex = std::size_t, class LocalIndex = int>
@@ -305,7 +305,11 @@ BlockVector<FieldVector<Scalar, 1>> readVectorParallel(const OwnerOverlapCopyCom
   using Vector = BlockVector<FieldVector<Scalar, 1>>;
 
   // Every rank loads the full vector (vectors are small compared to sparse matrices)
-  cnpy::NpyArray arr = cnpy::npy_load(filename);
+  const bool is_npz = filename.size() >= 4 &&
+                       filename.compare(filename.size() - 4, 4, ".npz") == 0;
+
+  cnpy::NpyArray arr = is_npz ? cnpy::npz_load(filename).begin()->second
+                               : cnpy::npy_load(filename);
 
   const size_t n = arr.num_vals;
   std::vector<Scalar> full_vec(n);
