@@ -576,7 +576,9 @@ public:
       buffer.read(idx);
       buffer.read(entry);
 
-      std::memcpy(&actual_entry, &entry, sizeof(entry));
+      double d;
+      std::memcpy(&d, &entry, sizeof(d));
+      actual_entry[0][0] = d;
 
       if (paridxs.exists(idx)) Atarget[i][paridxs[idx].local()] += actual_entry;
 
