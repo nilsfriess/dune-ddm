@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.25)
 project(dune-ddm
         VERSION 0.0.1
         LANGUAGES CXX C)
@@ -39,15 +39,20 @@ if(DUNE_DDM_SUPERBUILD)
 
   # Add the DUNE modules in dependency order. Each module configures itself and
   # exports its targets, which the following modules (and dune-ddm) pick up.
-  add_subdirectory(extern/dune-common)
-  add_subdirectory(extern/dune-geometry)
-  add_subdirectory(extern/dune-uggrid)
-  add_subdirectory(extern/dune-grid)
-  add_subdirectory(extern/dune-localfunctions)
-  add_subdirectory(extern/dune-istl)
-  add_subdirectory(extern/dune-typetree)
-  add_subdirectory(extern/dune-functions)
-  add_subdirectory(extern/dune-pdelab)
+  #
+  # The SYSTEM keyword (CMake >= 3.25) marks every target created in these
+  # subdirectories as a system target, so their interface include directories
+  # are consumed via -isystem. That silences the dependencies' header warnings
+  # under -Wall -Wextra while keeping warnings for dune-ddm's own code.
+  add_subdirectory(extern/dune-common         SYSTEM)
+  add_subdirectory(extern/dune-geometry       SYSTEM)
+  add_subdirectory(extern/dune-uggrid         SYSTEM)
+  add_subdirectory(extern/dune-grid           SYSTEM)
+  add_subdirectory(extern/dune-localfunctions SYSTEM)
+  add_subdirectory(extern/dune-istl           SYSTEM)
+  add_subdirectory(extern/dune-typetree       SYSTEM)
+  add_subdirectory(extern/dune-functions      SYSTEM)
+  add_subdirectory(extern/dune-pdelab         SYSTEM)
 endif()
 
 list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_BINARY_DIR}/extern)
