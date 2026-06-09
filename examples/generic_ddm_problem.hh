@@ -310,7 +310,6 @@ public:
     // Eliminate Dirichlet dofs and subdomain boundary dofs symmetrically
     IdentifyBoundaryDataHandle ibdh(*A_sub, comm.indexSet());
     varcomm.forward(ibdh);
-    const auto& boundary_mask = ibdh.get_boundary_mask();
 
     eliminate_dirichlet(*A_sub, dirichlet_mask_ovlp);
   }

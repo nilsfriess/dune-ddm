@@ -198,7 +198,6 @@ void run_convection_diffusion(const Dune::MPIHelper& helper, const Dune::Paramet
   using SymmetricProblemParams = LuaConvectionDiffusionProblem<GridView, double, true>;
   static constexpr bool is_symmetric = false;
   constexpr bool use_dg = true;
-  constexpr int degree = 1;
   constexpr bool qk_elements = true;
   using Traits = ConvectionDiffusionTraits<GridView, ProblemParams, SymmetricProblemParams, is_symmetric, use_dg, qk_elements>;
   using Problem = GenericDDMProblem<GridView, Traits>;

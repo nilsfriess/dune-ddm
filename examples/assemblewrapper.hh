@@ -208,7 +208,6 @@ public:
       // we record that contribution.
       for (const auto& [rank, mask] : *on_boundary_mask_for_rank) {
         bool hasDofAtBoundary = false;
-        bool hasDofInsideBoundary = false;
         const auto& inside_mask = (*inside_boundary_mask_for_rank).at(rank);
 
         bool hasDofOutside = false;
@@ -374,10 +373,6 @@ public:
         bool inside_elem_is_on_boundary = on_mask[global_indices_inside[0]];
         bool outside_elem_is_outside_boundary = outside_mask[global_indices_outside[0]];
 
-        // If the outside element is a ghost element, we don't need to assemble Neumann corrections for it
-        // TODO: Can this even happen here?
-        bool inside_elem_is_ghost = ig.outside().partitionType() == Dune::GhostEntity;
-
         if (inside_elem_is_on_boundary and outside_elem_is_outside_boundary) {
           auto& An = neumann_correction_matrices[-1];
           for (std::size_t i = 0; i < lfsu_s.size(); ++i) {
@@ -400,10 +395,6 @@ public:
 
         bool outside_elem_is_on_boundary = on_mask[global_indices_outside[0]];
         bool inside_elem_is_outside_boundary = outside_mask[global_indices_inside[0]];
-
-        // If the inside element is a ghost element, we don't need to assemble Neumann corrections for it
-        // TODO: Can this even happen here?
-        bool outside_elem_is_ghost = ig.inside().partitionType() == Dune::GhostEntity;
 
         if (outside_elem_is_on_boundary and inside_elem_is_outside_boundary) {
           auto& An = neumann_correction_matrices[-1];
