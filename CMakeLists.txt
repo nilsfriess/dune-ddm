@@ -9,6 +9,47 @@ include(GNUInstallDirs)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_COLOR_DIAGNOSTICS ON)
 
+# ---------------------------------------------------------------------------
+# Superbuild
+#
+# When enabled (the default), the required DUNE modules are built in-tree from
+# the git submodules in extern/, so no dunecontrol invocation is needed:
+#
+#     git clone --recursive <url> && cd dune-ddm && mkdir build && cd build
+#     cmake .. && make
+#
+# Disable with -DDUNE_DDM_SUPERBUILD=OFF to instead build against DUNE modules
+# provided externally (e.g. via dunecontrol or a system installation).
+# ---------------------------------------------------------------------------
+option(DUNE_DDM_SUPERBUILD
+  "Build the required DUNE modules in-tree from the submodules in extern/ (no dunecontrol needed)"
+  ON)
+
+if(DUNE_DDM_SUPERBUILD)
+  # Make imported targets created in one module visible to the others and let
+  # find_package() resolve modules that were added as subdirectories.
+  set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ON)
+
+  # Let find_package() locate the in-tree build-tree configs (build/extern/<module>).
+  list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_BINARY_DIR}/extern)
+
+  # Python bindings are off by default to keep a plain `cmake ..` friction-free.
+  # Override with -DDUNE_ENABLE_PYTHONBINDINGS=ON if you need them.
+  set(DUNE_ENABLE_PYTHONBINDINGS OFF CACHE BOOL "Enable Python bindings for the DUNE modules")
+
+  # Add the DUNE modules in dependency order. Each module configures itself and
+  # exports its targets, which the following modules (and dune-ddm) pick up.
+  add_subdirectory(extern/dune-common)
+  add_subdirectory(extern/dune-geometry)
+  add_subdirectory(extern/dune-uggrid)
+  add_subdirectory(extern/dune-grid)
+  add_subdirectory(extern/dune-localfunctions)
+  add_subdirectory(extern/dune-istl)
+  add_subdirectory(extern/dune-typetree)
+  add_subdirectory(extern/dune-functions)
+  add_subdirectory(extern/dune-pdelab)
+endif()
+
 list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_BINARY_DIR}/extern)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/extern/dune-common/cmake/modules)
 

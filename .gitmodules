@@ -7,3 +7,39 @@
 [submodule "extern/trl"]
 	path = extern/trl
 	url = https://github.com/nilsfriess/trl.git
+[submodule "extern/dune-common"]
+	path = extern/dune-common
+	url = https://gitlab.dune-project.org/core/dune-common.git
+	branch = releases/2.11
+[submodule "extern/dune-geometry"]
+	path = extern/dune-geometry
+	url = https://gitlab.dune-project.org/core/dune-geometry.git
+	branch = releases/2.11
+[submodule "extern/dune-grid"]
+	path = extern/dune-grid
+	url = https://gitlab.dune-project.org/core/dune-grid.git
+	branch = releases/2.11
+[submodule "extern/dune-istl"]
+	path = extern/dune-istl
+	url = https://gitlab.dune-project.org/core/dune-istl.git
+	branch = releases/2.11
+[submodule "extern/dune-localfunctions"]
+	path = extern/dune-localfunctions
+	url = https://gitlab.dune-project.org/core/dune-localfunctions.git
+	branch = releases/2.11
+[submodule "extern/dune-uggrid"]
+	path = extern/dune-uggrid
+	url = https://gitlab.dune-project.org/staging/dune-uggrid.git
+	branch = releases/2.11
+[submodule "extern/dune-functions"]
+	path = extern/dune-functions
+	url = https://gitlab.dune-project.org/staging/dune-functions.git
+	branch = releases/2.11
+[submodule "extern/dune-typetree"]
+	path = extern/dune-typetree
+	url = https://gitlab.dune-project.org/staging/dune-typetree.git
+	branch = releases/2.11
+[submodule "extern/dune-pdelab"]
+	path = extern/dune-pdelab
+	url = https://gitlab.dune-project.org/pdelab/dune-pdelab.git
+	branch = releases/2.10
