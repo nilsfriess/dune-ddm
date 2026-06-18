@@ -754,3 +754,51 @@ build_msgfem_ring_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 
   detail::finalize_eigenvectors(basis, pou);
   return basis;
 }
+
+// ============================================================================
+//  POU (Nicolaides) coarse space — non-spectral
+// ============================================================================
+
+/**
+ * @brief Build a POU coarse space from given template vectors.
+ *
+ * The provided template vectors are used directly as the coarse basis: each is
+ * scaled by the partition of unity and normalised (see finalize_eigenvectors).
+ *
+ * @param template_vecs Template vectors used as the (unscaled) coarse basis.
+ * @param pou Partition of unity used for scaling/normalisation.
+ * @return Vector of coarse basis vectors.
+ */
+template <class Vec>
+std::vector<Vec> build_pou_coarse_space(const std::vector<Vec>& template_vecs, const PartitionOfUnity& pou)
+{
+  logger::info("Setting up POU coarse space");
+
+  std::vector<Vec> basis = template_vecs;
+  detail::finalize_eigenvectors(basis, pou);
+  return basis;
+}
+
+/**
+ * @brief Build a POU coarse space spanned by the partition of unity itself.
+ *
+ * Produces a single basis vector that is constant one, scaled by the partition
+ * of unity and normalised. This is the classic Nicolaides coarse space.
+ *
+ * @param pou Partition of unity used for scaling/normalisation.
+ * @return Vector containing the single coarse basis vector.
+ */
+template <class Scalar = double>
+std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> build_pou_coarse_space(const PartitionOfUnity& pou)
+{
+  using Vec = Dune::BlockVector<Dune::FieldVector<Scalar, 1>>;
+
+  logger::info("Setting up POU coarse space");
+
+  std::vector<Vec> basis(1);
+  basis[0].resize(pou.size());
+  for (std::size_t i = 0; i < pou.size(); ++i) basis[0][i] = 1.0;
+
+  detail::finalize_eigenvectors(basis, pou);
+  return basis;
+}
