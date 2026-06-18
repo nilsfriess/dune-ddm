@@ -96,3 +96,14 @@ target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_TRL=1)
 # Install the header tree to match the $<INSTALL_INTERFACE:...> path above.
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/trl/include/
   DESTINATION extern/trl/include)
+
+# dune-pdelab does not install the headers under dune/pdelab/test (they are
+# treated as test-only), but downstream code (e.g. dune-heart's rwdata.hh)
+# includes some of them, such as l2difference.hh. Install that header tree into
+# the same include destination as the rest of pdelab so the includes resolve
+# against the installed module. Only relevant for the in-tree superbuild.
+if(DUNE_DDM_SUPERBUILD)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/dune-pdelab/dune/pdelab/test/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/dune/pdelab/test
+    FILES_MATCHING PATTERN "*.hh")
+endif()
