@@ -52,6 +52,12 @@ if(TARGET Eigen3::Eigen)
   )
   target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_SPECTRA=1)
   target_link_libraries(duneddm INTERFACE Eigen3::Eigen)
+
+  # Install the header tree so the $<INSTALL_INTERFACE:...> path above actually
+  # exists in the install tree (otherwise consumers of the exported Dune::DDM
+  # target hit a "non-existent path" error).
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/spectra/include/
+    DESTINATION extern/spectra/include)
 else()
   message(STATUS "Eigen not found, Spectra eigensolver will not be available")
 endif()
@@ -63,3 +69,7 @@ target_include_directories(duneddm INTERFACE
   $<INSTALL_INTERFACE:extern/trl/include>
 )
 target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_TRL=1)
+
+# Install the header tree to match the $<INSTALL_INTERFACE:...> path above.
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/trl/include/
+  DESTINATION extern/trl/include)
