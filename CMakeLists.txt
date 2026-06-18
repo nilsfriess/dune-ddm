@@ -86,12 +86,22 @@ find_package(BLAS REQUIRED)
 find_package(LAPACK REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED)
-find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK CHOLMOD)
+
+# SuiteSparse (UMFPACK/CHOLMOD) is a public dependency: dune-ddm's headers
+# include <umfpack.h> unconditionally. The find_package call lives in
+# cmake/modules/DuneDdmMacros.cmake so that it also runs in downstream consumers
+# of the installed Dune::DDM target (Dune auto-includes that file). Here we only
+# attach the imported target to the exported interface, so its include dirs and
+# libraries propagate to anything linking Dune::DDM.
+target_link_libraries(duneddm INTERFACE SuiteSparse::SuiteSparse)
 
 # optionally find STRUMPACK
 find_package(STRUMPACK CONFIG)
 
 find_package(Eigen3 NO_MODULE REQUIRED)
+
+# Install dune-ddm's own cmake modules (DuneDdmMacros.cmake) for consumers.
+add_subdirectory(cmake/modules)
 
 # Set up external dependencies that are included as git submodules
 add_subdirectory(extern)
