@@ -35,6 +35,13 @@ ExternalProject_Add(luajit_external
 # no extra wiring is needed.
 add_library(luajit STATIC IMPORTED GLOBAL)
 add_dependencies(luajit luajit_external)
+
+# luajit_external only creates the include directory at build time, but CMake
+# requires an imported target's INTERFACE_INCLUDE_DIRECTORIES to exist already at
+# configure time. Create it now so configuration succeeds on a clean build; the
+# ExternalProject populates it with the actual headers when it is built.
+file(MAKE_DIRECTORY ${LUAJIT_INSTALL_DIR}/include/luajit-2.1)
+
 set_target_properties(luajit PROPERTIES
   IMPORTED_LOCATION ${LUAJIT_INSTALL_DIR}/lib/libluajit-5.1.a
   INTERFACE_INCLUDE_DIRECTORIES ${LUAJIT_INSTALL_DIR}/include/luajit-2.1
