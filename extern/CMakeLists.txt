@@ -24,47 +24,26 @@ ExternalProject_Add(luajit_external
     ${LUAJIT_INSTALL_DIR}/lib/libluajit-5.1.a
 )
 
-# Create an imported target for LuaJIT. This is used for build-tree consumers:
-# it provides the correct build ordering against luajit_external and the
-# in-tree header path.
+# Imported target for the bundled LuaJIT. This is an *examples-only* dependency:
+# nothing under dune/ddm/ uses Lua, so LuaJIT is deliberately NOT part of the
+# duneddm interface (otherwise every consumer of Dune::DDM would be forced to
+# link a library it never uses). Example targets that need Lua link `luajit`
+# directly; see examples/CMakeLists.txt.
+#
+# Linking this imported target also propagates the build-order dependency on
+# luajit_external (via add_dependencies below) and the in-tree header path, so
+# no extra wiring is needed.
 add_library(luajit STATIC IMPORTED GLOBAL)
 add_dependencies(luajit luajit_external)
-
 set_target_properties(luajit PROPERTIES
   IMPORTED_LOCATION ${LUAJIT_INSTALL_DIR}/lib/libluajit-5.1.a
   INTERFACE_INCLUDE_DIRECTORIES ${LUAJIT_INSTALL_DIR}/include/luajit-2.1
 )
 
-# Install the static library and headers so consumers of the *installed*
-# Dune::DDM target can find them. The imported target above only exists in the
-# superbuild's own build tree, so the install tree needs real files to link.
-install(FILES ${LUAJIT_INSTALL_DIR}/lib/libluajit-5.1.a
-  DESTINATION extern/luajit/lib)
-install(DIRECTORY ${LUAJIT_INSTALL_DIR}/include/luajit-2.1
-  DESTINATION extern/luajit/include)
-
-# Link LuaJIT into duneddm. In the build tree we link the imported target (so
-# luajit_external builds first and the in-tree include dir is picked up); in the
-# install tree the imported target is not part of the exported target set, so we
-# point at the installed static library by absolute path instead. Linking the
-# bare target name would otherwise be exported verbatim and degrade to
-# "-lluajit", which the consumer's linker cannot resolve.
-target_link_libraries(duneddm INTERFACE
-  $<BUILD_INTERFACE:luajit>
-  $<INSTALL_INTERFACE:${CMAKE_INSTALL_PREFIX}/extern/luajit/lib/libluajit-5.1.a>
-)
-target_include_directories(duneddm INTERFACE
-  $<INSTALL_INTERFACE:extern/luajit/include/luajit-2.1>
-)
-
-# LuaJIT requires libm and libdl on Linux. These are needed in both the build
-# and install interfaces, so attach them to duneddm directly rather than only to
-# the imported target (which does not participate in the install tree).
+# LuaJIT requires libm and libdl on Linux.
 if(UNIX AND NOT APPLE)
-  target_link_libraries(duneddm INTERFACE m dl)
+  set_property(TARGET luajit APPEND PROPERTY INTERFACE_LINK_LIBRARIES m dl)
 endif()
-
-target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_LUAJIT=1)
 
 # Spectra - header-only eigenvalue solver library
 # Add include directories directly to duneddm to avoid export issues
