@@ -48,6 +48,11 @@ template <class Vec, class Communication>
 class GalerkinPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   using Solver = Dune::InverseOperator<Vec, Vec>;
 
+public:
+  /** @brief Type of the assembled coarse matrix. This is what gatherMatrixFromRowsFlat() returns. */
+  using CoarseMatrix = Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>;
+
+private:
   /** @brief Helper class for distributing vectors across MPI ranks during communication */
   struct VecDistributor {
     using value_type = std::pair<int, double>;
@@ -202,8 +207,14 @@ public:
     for (std::size_t i = 0; i < x.size(); ++i) x[i] = x_ovlp[i];
   }
 
-  // /** @brief Get the assembled coarse matrix R A R^T for inspection or debugging */
-  // const Dune::BCRSMatrix<double> &get_coarse_matrix() const { return a0; }
+  /** @brief The assembled coarse matrix R A R^T, for inspection, debugging and testing.
+   *
+   *  The coarse problem is solved centrally, so the matrix is only assembled on rank 0. On every
+   *  other rank the returned matrix is empty (0x0). Rows and columns are numbered by concatenating
+   *  the template vectors of all ranks in rank order, i.e. the k-th template vector of rank r is
+   *  coarse index sum(num_t of ranks < r) + k.
+   */
+  const CoarseMatrix& get_coarse_matrix() const { return *a0; }
 
 private:
   /** @brief Register logging events for performance monitoring */
@@ -337,14 +348,14 @@ private:
     Logger::get().endEvent(local_remote_sp_event);
 
     Logger::get().startEvent(gather_A0);
-    auto a0 = std::make_shared<Mat>(gatherMatrixFromRowsFlat(my_rows_flat, total_num_t, mpicomm));
+    a0 = std::make_shared<CoarseMatrix>(gatherMatrixFromRowsFlat(my_rows_flat, total_num_t, mpicomm));
     Logger::get().endEvent(gather_A0);
 
     Logger::get().startEvent(factor_A0);
     if (rank == 0) {
       logger::debug("Size of coarse space matrix: {}x{}, nonzeros: {}", a0->N(), a0->M(), a0->nonzeroes());
 
-      using Op = Dune::MatrixAdapter<Mat, Vec, Vec>;
+      using Op = Dune::MatrixAdapter<CoarseMatrix, Vec, Vec>;
       Dune::initSolverFactories<Op>();
       auto op = std::make_shared<Op>(a0);
 
@@ -358,6 +369,7 @@ private:
   }
 
   std::shared_ptr<Communication> comm;
+  std::shared_ptr<CoarseMatrix> a0; ///  The coarse matrix R A R^T; only assembled on rank 0, empty elsewhere
   std::shared_ptr<Solver> solver;   ///  Direct solver for the coarse problem (UMFPack by default)
   std::vector<Vec> restr_vecs;      ///  Template vectors used to build the restriction matrix
   std::size_t n;                    ///  Size of the overlapping index set

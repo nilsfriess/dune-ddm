@@ -36,10 +36,11 @@ dune_add_test(SOURCES test_distribute_matrix.cc
   LABELS ddm
 )
 
-#
-# dune_add_test(SOURCES test_galerkin_coarse_matrix.cc
-#               LINK_LIBRARIES dune-ddm
-#               MPI_RANKS 4               # This test requires exactly 4 MPI ranks
-#               TIMEOUT 100
-#               LABELS ddm
-# )
+# GalerkinPreconditioner: the assembled coarse matrix must equal R A R^T and apply() must evaluate
+# R^T (R A R^T)^-1 R, both compared against a dense reference built from the global matrix.
+dune_add_test(SOURCES test_galerkin_coarse_matrix.cc
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 1 2 4 16
+  TIMEOUT 300
+  LABELS ddm
+)
