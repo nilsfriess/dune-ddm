@@ -21,7 +21,6 @@
 #include <dune/grid/yaspgrid.hh>
 #include <dune/istl/solverfactory.hh>
 #include <dune/istl/solvers.hh>
-#include <dune/istl/strumpack.hh>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcpp"
