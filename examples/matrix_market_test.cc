@@ -2,6 +2,7 @@
 #include "config.h"
 #endif
 
+#include "dune/ddm/algebraic_neumann.hh"
 #include "dune/ddm/coarsespaces/coarse_spaces.hh"
 #include "dune/ddm/combined_preconditioner.hh"
 #include "dune/ddm/galerkin_preconditioner.hh"
@@ -17,22 +18,6 @@
 #include <dune/istl/novlpschwarz.hh>
 #include <dune/istl/solverfactory.hh>
 #include <iostream>
-
-template <class Communication, class Mat>
-Mat make_algebraic_neumann(const Communication& comm, const Mat& A, const std::vector<bool>& boundary)
-{
-  auto [comm_next, A_next, boundary_next] = create_overlapping_matrix(comm, A, 1);
-  Mat A_neumann = A;
-  for (std::size_t i = 0; i < boundary.size(); ++i) {
-    if (boundary[i]) {
-      double sum = 0;
-      for (auto cit = (*A_next)[i].begin(); cit != (*A_next)[i].end(); ++cit)
-        if (cit.index() >= A.N()) sum += std::abs(*cit);
-      A_neumann[i][i] -= sum;
-    }
-  }
-  return A_neumann;
-}
 
 int main(int argc, char** argv)
 {

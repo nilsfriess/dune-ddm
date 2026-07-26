@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <dune/common/parallel/mpihelper.hh>
 #include <dune/common/parametertree.hh>
+#include <dune/ddm/algebraic_neumann.hh>
 #include <dune/ddm/coarsespaces/coarse_spaces.hh>
 #include <dune/ddm/combined_preconditioner.hh>
 #include <dune/ddm/galerkin_preconditioner.hh>
@@ -51,33 +52,89 @@ public:
     const auto& coarsespace_subtree = ptree.sub("coarsespace");
     auto domain = coarsespace_subtree.get("domain", "full");
     auto constraint = coarsespace_subtree.get("constraint", "none");
+    auto neumann = coarsespace_subtree.get("neumann", "assembled");
 
-    logger::debug("Setting up coarse space with domain='{}', constraint='{}'", domain, constraint);
+    logger::debug("Setting up coarse space with domain='{}', constraint='{}', neumann='{}'", domain, constraint, neumann);
 
-    // Determine which Neumann regions to assemble based on domain x constraint
-    if (domain == "full" and constraint == "none") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::Overlap, overlap, true, novlp_comm_.get());
-    else if (domain == "full" and constraint == "harmonic") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::All, overlap, true, novlp_comm_.get());
-    else if (domain == "ring" and constraint == "none")
-      problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, overlap, false, novlp_comm_.get());
-    else if (domain == "ring" and constraint == "harmonic") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::Overlap, NeumannRegion::Overlap, overlap, false, novlp_comm_.get());
-    else DUNE_THROW(Dune::NotImplemented, "Unknown coarse space configuration: domain=" + domain + ", constraint=" + constraint);
+    // With neumann = algebraic the Neumann matrix is approximated from the assembled subdomain matrix
+    // instead of being assembled element-wise, so the (expensive) Neumann assembly is skipped
+    // altogether. Everything else about the coarse space is unchanged, which is what makes a
+    // comparison against neumann = assembled isolate exactly the effect of the approximation.
+    const bool algebraic_neumann = neumann == "algebraic";
+    if (not algebraic_neumann and neumann != "assembled")
+      DUNE_THROW(Dune::NotImplemented, "Unknown coarsespace.neumann mode: " + neumann + " (expected 'assembled' or 'algebraic')");
+    if (algebraic_neumann) {
+      // On a ring region the Neumann matrix is indexed by the ring rather than by the subdomain, and
+      // the outer ring boundary coincides with the subdomain boundary, so the correction would have to
+      // be applied in ring-local indexing. Not implemented yet.
+      if (domain != "full") DUNE_THROW(Dune::NotImplemented, "coarsespace.neumann = algebraic is only implemented for domain = full, got domain = " + domain);
+    }
 
-    // Get assembled matrices
-    auto A_sub = problem.get_subdomain_matrix();
-    auto A_neu = problem.get_first_neumann_matrix();
-    auto B_neu = problem.get_second_neumann_matrix();
+    std::shared_ptr<NativeMat> A_sub;
+    std::shared_ptr<NativeMat> A_neu;
+    std::shared_ptr<NativeMat> B_neu;
+
+    if (algebraic_neumann) {
+      // No element-level Neumann assembly: the assembled subdomain matrix is all we need.
+      problem.assemble_dirichlet_matrix_only(*ovlp_comm_, novlp_comm_.get());
+      A_sub = problem.get_subdomain_matrix();
+    }
+    else {
+      // Determine which Neumann regions to assemble based on domain x constraint
+      if (domain == "full" and constraint == "none") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::Overlap, overlap, true, novlp_comm_.get());
+      else if (domain == "full" and constraint == "harmonic") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::All, overlap, true, novlp_comm_.get());
+      else if (domain == "ring" and constraint == "none")
+        problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, overlap, false, novlp_comm_.get());
+      else if (domain == "ring" and constraint == "harmonic") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::Overlap, NeumannRegion::Overlap, overlap, false, novlp_comm_.get());
+      else DUNE_THROW(Dune::NotImplemented, "Unknown coarse space configuration: domain=" + domain + ", constraint=" + constraint);
+
+      // Get assembled matrices
+      A_sub = problem.get_subdomain_matrix();
+      A_neu = problem.get_first_neumann_matrix();
+      B_neu = problem.get_second_neumann_matrix();
+    }
 
     // Ensure boundary_mask is not set at Dirichlet boundary nodes
     const auto& dirichlet_mask = problem.get_overlapping_dirichlet_mask();
     for (std::size_t i = 0; i < boundary_mask.size(); ++i)
       if (dirichlet_mask[i]) boundary_mask[i] = 0;
 
+    // Now that the subdomain boundary is known (minus the Dirichlet DOFs, whose rows must not be
+    // corrected), approximate the Neumann matrix. See dune/ddm/algebraic_neumann.hh for what is
+    // being approximated and how good the approximation is.
+    if (algebraic_neumann) {
+      logger::info("Approximating the Neumann matrix algebraically (no element-wise Neumann assembly)");
+      auto A_alg = std::make_shared<NativeMat>(make_algebraic_neumann(*ovlp_comm_, *A_sub, boundary_mask));
+
+      // The algebraic path only ever sees the assembled subdomain matrix of the full operator, so for
+      // a non-symmetric problem the result is non-symmetric and the symmetric eigensolvers would
+      // silently misinterpret it. Taking the symmetric part discards exactly the convection (for a
+      // divergence-free velocity field) and leaves the norm in which the scheme is coercive; see
+      // dune/ddm/algebraic_neumann.hh. Note that this is not the same surrogate the assembled path
+      // uses for the same problem: there the Neumann matrix comes from a separate assembly of the
+      // elliptic part of the PDE, which also drops the upwind term.
+      //
+      // The order matters. The row-sum correction above is valid for the rows of the non-symmetric
+      // matrix, so it has to happen first.
+      if constexpr (not Traits::is_symmetric) {
+        logger::info("Non-symmetric problem: taking the symmetric part (A + A^T)/2 of the algebraic Neumann matrix");
+        symmetrize(*A_alg);
+      }
+
+      A_neu = A_alg;
+      B_neu = A_alg;
+    }
+
+    // Keep hold of the Neumann matrix that was actually used. With neumann = algebraic the problem
+    // object never sees one (that is the point), so this is the only handle callers have on it.
+    A_neu_ = A_neu;
+
     // Create partition of unity
     logger::debug("Creating partition of unity");
     pou_ = std::make_shared<PartitionOfUnity>(*A_sub, *ovlp_comm_, ptree, overlap);
 
     // Create coarse space
-    std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> coarse_basis;
+    CoarseSpaceResult<double> coarse_space;
     std::shared_ptr<CoarseLevel> coarse = nullptr;
 
     const auto zero_at_dirichlet = [&](auto&& x) {
@@ -87,7 +144,7 @@ public:
 
     // Create an A_dir matrix that corresponds to A_sub with subdomain boundary dofs eliminated
     auto A_dir = std::make_shared<NativeMat>(*A_sub);
-    eliminate_dirichlet(*A_dir, boundary_mask, false); // false => don't eliminate symetrically
+    if (not Traits::is_dg) eliminate_dirichlet(*A_dir, boundary_mask, false); // false => don't eliminate symetrically
 
     // Create fine level Schwarz preconditioner
     logger::debug("Setting up fine level Schwarz preconditioner");
@@ -95,22 +152,22 @@ public:
 
     std::string coarse_space_ptree_prefix = "coarsespace";
 
-    if (domain == "full" and constraint == "none") { coarse_basis = build_geneo_coarse_space(*A_neu, *B_neu, *pou_, ptree, coarse_space_ptree_prefix); }
+    if (domain == "full" and constraint == "none") { coarse_space = build_geneo_coarse_space(*A_neu, *B_neu, *pou_, ptree, coarse_space_ptree_prefix); }
     else if (domain == "ring" and constraint == "none") {
-      coarse_basis =
+      coarse_space =
           build_geneo_ring_coarse_space(*A_neu, *B_neu, problem.get_neumann_region_to_subdomain(), *pou_, *A_sub, ptree, coarse_space_ptree_prefix, schwarz->get_solver().get(), boundary_mask);
     }
     else if (domain == "full" and constraint == "harmonic") {
-      coarse_basis = build_msgfem_coarse_space(*A_neu, *pou_, boundary_mask, ptree, coarse_space_ptree_prefix, A_sub.get(), dirichlet_mask, schwarz->get_solver().get());
+      coarse_space = build_msgfem_coarse_space(*A_neu, *pou_, boundary_mask, ptree, coarse_space_ptree_prefix, A_sub.get(), dirichlet_mask, schwarz->get_solver().get());
     }
     else if (domain == "ring" and constraint == "harmonic") {
-      coarse_basis = build_msgfem_ring_coarse_space(*A_neu, problem.get_neumann_region_to_subdomain(), *pou_, *A_sub, dirichlet_mask, boundary_mask, ptree, coarse_space_ptree_prefix,
+      coarse_space = build_msgfem_ring_coarse_space(*A_neu, problem.get_neumann_region_to_subdomain(), *pou_, *A_sub, dirichlet_mask, boundary_mask, ptree, coarse_space_ptree_prefix,
                                                     schwarz->get_solver().get());
     }
     else DUNE_THROW(Dune::NotImplemented, "Unknown coarse space configuration: domain=" + domain + ", constraint=" + constraint);
 
-    if (!coarse_basis.empty()) {
-      basis_ = std::move(coarse_basis);
+    if (!coarse_space.basis.empty()) {
+      basis_ = std::move(coarse_space.basis);
       std::ranges::for_each(basis_, zero_at_dirichlet);
       coarse = std::make_shared<CoarseLevel>(*A_sub, basis_, ovlp_comm_, ptree, "coarse_solver");
     }
@@ -150,7 +207,11 @@ public:
 
   std::shared_ptr<PartitionOfUnity> get_pou() { return pou_; }
 
+  /** @brief The Neumann matrix the coarse space was built from (assembled or algebraic). */
+  std::shared_ptr<NativeMat> get_neumann_matrix() const { return A_neu_; }
+
 private:
+  std::shared_ptr<NativeMat> A_neu_;
   std::shared_ptr<Communication> novlp_comm_;
   std::shared_ptr<Communication> ovlp_comm_;
   std::shared_ptr<PartitionOfUnity> pou_;

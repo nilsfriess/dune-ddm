@@ -16,10 +16,12 @@
 #include <dune/ddm/logger.hh>
 #include <dune/ddm/nonoverlapping_operator.hh>
 #include <dune/grid/io/file/vtk/subsamplingvtkwriter.hh>
+#include <dune/grid/uggrid.hh>
 #include <dune/grid/utility/parmetisgridpartitioner.hh>
 #include <dune/grid/yaspgrid.hh>
 #include <dune/istl/solverfactory.hh>
 #include <dune/istl/solvers.hh>
+#include <dune/istl/strumpack.hh>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcpp"
@@ -164,20 +166,29 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
       write_overlapping_vector(v, name);
     }
 
-    // Write A_neu * 1 (should be zero)
-    auto A_neu = problem->get_first_neumann_matrix();
+    // Write A_neu * 1 (should be zero). Take the matrix from the preconditioner rather than from the
+    // problem: with coarsespace.neumann = algebraic no Neumann matrix is ever assembled, so the
+    // problem's own A_neu is null. This plot is the direct check on the algebraic approximation,
+    // since the row-sum correction is precisely what is supposed to make these entries vanish.
+    auto A_neu = prec->get_neumann_matrix();
     typename Prec::NativeVec ones(A_neu->N());
     typename Prec::NativeVec rowsums(A_neu->N());
     ones = 1;
     rowsums = 0;
     A_neu->mv(ones, rowsums);
     typename Prec::NativeVec v1(prec->getOverlappingCommunication()->indexSet().size());
-    if (problem->get_neumann_region_to_subdomain().size() > 0)
-      for (std::size_t i = 0; i < problem->get_neumann_region_to_subdomain().size(); ++i) v1[problem->get_neumann_region_to_subdomain()[i]] = rowsums[i];
+    v1 = 0;
+    const auto& neumann_map = problem->get_neumann_region_to_subdomain();
+    if (neumann_map.size() > 0)
+      for (std::size_t i = 0; i < neumann_map.size(); ++i) v1[neumann_map[i]] = rowsums[i];
+    else if (v1.N() == rowsums.N()) v1 = rowsums; // Neumann matrix is indexed by the whole subdomain
     write_overlapping_vector(v1, "A_neu * 1");
 
     // Write POU
     write_overlapping_vector(prec->get_pou()->vector(), "POU");
+
+    // Write sum of all POUs
+    write_overlapping_vector(prec->get_pou()->vector(), "POU (sum)", false);
 
     writer.write(ptree.get("filename", "pdelab_example"), Dune::VTK::appendedraw);
   }
@@ -189,17 +200,21 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
 template <int dim>
 void run_convection_diffusion(const Dune::MPIHelper& helper, const Dune::ParameterTree& ptree, const Dune::ParameterTree& configptree)
 {
+  // The grid and the finite element space have to consist of the same element type, so the grid is
+  // built from the same flag that selects the finite element map.
+  constexpr bool qk_elements = false;
+  constexpr int degree = 1;
+
   using Grid = Dune::UGGrid<dim>;
-  auto grid = DDMUtilities::make_grid<Grid>(ptree, helper, DDMUtilities::ElementType::Cube, "");
+  auto grid = DDMUtilities::make_grid<Grid>(ptree, helper, DDMUtilities::element_type_for(qk_elements), "");
   auto gv = grid->leafGridView();
   using GridView = decltype(gv);
 
   using ProblemParams = LuaConvectionDiffusionProblem<GridView, double>;
   using SymmetricProblemParams = LuaConvectionDiffusionProblem<GridView, double, true>;
   static constexpr bool is_symmetric = false;
-  constexpr bool use_dg = true;
-  constexpr bool qk_elements = true;
-  using Traits = ConvectionDiffusionTraits<GridView, ProblemParams, SymmetricProblemParams, is_symmetric, use_dg, qk_elements>;
+  constexpr bool use_dg = false;
+  using Traits = ConvectionDiffusionTraits<GridView, ProblemParams, SymmetricProblemParams, is_symmetric, use_dg, degree, qk_elements>;
   using Problem = GenericDDMProblem<GridView, Traits>;
 
   auto convection_diffusion_coefficient_lua_file = configptree.get("convection_diffusion_coefficient", "convection_diffusion_coefficient.lua");
@@ -212,16 +227,20 @@ void run_convection_diffusion(const Dune::MPIHelper& helper, const Dune::Paramet
 template <int dim>
 void run_poisson(const Dune::MPIHelper& helper, const Dune::ParameterTree& ptree, const Dune::ParameterTree& configptree)
 {
-  using Grid = Dune::YaspGrid<dim>;
-  auto grid = DDMUtilities::make_grid<Grid>(ptree, helper, DDMUtilities::ElementType::Cube, "");
+  // The grid and the finite element space have to consist of the same element type, so the grid is
+  // built from the same flag that selects the finite element map: true gives Q1 on cubes, false
+  // gives P1 on simplices (which is what a Gmsh triangle/tetrahedron mesh needs).
+  constexpr bool qk_elements = false;
+  constexpr int degree = 1;
+
+  using Grid = Dune::UGGrid<dim>;
+  auto grid = DDMUtilities::make_grid<Grid>(ptree, helper, DDMUtilities::element_type_for(qk_elements), "");
   auto gv = grid->leafGridView();
   using GridView = decltype(gv);
 
   using ProblemParams = LuaProblem<GridView, double>;
   constexpr bool is_symmetric = true;
   constexpr bool use_dg = false;
-  constexpr int degree = 1;
-  constexpr bool qk_elements = true;
 
   using Traits = ConvectionDiffusionTraits<GridView, ProblemParams, ProblemParams, is_symmetric, use_dg, degree, qk_elements>;
   using Problem = GenericDDMProblem<GridView, Traits>;

@@ -122,6 +122,8 @@ struct ConvectionDiffusionTraits {
   }
 
   static constexpr bool vector_valued = false;
+
+  static constexpr bool is_dg = UseDG;
 };
 
 /**
@@ -186,4 +188,6 @@ struct LinearElasticityTraits {
 
   /// A function to create the finite element map
   static std::unique_ptr<FEM> create_fem(const EntitySet& es) { return std::make_unique<FEM>(es); }
+
+  static constexpr bool is_dg = false;
 };

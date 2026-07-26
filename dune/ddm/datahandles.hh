@@ -505,6 +505,12 @@ private:
 //       type and reinterpret back on the receiver side. We should probably just split the communication
 //       of the indices and the communication of the entries.
 //       We do not send them as std::pairs because that was very inefficient.
+//
+// NOTE: This handle *accumulates* received entries, so it is only correct for an ADDITIVE source
+//       matrix, where each rank holds a partial contribution and shared entries have to be summed.
+//       For a CONSISTENT source matrix, where every rank already holds the complete value, use
+//       CopyMatrixDataHandle instead: accumulating there multiplies every shared entry by the number
+//       of ranks that happen to hold it.
 template <class Mat, class ParallelIndexSet>
 class AddMatrixDataHandle {
   using GlobalIndex = typename ParallelIndexSet::GlobalIndex;
@@ -581,6 +587,106 @@ public:
       actual_entry[0][0] = d;
 
       if (paridxs.exists(idx)) Atarget[i][paridxs[idx].local()] += actual_entry;
+
+      count += 2;
+    }
+  }
+
+private:
+  const Mat& Asource;
+  Mat& Atarget;
+
+  const ParallelIndexSet& paridxs;
+  Dune::GlobalLookupIndexSet<ParallelIndexSet> glis;
+
+  Logger::Event* scatter_event;
+  Logger::Event* gather_event;
+};
+
+/** @brief Like AddMatrixDataHandle, but *assigns* received entries instead of accumulating them.
+ *
+ *  Use this when the source matrix is CONSISTENT, i.e. when every rank that holds an entry holds its
+ *  complete value (as is the case for a plain restriction \f$R_i A R_i^T\f$ of an already assembled
+ *  matrix). All senders then agree on the value, so taking any one of them is correct, whereas summing
+ *  them would scale the entry by the number of ranks sharing it.
+ *
+ *  @see AddMatrixDataHandle for the additive counterpart.
+ */
+template <class Mat, class ParallelIndexSet>
+class CopyMatrixDataHandle {
+  using GlobalIndex = typename ParallelIndexSet::GlobalIndex;
+  using MatrixEntry = typename Mat::block_type;
+
+public:
+  using DataType = GlobalIndex;
+  static_assert(sizeof(GlobalIndex) == sizeof(MatrixEntry));
+
+  CopyMatrixDataHandle(const Mat& A, Mat& Aovlp, const ParallelIndexSet& paridxs)
+      : Asource(A)
+      , Atarget(Aovlp)
+      , paridxs(paridxs)
+      , glis(paridxs)
+  {
+    for (auto rIt = A.begin(); rIt != A.end(); ++rIt)
+      for (auto cIt = rIt->begin(); cIt != rIt->end(); ++cIt) Atarget[rIt.index()][cIt.index()] = Asource[rIt.index()][cIt.index()];
+
+    scatter_event = Logger::get().registerOrGetEvent("OverlapExtension", "copy Matrix scatter");
+    gather_event = Logger::get().registerOrGetEvent("OverlapExtension", "copy Matrix gather");
+  }
+  CopyMatrixDataHandle(const CopyMatrixDataHandle&) = delete;
+  CopyMatrixDataHandle(CopyMatrixDataHandle&&) = delete;
+  CopyMatrixDataHandle& operator=(const CopyMatrixDataHandle&) = delete;
+  CopyMatrixDataHandle& operator=(CopyMatrixDataHandle&&) = delete;
+  ~CopyMatrixDataHandle() = default;
+
+  bool fixedSize() { return false; }
+  std::size_t size(int i)
+  {
+    std::size_t count = 1; // Send some dummy data
+    if (static_cast<std::size_t>(i) < Asource.N())
+      for (auto cIt = Asource[i].begin(); cIt != Asource[i].end(); ++cIt) count += 2; // We send an index and an entry
+    return count;
+  }
+
+  template <class Buffer>
+  void gather(Buffer& buffer, int i)
+  {
+    Logger::ScopedLog sl{gather_event};
+
+    buffer.write(0); // Send dummy data
+
+    if (static_cast<std::size_t>(i) < Asource.N())
+      for (auto cIt = Asource[i].begin(); cIt != Asource[i].end(); ++cIt) {
+        buffer.write(glis.pair(cIt.index())->global());
+
+        GlobalIndex entry;
+        double d = (*cIt)[0][0];
+        std::memcpy(&entry, &d, sizeof(entry));
+        buffer.write(entry);
+      }
+  }
+
+  template <class Buffer>
+  void scatter(Buffer& buffer, int i, std::size_t size)
+  {
+    Logger::ScopedLog sl{scatter_event};
+
+    DataType idx;
+    buffer.read(idx); // read dummy data
+
+    DataType entry;
+    MatrixEntry actual_entry;
+    std::size_t count = 1;
+    while (count < size) {
+      buffer.read(idx);
+      buffer.read(entry);
+
+      double d;
+      std::memcpy(&d, &entry, sizeof(d));
+      actual_entry[0][0] = d;
+
+      // Assign rather than accumulate: every sender holds the same, complete value.
+      if (paridxs.exists(idx)) Atarget[i][paridxs[idx].local()] = actual_entry;
 
       count += 2;
     }

@@ -13,23 +13,22 @@
  * Part of the unified PDELab example framework.
  */
 
+#include <array>
+#include <bitset>
 #include <cmath>
-#include <dune/common/exceptions.hh>
-#include <dune/common/parallel/mpihelper.hh>
-#include <dune/common/parametertree.hh>
-#include <dune/grid/utility/parmetisgridpartitioner.hh>
-#include <dune/grid/utility/structuredgridfactory.hh>
 #include <memory>
 #include <string>
 
-#if USE_UGGRID
+#include <dune/common/exceptions.hh>
+#include <dune/common/parallel/mpihelper.hh>
+#include <dune/common/parametertree.hh>
+#include <dune/geometry/type.hh>
 #include <dune/grid/io/file/gmshreader.hh>
-#include <dune/grid/uggrid.hh>
-#endif
+#include <dune/grid/utility/parmetisgridpartitioner.hh>
+#include <dune/grid/utility/structuredgridfactory.hh>
+#include <dune/grid/yaspgrid.hh>
 
 #include "dune/ddm/logger.hh"
-
-#include <dune/grid/yaspgrid.hh>
 
 namespace DDMUtilities {
 
@@ -47,24 +46,91 @@ constexpr bool isYaspGrid()
 
 enum class ElementType { Simplex, Cube };
 
+inline std::string to_string(ElementType element_type)
+{
+  return element_type == ElementType::Cube ? "cube" : "simplex";
+}
+
+/// @brief Element type matching a finite element space built with @p qk_elements
+///
+/// The grid and the finite element space have to agree on the element type, so derive one from the
+/// other rather than configuring both by hand.
+constexpr ElementType element_type_for(bool qk_elements)
+{
+  return qk_elements ? ElementType::Cube : ElementType::Simplex;
+}
+
+namespace Impl {
+
+/// @brief Geometry type that the elements of a grid of @p element_type have
+inline Dune::GeometryType geometry_type(ElementType element_type, int dim)
+{
+  return element_type == ElementType::Cube ? Dune::GeometryTypes::cube(dim) : Dune::GeometryTypes::simplex(dim);
+}
+
+inline std::string describe(const Dune::GeometryType& gt)
+{
+  if (gt.isCube()) return "cube";
+  if (gt.isSimplex()) return "simplex";
+  return "unsupported";
+}
+
+/// @brief Number of elements per coordinate direction
+///
+/// "gridsize_per_rank" takes precedence over "gridsize" and scales with the number of MPI ranks.
+inline int resolve_gridsize(const Dune::ParameterTree& ptree, const Dune::MPIHelper& helper, int dim)
+{
+  if (not ptree.hasKey("gridsize_per_rank")) return ptree.get("gridsize", 32);
+
+  const auto ranks_per_dim = static_cast<int>(std::llround(std::pow(helper.size(), 1.0 / dim)));
+  return ptree.get<int>("gridsize_per_rank") * ranks_per_dim;
+}
+
+/// @brief Throw unless every element of @p grid has the geometry type the caller asked for
+///
+/// A mesh file carries its own element type, so it can disagree with the finite element space the
+/// caller intends to build on the grid. Without this check the mismatch stays invisible until it
+/// surfaces much later as a crash inside the assembler.
+template <class Grid>
+void check_element_type(const Grid& grid, ElementType element_type, const std::string& meshfile, const Dune::MPIHelper& helper)
+{
+  const auto expected = geometry_type(element_type, Grid::dimension);
+
+  int mismatch = 0;
+  for (const auto& gt : grid.leafGridView().indexSet().types(0)) {
+    if (gt == expected) continue;
+    mismatch = 1;
+    logger::error("Mesh file '{}' contains {} elements, but {} elements were requested", meshfile, describe(gt), to_string(element_type));
+  }
+
+  // Only ranks that actually hold elements can spot the mismatch, but every rank has to throw.
+  if (helper.getCommunication().max(mismatch) == 0) return;
+
+  DUNE_THROW(Dune::IOError, "make_grid(): mesh file '" << meshfile << "' does not consist of " << to_string(element_type)
+                                                       << " elements. Either load a matching mesh or build a finite element space that matches the mesh.");
+}
+
+} // namespace Impl
+
 /**
  * @brief Create and partition a grid based on configuration
  *
- * Creates either a structured grid (UGGrid/YaspGrid) from the parameter tree.
  * Supports:
- * - Loading from mesh file (UGGrid with meshfile key)
- * - Creating structured cube grids
- * - Automatic grid partitioning with ParMETIS (for UGGrid)
+ * - Loading from a Gmsh mesh file (any grid with a GridFactory, e.g. UGGrid)
+ * - Creating structured cube or simplex grids
+ * - Automatic grid partitioning with ParMETIS (for everything but YaspGrid)
  * - Global refinement
  *
- * @tparam Grid The grid type (Dune::UGGrid or Dune::YaspGrid)
+ * @tparam Grid The grid type (e.g. Dune::UGGrid or Dune::YaspGrid)
  * @param ptree Parameter tree with grid configuration
  * @param helper MPI helper for parallel partitioning
+ * @param element_type Element type the grid must consist of; this has to match the finite element
+ *                     space that will be built on the grid. YaspGrid only supports cubes.
  * @param subtree_name Name of the subtree containing grid parameters (default: "")
  * @return Unique pointer to the created and partitioned grid
  *
  * Parameter tree keys:
- * - meshfile: Path to mesh file (UGGrid only)
+ * - meshfile: Path to a Gmsh mesh file; leave empty (or omit) to build a structured grid
  * - gridsize: Number of elements per dimension
  * - gridsize_per_rank: Alternative to gridsize, scales with MPI ranks
  * - refine: Number of global refinement steps
@@ -81,70 +147,41 @@ std::unique_ptr<Grid> make_grid(const Dune::ParameterTree& ptree, const Dune::MP
   const Dune::ParameterTree& grid_ptree = subtree_name.empty() ? ptree : ptree.sub(subtree_name);
 
   constexpr int dim = Grid::dimension;
+  using Corner = Dune::FieldVector<typename Grid::ctype, Grid::dimensionworld>;
+
   std::unique_ptr<Grid> grid;
 
   if constexpr (isYaspGrid<Grid>()) {
-    if (element_type != ElementType::Cube) logger::warn("Called make_grid for YaspGrid but with element_type != Cube which is not supported. Ignoring element_type paramter");
+    if (element_type != ElementType::Cube) logger::warn("YaspGrid only supports cube elements, ignoring the requested {} elements", to_string(element_type));
 
-    // YaspGrid path
-    auto gridsize = grid_ptree.get("gridsize", 32);
-    if (grid_ptree.hasKey("gridsize_per_rank")) {
-      auto grid_sqrt = static_cast<int>(std::llround(std::pow(helper.size(), 1.0 / dim)));
-      gridsize = grid_ptree.get<int>("gridsize_per_rank") * grid_sqrt;
-    }
+    std::array<int, dim> cells;
+    cells.fill(Impl::resolve_gridsize(grid_ptree, helper, dim));
 
-    const int grid_overlap = grid_ptree.get("grid_overlap", 0);
-
-    // Create YaspGrid based on dimension
-    if constexpr (dim == 2) {
-      Dune::Yasp::PowerDPartitioning<dim> partitioner;
-      grid = std::make_unique<Grid>(Dune::FieldVector<typename Grid::ctype, dim>{1.0, 1.0}, std::array<int, dim>{gridsize, gridsize}, std::bitset<dim>(0ULL), grid_overlap,
-                                    typename Grid::Communication(), &partitioner);
-    }
-    else if constexpr (dim == 3) {
-      Dune::Yasp::PowerDPartitioning<dim> partitioner;
-      grid = std::make_unique<Grid>(Dune::FieldVector<typename Grid::ctype, dim>{1.0, 1.0, 1.0}, std::array<int, dim>{gridsize, gridsize, gridsize}, std::bitset<dim>(0ULL), grid_overlap,
-                                    typename Grid::Communication(), &partitioner);
-    }
+    const Dune::Yasp::PowerDPartitioning<dim> partitioner;
+    grid = std::make_unique<Grid>(Corner(1.0), cells, std::bitset<dim>(0ULL), grid_ptree.get("grid_overlap", 0), typename Grid::Communication(), &partitioner);
 
     grid->loadBalance();
   }
   else {
-    // UGGrid or other unstructured grid path
-#if USE_UGGRID
-    if (grid_ptree.hasKey("meshfile")) {
-      logger::debug("Loading mesh from file");
-      const auto meshfile = grid_ptree.get("meshfile", "../data/unitsquare.msh");
-      const auto verbose = grid_ptree.get("verbose", 0);
-      grid = Dune::GmshReader<Grid>::read(meshfile, verbose > 2);
-    }
-    else
-#endif
-    {
-      auto gridsize = static_cast<unsigned int>(grid_ptree.get("gridsize", 32));
-      if (grid_ptree.hasKey("gridsize_per_rank")) {
-        auto grid_sqrt = static_cast<int>(std::llround(std::pow(helper.size(), 1.0 / dim)));
-        gridsize = grid_ptree.get<int>("gridsize_per_rank") * grid_sqrt;
-      }
+    // Unstructured grid path (UGGrid and friends)
+    const auto meshfile = grid_ptree.get("meshfile", std::string{});
 
-      // Create structured grid based on dimension
-      if (element_type == ElementType::Cube) {
-        if constexpr (dim == 2) grid = Dune::StructuredGridFactory<Grid>::createCubeGrid({0.0, 0.0}, {1.0, 1.0}, {gridsize, gridsize});
-        else if constexpr (dim == 3) grid = Dune::StructuredGridFactory<Grid>::createCubeGrid({0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}, {gridsize, gridsize, gridsize});
-      }
-      else if (element_type == ElementType::Simplex) {
-        if constexpr (dim == 2) grid = Dune::StructuredGridFactory<Grid>::createSimplexGrid({0.0, 0.0}, {1.0, 1.0}, {gridsize, gridsize});
-        else if constexpr (dim == 3) grid = Dune::StructuredGridFactory<Grid>::createSimplexGrid({0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}, {gridsize, gridsize, gridsize});
-      }
-      else {
-        DUNE_THROW(Dune::NotImplemented, "make_grid(): Element type not supported");
-      }
+    if (not meshfile.empty()) {
+      logger::debug("Loading mesh from {}", meshfile);
+      grid = Dune::GmshReader<Grid>::read(meshfile, grid_ptree.get("verbose", 0) > 2);
+      Impl::check_element_type(*grid, element_type, meshfile, helper);
+    }
+    else {
+      std::array<unsigned int, dim> cells;
+      cells.fill(static_cast<unsigned int>(Impl::resolve_gridsize(grid_ptree, helper, dim)));
+
+      grid = element_type == ElementType::Cube ? Dune::StructuredGridFactory<Grid>::createCubeGrid(Corner(0.0), Corner(1.0), cells)
+                                               : Dune::StructuredGridFactory<Grid>::createSimplexGrid(Corner(0.0), Corner(1.0), cells);
     }
 
     // Partition with ParMETIS and load balance
     auto gv = grid->leafGridView();
-    auto part = Dune::ParMetisGridPartitioner<decltype(gv)>::partition(gv, helper);
-    grid->loadBalance(part, 0);
+    grid->loadBalance(Dune::ParMetisGridPartitioner<decltype(gv)>::partition(gv, helper), 0);
   }
 
   // Global refinement

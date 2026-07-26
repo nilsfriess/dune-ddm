@@ -303,10 +303,11 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
 
   if (first_neumann_region == NeumannRegion::All) {
     A_neu = std::make_shared<Mat>(*A_sub);
-    int corrections_applied = 0;
-    int corrections_skipped = 0;
-    double max_correction = 0.0;
-    double sum_abs_corrections = 0.0;
+    // TODO: For some reason clang flags these as unused??
+    [[maybe_unused]] int corrections_applied = 0;
+    [[maybe_unused]] int corrections_skipped = 0;
+    [[maybe_unused]] double max_correction = 0.0;
+    [[maybe_unused]] double sum_abs_corrections = 0.0;
     for (const auto& [rank, triples] : remote_triples) {
       for (const auto& triple : triples) {
         if (paridxs.exists(triple.row) && paridxs.exists(triple.col)) {
