@@ -339,6 +339,17 @@ auto make_overlapping_communication(const Communication& novlp_comm, const Mat& 
   return increase_overlap(novlp_comm, A, overlap, buffer_size_mb);
 }
 
+/** @brief How the values of a distributed matrix are shared between ranks.
+ *
+ *  This determines how create_overlapping_matrix() must combine the contributions it receives for an
+ *  entry that several ranks know about. Getting it wrong is silent: the sparsity pattern and the sizes
+ *  come out identical either way, only the values are scaled.
+ */
+enum class MatrixRepresentation : std::uint8_t {
+  Additive,  ///< Each rank holds a partial contribution; shared entries must be summed (e.g. a non-overlapping assembled matrix).
+  Consistent ///< Each rank holds the complete value; shared entries must be copied (e.g. a restriction \f$R_i A R_i^T\f$ of an assembled matrix).
+};
+
 /** @brief Result of create_overlapping_matrix: communication, matrix, and boundary mask. */
 template <class Communication, class Mat>
 struct OverlapExtensionResult {
@@ -361,15 +372,20 @@ struct OverlapExtensionResult {
  *                    Must satisfy: remoteIndices().sourceIndexSet().size() == A.N()
  *  @param A The matrix defining the graph structure and providing values for the overlapping matrix.
  *  @param overlap The number of additional overlap layers to add. Must be > 0.
+ *  @param representation How the values of @p A are distributed. The default, MatrixRepresentation::Additive,
+ *         is correct for a non-overlapping assembled matrix. Pass MatrixRepresentation::Consistent when @p A
+ *         is itself already a restriction of an assembled matrix (such as a previously built overlapping
+ *         matrix), otherwise every entry that several ranks know about is multiplied by the number of ranks
+ *         holding it.
  *  @param buffer_size_mb Size of the MPI variable-size communication buffer in MB (default: 10).
  *
  *  @return An OverlapExtensionResult containing the extended communication object,
  *          the overlapping matrix, and the boundary mask.
  *
- *  @see increase_overlap
+ *  @see increase_overlap, MatrixRepresentation
  */
 template <class Communication, class Mat>
-auto create_overlapping_matrix(const Communication& input_comm, const Mat& A, int overlap, std::size_t buffer_size_mb = 10)
+auto create_overlapping_matrix(const Communication& input_comm, const Mat& A, int overlap, MatrixRepresentation representation = MatrixRepresentation::Additive, std::size_t buffer_size_mb = 10)
     -> OverlapExtensionResult<Communication, Mat>
 {
   auto [ovlp_comm, boundary_mask] = increase_overlap(input_comm, A, overlap, buffer_size_mb);
@@ -386,8 +402,14 @@ auto create_overlapping_matrix(const Communication& input_comm, const Mat& A, in
   auto A_ovlp = std::make_shared<Mat>(cmdh.getOverlappingMatrix());
 
   // Fill the overlapping matrix with values
-  AddMatrixDataHandle amdh(A, *A_ovlp, ovlp_comm->indexSet());
-  varcomm->forward(amdh);
+  if (representation == MatrixRepresentation::Additive) {
+    AddMatrixDataHandle amdh(A, *A_ovlp, ovlp_comm->indexSet());
+    varcomm->forward(amdh);
+  }
+  else {
+    CopyMatrixDataHandle cmvdh(A, *A_ovlp, ovlp_comm->indexSet());
+    varcomm->forward(cmvdh);
+  }
 
   return {std::move(ovlp_comm), std::move(A_ovlp), std::move(boundary_mask)};
 }

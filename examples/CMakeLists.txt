@@ -19,6 +19,10 @@ if (${dune-pdelab_FOUND})
       symmetric_convection_diffusion_coefficient.lua
     )
     target_link_libraries(pdelab_example PUBLIC duneddm)
+    # pdelab_example is the only example that uses Lua (via the *_problems.hh
+    # headers). LuaJIT is an examples-only dependency, so it is linked here
+    # rather than through the duneddm interface.
+    target_link_libraries(pdelab_example PRIVATE luajit)
     target_link_dune_default_libraries(pdelab_example)
     dune_symlink_to_source_files(FILES pdelab_example.ini)
 

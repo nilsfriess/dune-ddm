@@ -11,6 +11,7 @@
 #include <dune/istl/owneroverlapcopy.hh>
 #include <dune/istl/repartition.hh>
 #include <dune/istl/scalarproducts.hh>
+#include <format>
 #include <iostream>
 #include <memory>
 #include <mpi.h>
@@ -24,6 +25,19 @@ inline void todo_impl(const char* file, int line, const char* message)
 }
 
 #define TODO(message) todo_impl(__FILE__, __LINE__, message)
+
+template <class... Args>
+inline void check_impl(const char* file, int line, bool condition, std::format_string<Args...> fmt, Args&&... args)
+{
+  if (!condition) {
+    std::cerr << file << ":" << line << ": CHECK failed: " << std::format(fmt, std::forward<Args>(args)...) << std::endl;
+    std::abort();
+  }
+}
+
+// NB: named DDM_CHECK (not CHECK) because UGGrid's ug_undefs.hh does `#undef CHECK`,
+// which would silently remove a plain CHECK macro when <dune/grid/uggrid.hh> is included.
+#define DDM_CHECK(cond, ...) check_impl(__FILE__, __LINE__, (cond), __VA_ARGS__)
 
 #define MPI_CHECK(call)                                                                                                                                                                                \
   do {                                                                                                                                                                                                 \

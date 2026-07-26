@@ -42,7 +42,6 @@ auto make_communication(const GFS& gfs)
   gfs.gridView().communicate(shareddh, all_all_interface, Dune::ForwardCommunication);
 
   // Count dofs that we own. This will be used to create the global numbering
-  using GlobalIndex = typename Communication::ParallelIndexSet::GlobalIndex;
   auto count = std::count_if(native(rank_partition).begin(), native(rank_partition).end(), [&](const auto& x) { return x == rank; });
 
   // Tell other processes how many indices we own so they can find out where their global numbering should start

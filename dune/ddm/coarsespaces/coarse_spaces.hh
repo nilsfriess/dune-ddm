@@ -42,10 +42,10 @@
 
 namespace detail {
 /**
- * @brief Apply partition of unity scaling and normalize eigenvectors.
+ * @brief Apply partition of unity scaling and normalise eigenvectors.
  *
  * Applies final processing to eigenvectors: scales each component by the partition
- * of unity and normalizes to unit length. This is a common final step in all
+ * of unity and normalises to unit length. This is the common final step in all
  * coarse space construction methods.
  *
  * @param eigenvectors Vector of eigenvectors to process (modified in-place).
@@ -63,7 +63,7 @@ inline void finalize_eigenvectors(std::vector<Vec>& eigenvectors, const Partitio
 }
 
 /**
- * @brief Scale matrix entries with partition of unity weights.
+ * @brief Scale matrix entries with partition of unity weights, i.e. compute C <- D*C*D
  *
  * Modifies matrix C in-place by scaling each entry C[i][j] with pou[i] * pou[j].
  * This creates the weighted matrix commonly used in GenEO-type eigenproblems.
@@ -171,7 +171,7 @@ RingInfo get_ring_info(const Mat& A_sub, const std::vector<std::size_t>& ring_re
       }
   }
 
-  logger::debug_all("Created ring info: have {} DOFs on inner ring boundary, {} DOFs one layer into the ring", ring_info.inner_boundary.size(), ring_info.behind_inner_boundary.size());
+  logger::trace_all("Created ring info: have {} DOFs on inner ring boundary, {} DOFs one layer into the ring", ring_info.inner_boundary.size(), ring_info.behind_inner_boundary.size());
 
   return ring_info;
 }
@@ -241,9 +241,9 @@ Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>> extract_ring_submatrix(const D
  * @return Eigenvectors in original matrix indexing (Dirichlet DOFs set to 0).
  */
 template <class Scalar, class POU>
-std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> solve_msgfem_saddle_point_evp(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_neu,
-                                                                                           const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_constraint, const DOFPartition& partition,
-                                                                                           const POU& pou, const Dune::ParameterTree& eig_ptree)
+[[nodiscard]] ddm::GevpSolution<Scalar> solve_msgfem_saddle_point_evp(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_neu,
+                                                                      const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_constraint, const DOFPartition& partition, const POU& pou,
+                                                                      const Dune::ParameterTree& eig_ptree)
 {
   using Matrix = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>;
   using Vector = Dune::BlockVector<Dune::FieldVector<Scalar, 1>>;
@@ -319,9 +319,11 @@ std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> solve_msgfem_saddle
   B.compress();
 
   // Solve the eigenproblem
-  auto eigvecs = solve_gevp(A_lhs, B, eig_ptree);
+  auto solution = ddm::solve_gevp(A_lhs, B, eig_ptree);
+  const auto& eigvecs = solution.eigenvectors;
 
-  // Extract the actual eigenvectors (map from reordered to original indexing)
+  // Extract the actual eigenvectors (map from reordered to original indexing). The eigenvalues
+  // of the saddle-point problem are exactly the MsGFEM eigenvalues, so we pass them through.
   Vector zero(A_neu.N());
   zero = 0;
   std::vector<Vector> result(eigvecs.size(), zero);
@@ -330,7 +332,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> solve_msgfem_saddle
       if (partition.partition[i] != DOFType::Dirichlet) result[k][i] = eigvecs[k][reordering[i]];
   }
 
-  return result;
+  return {.eigenvectors = std::move(result), .eigenvalues = std::move(solution.eigenvalues), .info = solution.info};
 }
 
 /**
@@ -393,6 +395,25 @@ std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> extend_ring_eigenve
 
 } // namespace detail
 
+/**
+ * @brief The result of building a coarse space: the basis plus its spectral provenance.
+ *
+ * `eigenvalues[i]` is the eigenvalue associated with `basis[i]`. The eigenvalue is invariant
+ * under the post-processing applied to the vectors (ring extension, POU scaling, normalisation),
+ * so the pairing stays meaningful even though `basis[i]` is no longer the raw eigenvector.
+ *
+ * For non-spectral coarse spaces (e.g. the POU/Nicolaides space) `eigenvalues` is empty and
+ * `info.converged` is true.
+ */
+template <class Scalar = double>
+struct CoarseSpaceResult {
+  using Vector = Dune::BlockVector<Dune::FieldVector<Scalar, 1>>;
+
+  std::vector<Vector> basis;       ///< POU-scaled, normalised coarse basis vectors.
+  std::vector<Scalar> eigenvalues; ///< Eigenvalue for each basis vector (parallel to `basis`); empty for non-spectral spaces.
+  ddm::EigensolverResult info{};   ///< Eigensolver run metadata (converged / iterations / operator applications).
+};
+
 // ============================================================================
 //  Free functions to build spectral coarse spaces
 // ============================================================================
@@ -410,29 +431,28 @@ std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> extend_ring_eigenve
  * @param pou Partition of unity vector (diagonal of D matrix).
  * @param ptree ParameterTree containing solver and selection parameters.
  * @param ptree_prefix Prefix for parameter subtree (default "coarse_space").
- * @return Vector of coarse basis vectors.
+ * @return CoarseSpaceResult holding the basis, the associated eigenvalues, and eigensolver metadata.
  */
 template <class Scalar = double>
-std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> build_geneo_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A,
-                                                                                      const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& B, const PartitionOfUnity& pou,
-                                                                                      const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "coarse_space")
+[[nodiscard]] CoarseSpaceResult<Scalar> build_geneo_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A, const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& B,
+                                                                 const PartitionOfUnity& pou, const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "coarse_space")
 {
   Logger::ScopedLog setup_sl{Logger::get().registerOrGetEvent("Coarse space", "setup")};
 
-  const auto& subtree = ptree.sub(ptree_prefix);
-  Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+  const auto& subtree = ptree_prefix.empty() ? ptree : ptree.sub(ptree_prefix);
+  const auto& eig_ptree = subtree.sub("eigensolver");
 
   auto C = B;
   detail::scale_matrix_with_pou(C, pou);
 
-  auto basis = solve_gevp(A, C, eig_ptree);
+  auto solution = ddm::solve_gevp(A, C, eig_ptree);
 
-  if (basis.empty())
+  if (solution.eigenvectors.empty())
     logger::warn_all("build_geneo_coarse_space: Eigensolver returned no basis vectors. "
                      "The coarse space will be empty. Check eigensolver parameters (shift, threshold, nev).");
 
-  detail::finalize_eigenvectors(basis, pou);
-  return basis;
+  detail::finalize_eigenvectors(solution.eigenvectors, pou);
+  return {.basis = std::move(solution.eigenvectors), .eigenvalues = std::move(solution.eigenvalues), .info = solution.info};
 }
 
 /**
@@ -461,10 +481,10 @@ std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> build_geneo_coarse_
  * @param ptree_prefix Prefix for parameter subtree (default "coarse_space").
  * @param A_sub_inv Inverse of the subdomain matrix (needed only for ring_extension = from_boundary).
  * @param subdomain_boundary_mask Boolean mask for subdomain boundary DOFs (needed only for ring_extension = from_boundary).
- * @return Vector of coarse basis vectors.
+ * @return CoarseSpaceResult holding the basis, the associated eigenvalues, and eigensolver metadata.
  */
 template <class Scalar = double>
-std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> build_geneo_ring_coarse_space(
+[[nodiscard]] CoarseSpaceResult<Scalar> build_geneo_ring_coarse_space(
     const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A, const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& B, const std::vector<std::size_t>& ring_region_to_subdomain,
     const PartitionOfUnity& pou, const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_sub, const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "coarse_space",
     Dune::InverseOperator<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>, Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>* A_sub_inv = nullptr, const std::vector<bool>& subdomain_boundary_mask = {})
@@ -473,8 +493,8 @@ std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> build_geneo_ring_co
 
   Logger::ScopedLog setup_sl{Logger::get().registerOrGetEvent("Coarse space", "setup")};
 
-  const auto& subtree = ptree.sub(ptree_prefix);
-  Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+  const auto& subtree = ptree_prefix.empty() ? ptree : ptree.sub(ptree_prefix);
+  const auto& eig_ptree = subtree.sub("eigensolver");
   auto ring_extension = subtree.get("ring_extension", "from_ring");
 
   auto* ring_eigensolver_event = Logger::get().registerOrGetEvent("Ring coarse space", "solve evp");
@@ -486,14 +506,20 @@ std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> build_geneo_ring_co
   // Modified partition of unity that vanishes at the inner boundary of the ring region
   auto ring_pou = detail::make_ring_pou<Scalar>(pou, ring_region_to_subdomain, ring_info);
 
-  // Solve the ring eigenproblem
+  // Solve the ring eigenproblem. The eigenvalues characterise the ring spectrum and are invariant
+  // under the extension below, so we keep them alongside the (soon to be extended) eigenvectors.
   std::vector<Vector> basis;
+  std::vector<Scalar> eigenvalues;
+  ddm::EigensolverResult info;
   {
     Logger::ScopedLog sl{ring_eigensolver_event};
 
     auto C = B;
     detail::scale_matrix_with_pou(C, ring_pou);
-    basis = solve_gevp(A, C, eig_ptree);
+    auto solution = ddm::solve_gevp(A, C, eig_ptree);
+    basis = std::move(solution.eigenvectors);
+    eigenvalues = std::move(solution.eigenvalues);
+    info = solution.info;
   }
 
   // Extend the eigenvectors to the whole subdomain
@@ -525,7 +551,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> build_geneo_ring_co
   }
 
   detail::finalize_eigenvectors(basis, pou);
-  return basis;
+  return {.basis = std::move(basis), .eigenvalues = std::move(eigenvalues), .info = info};
 }
 
 /**
@@ -557,10 +583,10 @@ std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> build_geneo_ring_co
  * @param A_sub Subdomain matrix (needed for constraint_evp = lagrange_multiplier).
  * @param dirichlet_mask Boolean mask for global Dirichlet boundary DOFs (needed for constraint_evp = lagrange_multiplier).
  * @param A_sub_inv Inverse of subdomain matrix (needed for constraint_evp = alternating).
- * @return Vector of coarse basis vectors.
+ * @return CoarseSpaceResult holding the basis, the associated eigenvalues, and eigensolver metadata.
  */
 template <class Scalar = double>
-std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>
+[[nodiscard]] CoarseSpaceResult<Scalar>
 build_msgfem_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_neu, const PartitionOfUnity& pou, const std::vector<bool>& subdomain_boundary_mask,
                           const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "coarse_space", const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>* A_sub = nullptr,
                           const std::vector<bool>& dirichlet_mask = {},
@@ -571,11 +597,13 @@ build_msgfem_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>
 
   Logger::ScopedLog setup_sl{Logger::get().registerOrGetEvent("Coarse space", "setup")};
 
-  const auto& subtree = ptree.sub(ptree_prefix);
-  Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+  const auto& subtree = ptree_prefix.empty() ? ptree : ptree.sub(ptree_prefix);
+  const auto& eig_ptree = subtree.sub("eigensolver");
   auto constraint_evp = subtree.get("constraint_evp", "lagrange_multiplier");
 
   std::vector<Vector> basis;
+  std::vector<Scalar> eigenvalues;
+  ddm::EigensolverResult info;
 
   if (constraint_evp == "lagrange_multiplier") {
     if (!A_sub) DUNE_THROW(Dune::Exception, "constraint_evp = lagrange_multiplier requires A_sub to be provided");
@@ -584,7 +612,10 @@ build_msgfem_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>
     if (pou.size() != A_sub->N()) DUNE_THROW(Dune::Exception, "The matrix and the partition of unity must have the same size");
 
     auto partition = detail::partition_dofs(*A_sub, subdomain_boundary_mask, dirichlet_mask);
-    basis = detail::solve_msgfem_saddle_point_evp<Scalar>(A_neu, *A_sub, partition, pou, eig_ptree);
+    auto solution = detail::solve_msgfem_saddle_point_evp<Scalar>(A_neu, *A_sub, partition, pou, eig_ptree);
+    basis = std::move(solution.eigenvectors);
+    eigenvalues = std::move(solution.eigenvalues);
+    info = solution.info;
   }
   else if (constraint_evp == "alternating") {
     if (!A_sub_inv) DUNE_THROW(Dune::Exception, "constraint_evp = alternating requires A_sub_inv to be provided");
@@ -592,7 +623,10 @@ build_msgfem_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>
 
     Matrix C(A_neu);
     detail::scale_matrix_with_pou(C, pou);
-    basis = solve_gevp(A_neu, C, A_sub_inv, subdomain_boundary_mask, eig_ptree);
+    auto solution = ddm::solve_gevp(A_neu, C, A_sub_inv, subdomain_boundary_mask, eig_ptree);
+    basis = std::move(solution.eigenvectors);
+    eigenvalues = std::move(solution.eigenvalues);
+    info = solution.info;
   }
   else DUNE_THROW(Dune::NotImplemented, "Unknown constraint_evp mode: " + constraint_evp + " (expected 'lagrange_multiplier' or 'alternating')");
 
@@ -602,7 +636,7 @@ build_msgfem_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>
                      "Check eigensolver parameters (shift, threshold, nev).");
 
   detail::finalize_eigenvectors(basis, pou);
-  return basis;
+  return {.basis = std::move(basis), .eigenvalues = std::move(eigenvalues), .info = info};
 }
 
 /**
@@ -647,10 +681,10 @@ build_msgfem_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>
  * @param ptree ParameterTree containing solver and selection parameters.
  * @param ptree_prefix Prefix for parameter subtree (default "coarse_space").
  * @param A_sub_inv Inverse of the subdomain matrix (needed only for ring_extension = from_boundary).
- * @return Vector of coarse basis vectors.
+ * @return CoarseSpaceResult holding the basis, the associated eigenvalues, and eigensolver metadata.
  */
 template <class Scalar = double>
-std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>
+[[nodiscard]] CoarseSpaceResult<Scalar>
 build_msgfem_ring_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_neu, const std::vector<std::size_t>& ring_region_to_subdomain, const PartitionOfUnity& pou,
                                const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A_sub, const std::vector<bool>& dirichlet_mask, const std::vector<bool>& subdomain_boundary_mask,
                                const Dune::ParameterTree& ptree, const std::string& ptree_prefix = "coarse_space",
@@ -660,8 +694,8 @@ build_msgfem_ring_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 
 
   Logger::ScopedLog setup_sl{Logger::get().registerOrGetEvent("Coarse space", "setup")};
 
-  const auto& subtree = ptree.sub(ptree_prefix);
-  Dune::ParameterTree eig_ptree = subtree.sub("eigensolver");
+  const auto& subtree = ptree_prefix.empty() ? ptree : ptree.sub(ptree_prefix);
+  const auto& eig_ptree = subtree.sub("eigensolver");
   auto ring_extension = subtree.get("ring_extension", "from_ring");
   auto constraint_evp = subtree.get("constraint_evp", "lagrange_multiplier");
 
@@ -686,8 +720,11 @@ build_msgfem_ring_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 
   // Extract the ring-local restriction of A_sub for the harmonicity constraint
   auto A_sub_ring = detail::extract_ring_submatrix<Scalar>(A_sub, ring_region_to_subdomain, ring_info);
 
-  // Solve the constrained eigenproblem on the ring
+  // Solve the constrained eigenproblem on the ring. The eigenvalues are invariant under the
+  // extension below, so we keep them alongside the (soon to be extended) eigenvectors.
   std::vector<Vector> basis;
+  std::vector<Scalar> eigenvalues;
+  ddm::EigensolverResult info;
   {
     Logger::ScopedLog sl{ring_eigensolver_event};
 
@@ -697,7 +734,10 @@ build_msgfem_ring_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 
       for (std::size_t i = 0; i < n_ring; ++i) ring_dirichlet_mask[i] = dirichlet_mask[ring_region_to_subdomain[i]];
 
       auto partition = detail::partition_dofs(A_neu, ring_boundary_mask, ring_dirichlet_mask);
-      basis = detail::solve_msgfem_saddle_point_evp<Scalar>(A_neu, A_sub_ring, partition, ring_pou, eig_ptree);
+      auto solution = detail::solve_msgfem_saddle_point_evp<Scalar>(A_neu, A_sub_ring, partition, ring_pou, eig_ptree);
+      basis = std::move(solution.eigenvectors);
+      eigenvalues = std::move(solution.eigenvalues);
+      info = solution.info;
     }
     else if (constraint_evp == "alternating") {
       // Construct a UMFPack solver on the ring-local matrix. We need to modify the matrix by
@@ -719,7 +759,10 @@ build_msgfem_ring_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 
 
       RingMatrix C(A_neu);
       detail::scale_matrix_with_pou(C, ring_pou);
-      basis = solve_gevp(A_neu, C, ring_solver.get(), ring_boundary_mask, eig_ptree);
+      auto solution = ddm::solve_gevp(A_neu, C, ring_solver.get(), ring_boundary_mask, eig_ptree);
+      basis = std::move(solution.eigenvectors);
+      eigenvalues = std::move(solution.eigenvalues);
+      info = solution.info;
     }
     else DUNE_THROW(Dune::NotImplemented, "Unknown constraint_evp mode: " + constraint_evp + " (expected 'lagrange_multiplier' or 'alternating')");
   }
@@ -752,5 +795,55 @@ build_msgfem_ring_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 
   }
 
   detail::finalize_eigenvectors(basis, pou);
-  return basis;
+  return {.basis = std::move(basis), .eigenvalues = std::move(eigenvalues), .info = info};
+}
+
+// ============================================================================
+//  POU (Nicolaides) coarse space — non-spectral
+// ============================================================================
+
+/**
+ * @brief Build a POU coarse space from given template vectors.
+ *
+ * The provided template vectors are used directly as the coarse basis: each is
+ * scaled by the partition of unity and normalised (see finalize_eigenvectors).
+ *
+ * @param template_vecs Template vectors used as the (unscaled) coarse basis.
+ * @param pou Partition of unity used for scaling/normalisation.
+ * @return CoarseSpaceResult holding the basis, the associated eigenvalues, and eigensolver metadata.
+ */
+template <class Vec>
+[[nodiscard]] CoarseSpaceResult<typename Vec::field_type> build_pou_coarse_space(const std::vector<Vec>& template_vecs, const PartitionOfUnity& pou)
+{
+  logger::info("Setting up POU coarse space");
+
+  std::vector<Vec> basis = template_vecs;
+  detail::finalize_eigenvectors(basis, pou);
+  // Non-spectral space: no eigenvalues, but the space is always successfully constructed.
+  return {.basis = std::move(basis), .eigenvalues = {}, .info = {.converged = true}};
+}
+
+/**
+ * @brief Build a POU coarse space spanned by the partition of unity itself.
+ *
+ * Produces a single basis vector that is constant one, scaled by the partition
+ * of unity and normalised. This is the classic Nicolaides coarse space.
+ *
+ * @param pou Partition of unity used for scaling/normalisation.
+ * @return CoarseSpaceResult with a single basis vector; eigenvalues is empty (non-spectral).
+ */
+template <class Scalar = double>
+[[nodiscard]] CoarseSpaceResult<Scalar> build_pou_coarse_space(const PartitionOfUnity& pou)
+{
+  using Vec = Dune::BlockVector<Dune::FieldVector<Scalar, 1>>;
+
+  logger::info("Setting up POU coarse space");
+
+  std::vector<Vec> basis(1);
+  basis[0].resize(pou.size());
+  for (std::size_t i = 0; i < pou.size(); ++i) basis[0][i] = 1.0;
+
+  detail::finalize_eigenvectors(basis, pou);
+  // Non-spectral space: no eigenvalues, but the space is always successfully constructed.
+  return {.basis = std::move(basis), .eigenvalues = {}, .info = {.converged = true}};
 }

@@ -104,11 +104,11 @@ public:
     }
 
     // Set up the preconditioner
-    POUCoarseSpace coarse_space(native_template_vecs, *pou);
+    auto coarse_space = build_pou_coarse_space(native_template_vecs, *pou);
     auto fine = std::make_shared<FineLevel>(A_ovlp, ovlp_comm, pou, subtree, "fine");
     fine->novlp_comm = novlp_comm;
 
-    auto coarse = std::make_shared<CoarseLevel>(*A_ovlp, coarse_space.get_basis(), ovlp_comm, subtree, "coarse");
+    auto coarse = std::make_shared<CoarseLevel>(*A_ovlp, coarse_space.basis, ovlp_comm, subtree, "coarse");
 
     auto prec = std::make_shared<CombinedPreconditioner<NativeVec>>(subtree, "");
     auto op = std::make_shared<Op>(A.storage(), novlp_comm);

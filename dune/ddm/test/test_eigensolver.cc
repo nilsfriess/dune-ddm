@@ -122,7 +122,7 @@ int main(int argc, char* argv[])
 
       subtree["type"] = "Spectra";
       timer.reset();
-      auto spectra_evecs = solve_gevp(A, B, subtree);
+      auto spectra_evecs = ddm::solve_gevp(A, B, subtree).eigenvectors;
       std::for_each(spectra_evecs.begin(), spectra_evecs.end(), normalise);
       std::cout << "Spectra took " << timer.elapsed() << "s" << std::endl;
 
@@ -230,7 +230,7 @@ int main(int argc, char* argv[])
       if (1 + 1 == 2) {
         subtree["type"] = "KrylovSchur";
         timer.reset();
-        auto krylov_schur_evecs = solve_gevp(A, B, subtree);
+        auto krylov_schur_evecs = ddm::solve_gevp(A, B, subtree).eigenvectors;
         std::for_each(krylov_schur_evecs.begin(), krylov_schur_evecs.end(), normalise);
         std::cout << "KRYLOVSCHUR subspace iteration took " << timer.elapsed() << "s\n";
 
