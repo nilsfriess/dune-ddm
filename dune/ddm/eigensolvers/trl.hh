@@ -1,6 +1,7 @@
 #pragma once
 
 #include "eigensolver_params.hh"
+#include "eigensolver_result.hh"
 #include "trl/eigensolvers/lanczos.hh"
 #include "trl/eigensolvers/params.hh"
 #include "trl/impl/openmp/evp_base.hh"
@@ -111,8 +112,8 @@ public:
   int count = 0;
 };
 
-template <class Mat>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> trl_gevp(const Mat& A, const Mat& B, const EigensolverParams& params)
+template <class Mat, class Scalar = typename Mat::field_type>
+[[nodiscard]] ddm::GevpSolution<Scalar> trl_gevp(const Mat& A, const Mat& B, const EigensolverParams& params)
 {
   constexpr unsigned int blocksize = 1;
   using EVP = TRLGEVP<Mat, blocksize>;
@@ -141,23 +142,29 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> trl_gevp(const Mat&
     return {};
   }
 
-  // Format eigenvalues into a string. Note that we have to transform them, because of the shift-invert transformation.
-  // So here we compute lamda = 1 / (mu + shift) where mu is the Ritz value from the Lanczos process.
-  std::ostringstream eval_stream;
-  for (std::size_t i = 0; i < params.nev; ++i) {
-    if (i > 0) eval_stream << ", ";
-    eval_stream << 1 / eigenvalues[i] + params.shift;
+  // Transform the Ritz values back to eigenvalues of the original problem. Because of the
+  // shift-invert transformation the Ritz value mu corresponds to lambda = 1 / mu + shift.
+  std::vector<Scalar> transformed_eigenvalues;
+  transformed_eigenvalues.reserve(params.nev);
+  for (std::size_t i = 0; i < params.nev; ++i) transformed_eigenvalues.push_back(static_cast<Scalar>(1 / eigenvalues[i] + params.shift));
+
+  {
+    std::ostringstream eval_stream;
+    for (std::size_t i = 0; i < transformed_eigenvalues.size(); ++i) {
+      if (i > 0) eval_stream << ", ";
+      eval_stream << transformed_eigenvalues[i];
+    }
+    logger::info_all("Computed {} eigenvalues: {}", eigenvalues.size(), eval_stream.str());
   }
-  logger::info_all("Computed {} eigenvalues: {}", eigenvalues.size(), eval_stream.str());
 
   // Compute Ritz vectors: z_j = V * y_j where y_j is the j-th column of Y
   // V has (A.N() rows) x (params.ncv / blocksize blocks)
   // Y has (params.ncv / blocksize) x (params.ncv / blocksize) blocks
-  std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> ritz_vectors;
+  std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> ritz_vectors;
 
   // For each converged eigenvalue
   for (std::size_t j = 0; j < params.nev; ++j) {
-    Dune::BlockVector<Dune::FieldVector<double, 1>> z(A.N());
+    Dune::BlockVector<Dune::FieldVector<Scalar, 1>> z(A.N());
 
     // Get a temporary block view for accumulation
     auto z_block = temp_storage.block_view(0);
@@ -182,12 +189,14 @@ std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> trl_gevp(const Mat&
     ritz_vectors.push_back(z);
   }
 
-  return ritz_vectors;
+  // TRL does not currently surface iteration/operator-application counts, so we only report
+  // convergence here.
+  return {.eigenvectors = std::move(ritz_vectors), .eigenvalues = std::move(transformed_eigenvalues), .info = {.converged = true}};
 }
 
-template <class Mat>
-std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>>
-trl_gevp(const Mat& A, const Mat& B, Dune::InverseOperator<Dune::BlockVector<Dune::FieldVector<double, 1>>, Dune::BlockVector<Dune::FieldVector<double, 1>>>* constraint_solver,
+template <class Mat, class Scalar = typename Mat::field_type>
+[[nodiscard]] ddm::GevpSolution<Scalar>
+trl_gevp(const Mat& A, const Mat& B, Dune::InverseOperator<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>, Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>* constraint_solver,
          const std::vector<bool>& subdomain_boundary, const EigensolverParams& params)
 {
   constexpr unsigned int blocksize = 1;
@@ -231,23 +240,29 @@ trl_gevp(const Mat& A, const Mat& B, Dune::InverseOperator<Dune::BlockVector<Dun
       return {};
     }
 
-    // Format eigenvalues into a string. Note that we have to transform them, because of the shift-invert transformation.
-    // So here we compute lamda = 1 / (mu + shift) where mu is the Ritz value from the Lanczos process.
-    std::ostringstream eval_stream;
-    for (std::size_t i = 0; i < params.nev; ++i) {
-      if (i > 0) eval_stream << ", ";
-      eval_stream << 1 / eigenvalues[i] + params.shift;
+    // Transform the Ritz values back to eigenvalues of the original problem. Because of the
+    // shift-invert transformation the Ritz value mu corresponds to lambda = 1 / mu + shift.
+    std::vector<Scalar> transformed_eigenvalues;
+    transformed_eigenvalues.reserve(params.nev);
+    for (std::size_t i = 0; i < params.nev; ++i) transformed_eigenvalues.push_back(static_cast<Scalar>(1 / eigenvalues[i] + params.shift));
+
+    {
+      std::ostringstream eval_stream;
+      for (std::size_t i = 0; i < transformed_eigenvalues.size(); ++i) {
+        if (i > 0) eval_stream << ", ";
+        eval_stream << transformed_eigenvalues[i];
+      }
+      logger::info_all("Computed {} eigenvalues: {}", eigenvalues.size(), eval_stream.str());
     }
-    logger::info_all("Computed {} eigenvalues: {}", eigenvalues.size(), eval_stream.str());
 
     // Compute Ritz vectors: z_j = V * y_j where y_j is the j-th column of Y
     // V has (A.N() rows) x (params.ncv / blocksize blocks)
     // Y has (params.ncv / blocksize) x (params.ncv / blocksize) blocks
-    std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> ritz_vectors;
+    std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> ritz_vectors;
 
     // For each converged eigenvalue
     for (std::size_t j = 0; j < params.nev; ++j) {
-      Dune::BlockVector<Dune::FieldVector<double, 1>> z(A.N());
+      Dune::BlockVector<Dune::FieldVector<Scalar, 1>> z(A.N());
 
       // Get a temporary block view for accumulation
       auto z_block = temp_storage.block_view(0);
@@ -272,7 +287,9 @@ trl_gevp(const Mat& A, const Mat& B, Dune::InverseOperator<Dune::BlockVector<Dun
       ritz_vectors.push_back(z);
     }
 
-    return ritz_vectors;
+    // TRL does not currently surface iteration/operator-application counts, so we only report
+    // convergence here.
+    return {.eigenvectors = std::move(ritz_vectors), .eigenvalues = std::move(transformed_eigenvalues), .info = {.converged = true}};
   }
   else {
     throw std::invalid_argument("The constraint solver must be of type Dune::UMFPack");

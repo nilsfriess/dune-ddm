@@ -89,18 +89,18 @@ int main(int argc, char** argv)
     }
     else if (coarse_type == "algebraic_geneo") {
       auto A_neumann = make_algebraic_neumann(*ovlp_comm, *A_ovlp, boundary);
-      auto coarse_basis = build_geneo_coarse_space(A_neumann, A_neumann, *pou, ptree, "coarsespace");
-      if (!coarse_basis.empty()) {
-        auto coarse_level = std::make_shared<GalerkinPreconditioner<Vector, Comm>>(*A_ovlp, coarse_basis, ovlp_comm, ptree);
+      auto coarse_space = build_geneo_coarse_space(A_neumann, A_neumann, *pou, ptree, "coarsespace");
+      if (!coarse_space.basis.empty()) {
+        auto coarse_level = std::make_shared<GalerkinPreconditioner<Vector, Comm>>(*A_ovlp, coarse_space.basis, ovlp_comm, ptree);
         prec->add(coarse_level);
       }
     }
     else if (coarse_type == "algebraic_msgfem") {
       auto A_neumann = make_algebraic_neumann(*ovlp_comm, *A_ovlp, boundary);
       std::vector<bool> dirichlet_mask(A_ovlp->N(), false); // No known Dirichlet DOFs in the algebraic setting
-      auto coarse_basis = build_msgfem_coarse_space(A_neumann, *pou, boundary, ptree, "coarsespace", A_ovlp.get(), dirichlet_mask, fine_level->get_solver().get());
-      if (!coarse_basis.empty()) {
-        auto coarse_level = std::make_shared<GalerkinPreconditioner<Vector, Comm>>(*A_ovlp, coarse_basis, ovlp_comm, ptree);
+      auto coarse_space = build_msgfem_coarse_space(A_neumann, *pou, boundary, ptree, "coarsespace", A_ovlp.get(), dirichlet_mask, fine_level->get_solver().get());
+      if (!coarse_space.basis.empty()) {
+        auto coarse_level = std::make_shared<GalerkinPreconditioner<Vector, Comm>>(*A_ovlp, coarse_space.basis, ovlp_comm, ptree);
         prec->add(coarse_level);
       }
     }
