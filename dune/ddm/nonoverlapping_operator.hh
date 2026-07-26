@@ -6,6 +6,7 @@
 #include <dune/common/parallel/communication.hh>
 #include <dune/common/parallel/communicator.hh>
 #include <dune/istl/operators.hh>
+#include <dune/istl/scalarproducts.hh>
 #include <memory>
 
 template <class Mat, class X, class Y, class Communication>

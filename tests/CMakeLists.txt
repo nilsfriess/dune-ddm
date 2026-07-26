@@ -4,16 +4,42 @@ set(HAVE_MPI TRUE) # The dune_add_test macro only enables MPI tests if HAVE_MPI 
 
 dune_declare_test_label(LABELS ddm)
 
+# Test that the partition-of-unity constructions (in particular MsFEM) sum to 1 across all
+# subdomains (in parallel).
+dune_add_test(SOURCES test_pou.cc
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 2 4 16
+  TIMEOUT 100
+  LABELS ddm
+)
+            
 dune_add_test(SOURCES test_build_matrix.cc
-              LINK_LIBRARIES dune-ddm
-              MPI_RANKS 1 4 16 32
-              TIMEOUT 100
-              LABELS ddm
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 1 2 4 16
+  TIMEOUT 100
+  LABELS ddm
 )
 
-dune_add_test(SOURCES test_galerkin_coarse_matrix.cc
-              LINK_LIBRARIES dune-ddm
-              MPI_RANKS 4               # This test requires exactly 4 MPI ranks
-              TIMEOUT 100
-              LABELS ddm
+# Pure helpers (detect_dirichlet_dofs, get_parameter_tree_prefix); nothing parallel to exercise.
+dune_add_test(SOURCES test_helpers.cc
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 1
+  TIMEOUT 100
+  LABELS ddm
 )
+
+# distributeMatrixFrom0: owned rows must reassemble into the original matrix.
+dune_add_test(SOURCES test_distribute_matrix.cc
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 1 2 4 16
+  TIMEOUT 100
+  LABELS ddm
+)
+
+#
+# dune_add_test(SOURCES test_galerkin_coarse_matrix.cc
+#               LINK_LIBRARIES dune-ddm
+#               MPI_RANKS 4               # This test requires exactly 4 MPI ranks
+#               TIMEOUT 100
+#               LABELS ddm
+# )

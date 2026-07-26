@@ -10,7 +10,6 @@
 #include <dune/istl/matrixredistribute.hh>
 #include <dune/istl/owneroverlapcopy.hh>
 #include <dune/istl/repartition.hh>
-#include <dune/istl/scalarproducts.hh>
 #include <format>
 #include <iostream>
 #include <memory>
@@ -84,19 +83,6 @@ inline std::ostream& operator<<(std::ostream& out, Attribute attribute)
   return out;
 }
 
-template <class RemoteIndices>
-using RemoteParallelIndices = std::pair<std::shared_ptr<RemoteIndices>, std::shared_ptr<typename RemoteIndices::ParallelIndexSet>>;
-
-template <class RemoteIndices>
-RemoteParallelIndices<RemoteIndices> makeRemoteParallelIndices(std::shared_ptr<RemoteIndices> ri)
-{
-  auto paridxs = std::make_shared<typename RemoteIndices::ParallelIndexSet>(ri->sourceIndexSet());
-  std::vector<int> nbs(ri->getNeighbours().begin(), ri->getNeighbours().end());
-  ri->setIndexSets(*paridxs, *paridxs, ri->communicator(), nbs);
-  ri->template rebuild<false>();
-  return std::make_pair(ri, paridxs);
-}
-
 /** @brief Builds a matrix on rank zero from rows owned by the MPI ranks.
 
     The \p rows parameter contains the rows that the current rank wants to insert into the matrix.
@@ -107,7 +93,9 @@ RemoteParallelIndices<RemoteIndices> makeRemoteParallelIndices(std::shared_ptr<R
     matrix will contain all the rows; on all other ranks the returned matrix is empty.
 
     Only values larger than (in absolute value) \p clip_tolerance will end up in the matrix.
-    Pass a negative value to include all values.
+    Pass a negative value to include all values. Note that the default of 0 drops entries that are
+    exactly zero. Clipping never changes the shape of the matrix: a row whose entries are all clipped
+    away still occupies an (empty) row of the result.
 */
 template <class Vec>
 Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec>& rows, MPI_Comm comm, double clip_tolerance = 0)
@@ -120,11 +108,8 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec>& rows, MPI_
   if (rows.size() == 0) DUNE_THROW(Dune::Exception, "No rows to build matrix from");
 
   std::size_t columns = rows[0].N();
-  for (const auto& row : rows) {
+  for (const auto& row : rows)
     if (row.N() != columns) DUNE_THROW(Dune::Exception, "Rows have different sizes");
-
-    if (row.two_norm() == 0) DUNE_THROW(Dune::Exception, "Must not provide rows that are zero");
-  }
 
   // Check that all rows on all ranks have the same size
   std::size_t min_columns = 0;
@@ -156,52 +141,50 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec>& rows, MPI_
       if (std::abs(row[col]) > clip_tolerance) my_triples.push_back({rank, i, col, row[col]});
   }
 
-  // Now gather the number of local triples from each process
-  std::vector<std::size_t> num_triples;
-  if (rank == 0) num_triples.resize(size);
-  auto num_my_triples = my_triples.size();
-  MPI_CHECK(MPI_Gather(&num_my_triples, 1, MPI_UNSIGNED_LONG, rank == 0 ? num_triples.data() : nullptr, 1, MPI_UNSIGNED_LONG, 0, comm));
+  // Gather triple and row counts. The row count must be communicated rather than inferred from the
+  // triples: a fully clipped row sends none, and would silently shift all subsequent ranks' rows.
+  const std::array<std::size_t, 2> my_counts = {my_triples.size(), rows.size()};
+  std::vector<std::size_t> all_counts(rank == 0 ? 2 * size : 0);
+  MPI_CHECK(MPI_Gather(my_counts.data(), 2, size_t_type, all_counts.data(), 2, size_t_type, 0, comm));
 
-  std::vector<int> displacements;
+  std::vector<int> num_triples(rank == 0 ? size : 0);
+  std::vector<int> displacements(rank == 0 ? size : 0);
+  // row_offsets[i] = first global row of rank i; row_offsets[size] = total number of rows.
+  std::vector<std::size_t> row_offsets(rank == 0 ? size + 1 : 0);
   if (rank == 0) {
-    std::vector<std::size_t> displacements_sizet(size);
-    std::exclusive_scan(num_triples.begin(), num_triples.end(), displacements_sizet.begin(), 0);
-    displacements.resize(size);
-    std::transform(displacements_sizet.begin(), displacements_sizet.end(), displacements.begin(), [](auto&& v) { return static_cast<int>(v); });
+    for (int i = 0; i < size; ++i) {
+      num_triples[i] = static_cast<int>(all_counts[2 * i]);
+      row_offsets[i + 1] = all_counts[2 * i + 1];
 
-    for (std::size_t i = 0; i < num_triples.size(); ++i) logger::trace("In gatherMatrixFromRows: From rank {} got {} triples", i, num_triples[i]);
+      logger::trace("In gatherMatrixFromRows: From rank {} got {} triples for {} rows", i, all_counts[2 * i], all_counts[2 * i + 1]);
+    }
+    std::exclusive_scan(num_triples.begin(), num_triples.end(), displacements.begin(), 0);
+    std::inclusive_scan(row_offsets.begin(), row_offsets.end(), row_offsets.begin());
   }
 
   std::vector<TripleWithRank> all_triples;
   if (rank == 0) {
-    auto sum = std::reduce(num_triples.begin(), num_triples.end());
+    auto sum = std::reduce(num_triples.begin(), num_triples.end(), std::size_t{0});
     all_triples.resize(sum);
 
     logger::debug("Total {} nonzeros in matrix built on rank 0", sum);
   }
-  std::vector<int> num_triples_int(num_triples.size());
-  std::transform(num_triples.begin(), num_triples.end(), num_triples_int.begin(), [](auto&& v) { return static_cast<int>(v); });
-  MPI_CHECK(MPI_Gatherv(my_triples.data(), static_cast<int>(my_triples.size()), triple_type, all_triples.data(), num_triples_int.data(), displacements.data(), triple_type, 0, comm));
+  MPI_CHECK(MPI_Gatherv(my_triples.data(), static_cast<int>(my_triples.size()), triple_type, all_triples.data(), num_triples.data(), displacements.data(), triple_type, 0, comm));
 
   Dune::BCRSMatrix<double> A0;
 
   if (rank == 0) {
-    // Compute offsets of rows for each rank
-    std::map<int, std::size_t> rows_per_rank;
-    for (const auto& triple : all_triples) rows_per_rank[triple.rank] = std::max(rows_per_rank[triple.rank], triple.row + 1);
-
-    std::vector<std::size_t> row_offsets(size);
-    row_offsets[0] = 0;
-    for (int i = 1; i < size; ++i) row_offsets[i] = row_offsets[i - 1] + rows_per_rank[i - 1];
+    const auto total_rows = row_offsets[size];
 
     A0.setBuildMode(Dune::BCRSMatrix<double>::implicit);
-    A0.setImplicitBuildModeParameters(all_triples.size() / size, 1); // TODO: Make this robust
-    A0.setSize(row_offsets[size - 1] + rows_per_rank[size - 1], columns);
+    // Average nonzeros per row, at least one so heavy clipping still leaves room to allocate.
+    A0.setImplicitBuildModeParameters(std::max<std::size_t>(1, all_triples.size() / total_rows), 1);
+    A0.setSize(total_rows, columns);
 
     for (const auto& triple : all_triples) A0.entry(row_offsets[triple.rank] + triple.row, triple.col) = triple.val;
     A0.compress();
   }
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  MPI_CHECK(MPI_Barrier(comm));
 
   MPI_CHECK(MPI_Type_free(&triple_type));
   return A0;
@@ -284,7 +267,7 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
     int resultlen;
     MPI_Error_string(status.MPI_ERROR, err_string, &resultlen);
     std::cerr << "MPI status error at " << __FILE__ << ":" << __LINE__ << " - " << err_string << std::endl;
-    MPI_Abort(MPI_COMM_WORLD, status.MPI_ERROR);
+    MPI_Abort(comm, status.MPI_ERROR);
   }
 
   // Now send the CSR data to rank 0
@@ -341,7 +324,8 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
     // Now we can build the matrix
     Mat A0;
     A0.setBuildMode(Mat::implicit);
-    A0.setImplicitBuildModeParameters(total_nnz / size, 1); // TODO: Make this robust
+    // Average number of nonzeros per row, at least one (see gatherMatrixFromRows).
+    A0.setImplicitBuildModeParameters(std::max<std::size_t>(1, total_nnz / total_n_rows), 1);
     A0.setSize(total_n_rows, n_cols);
 
     for (std::size_t i = 0; i < total_n_rows; ++i)
@@ -455,7 +439,8 @@ DistributedCommunicationResult<GlobalIndex> buildDistributedCommunication(const 
       std::vector<IdxT> part(static_cast<std::size_t>(numRows));
       std::array<IdxT, METIS_NOPTIONS> options{};
       METIS_SetDefaultOptions(options.data());
-      METIS_PartGraphKway(&n, &ncon, xadj.data(), adjncy.data(), nullptr, nullptr, nullptr, &npartsMetis, nullptr, nullptr, options.data(), &edgecut, part.data());
+      const int metis_status = METIS_PartGraphKway(&n, &ncon, xadj.data(), adjncy.data(), nullptr, nullptr, nullptr, &npartsMetis, nullptr, nullptr, options.data(), &edgecut, part.data());
+      if (metis_status != METIS_OK) DUNE_THROW(Dune::Exception, "METIS_PartGraphKway failed with status " << metis_status);
       logger::debug("buildDistributedCommunication: METIS edge cut: {}", edgecut);
 
       for (int i = 0; i < numRows; ++i) setPartition[static_cast<std::size_t>(i)] = static_cast<int>(part[static_cast<std::size_t>(i)]);
@@ -463,8 +448,11 @@ DistributedCommunicationResult<GlobalIndex> buildDistributedCommunication(const 
     else
 #endif
     {
-      // Fallback: assign rows to ranks in contiguous blocks.
-      for (int i = 0; i < numRows; ++i) setPartition[static_cast<std::size_t>(i)] = (i * nparts) / numRows;
+      // Fallback: assign rows to ranks in contiguous blocks. The product is formed in size_t
+      // because numRows * nparts overflows int for large matrices.
+      const auto rows = static_cast<std::size_t>(numRows);
+      const auto parts = static_cast<std::size_t>(nparts);
+      for (std::size_t i = 0; i < rows; ++i) setPartition[i] = static_cast<int>((i * parts) / rows);
     }
   }
 
@@ -524,42 +512,6 @@ DistributedMatrixResult<Matrix, GlobalIndex> distributeMatrixFrom0(const Matrix&
   return result;
 }
 
-template <class Vec, class Communication>
-class MaskedScalarProduct : public Dune::ScalarProduct<Vec> {
-  using Base = Dune::ScalarProduct<Vec>;
-
-public:
-  MaskedScalarProduct(const std::vector<unsigned>& mask, Communication comm)
-      : mask(&mask)
-      , comm(comm)
-  {
-    dot_event = Logger::get().registerOrGetEvent("MaskedScalarProduct", "dot");
-  }
-
-  typename Base::field_type dot(const Vec& x, const Vec& y) const override
-  {
-    Logger::ScopedLog se(dot_event);
-
-    typename Base::field_type res{0.0};
-    for (typename Vec::size_type i = 0; i < x.size(); i++) res += x[i] * y[i] * (*mask)[i];
-    return comm.sum(res);
-  }
-
-  typename Base::real_type norm(const Vec& x) const override
-  {
-    auto res = dot(x, x);
-    return std::sqrt(res);
-  }
-
-  typename Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
-
-private:
-  const std::vector<unsigned>* mask;
-  Communication comm;
-
-  Logger::Event* dot_event;
-};
-
 /** @brief Detect Dirichlet DOFs from the matrix structure.
  *
  *  A DOF is considered a Dirichlet DOF if its matrix row is an identity row,
@@ -575,7 +527,10 @@ std::vector<bool> detect_dirichlet_dofs(const Mat& A)
   std::vector<bool> dirichlet(A.N(), false);
   std::size_t cnt = 0;
   for (auto ri = A.begin(); ri != A.end(); ++ri) {
-    if (A[ri.index()][ri.index()] != 1.) continue;
+    // A row without a stored diagonal cannot be an identity row. Check the pattern first, because
+    // operator[] on an entry outside it throws instead of returning zero.
+    const auto diag = ri->find(ri.index());
+    if (diag == ri->end() or *diag != 1.) continue;
 
     bool is_identity_row = true;
     for (auto ci = ri->begin(); ci != ri->end(); ++ci) {

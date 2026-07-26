@@ -109,4 +109,7 @@ add_subdirectory(extern)
 add_subdirectory(examples)
 add_subdirectory(dune)
 
+enable_testing()
+add_subdirectory(tests)
+
 finalize_dune_project(GENERATE_CONFIG_H_CMAKE)
