@@ -37,19 +37,6 @@
  *  Both are checked against a dense reference computed on rank 0 from the *global* matrix and the
  *  globally assembled (zero-extended) template vectors, so the reference shares no code with the
  *  distributed assembly it verifies.
- *
- *  <b>Why the distributed assembly can be exact.</b> Rank q evaluates
- *  \f$\Phi_k^q \cdot A^{ovlp}_q V\f$, where \f$V\f$ is a neighbour's template vector transferred
- *  onto q's index set: it is filled at the indices p and q share and left at zero elsewhere. That
- *  agrees with the global product exactly when, for every \f$i\f$ in the support of
- *  \f$\Phi_k^q\f$ and every graph neighbour \f$j\f$ of \f$i\f$, both \f$j\f$ lies in q's index set
- *  and \f$A^{ovlp}_q[i][j] = A[i][j]\f$. Every template vector below is built from a partition of
- *  unity, so its support stops before the outer boundary layer of the overlapping subdomain and
- *  both conditions hold. This is also what makes the entries between two ranks that share no index
- *  genuinely zero, which is what the assembly assumes.
- *
- *  Exactness is the point, not a convenience: it lets the test compare against the mathematical
- *  definition of the coarse space rather than against a second implementation of the algorithm.
  */
 
 using Matrix = Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>;
@@ -86,16 +73,11 @@ struct Problem {
 
 /** @brief Assembles the fine problem on rank 0 and distributes it.
  *
- *  The matrix is a 2d Laplacian with Neumann boundary conditions plus a shift on the diagonal. The
- *  shift matters: the pure Neumann Laplacian is singular, the constant vector lies in the range of
- *  every \f$R^T\f$ built below, and so \f$R A R^T\f$ would be singular too — which both the
- *  preconditioner's own coarse solve and the reference solve need it not to be.
+ *  The matrix is a 2d Laplacian with Neumann boundary conditions plus a shift on the diagonal
+ *  to make it invertible.
  *
- *  With @p with_dirichlet, the left edge of the grid gets identity rows, the form in which
- *  detect_dirichlet_dofs() recognises Dirichlet DOFs. Only the row is cleared, not the column, so
- *  the matrix is then nonsymmetric.
- *
- *  Collective. Every rank returns the same @c active flag, so callers may branch on it.
+ *  With @p with_dirichlet, the left edge of the grid will become Dirichlet boundary (i.e. the
+ *  corresponding matrix rows will become identity rows (the matrix is then nonsymmetric).
  */
 Problem makeProblem(std::size_t nx, int overlap, bool with_dirichlet, int rank, int size)
 {
@@ -125,18 +107,11 @@ Problem makeProblem(std::size_t nx, int overlap, bool with_dirichlet, int rank, 
   p.novlp_comm = dist.comm;
   p.localA = dist.matrix;
 
-  // Reduce the flag so that the early return below is taken on all ranks or on none, which keeps
-  // the collectives that follow aligned.
+  // Reduce the flag so that the early return below is taken on all ranks or on none
   p.active = ddmtest::allRanks(dist.active);
   if (!p.active) return p;
 
-  // Dune's redistributeMatrix() leaves the non-owner rows of the local matrix as identity rows
-  // (CommMatrixRow::setOverlapRowsToDirichlet), its convention for the overlapping solver category.
-  // Those placeholders must not reach the overlap extension: it would either add them to (Additive)
-  // or assign them over (Consistent) the real values their owner holds, and either way the entries
-  // on the subdomain interfaces come out wrong. Clearing them makes the local matrix a proper
-  // additive splitting -- the owner holds the complete row, every other rank nothing -- which is
-  // what MatrixRepresentation::Additive expects. checkOverlappingMatrix() verifies the outcome.
+  // Clear non-owner rows to make the matrix additive
   std::vector<bool> owned(p.localA->N(), false);
   for (const auto& idx : p.novlp_comm->indexSet())
     if (idx.local().attribute() == Dune::OwnerOverlapCopyAttributeSet::owner) owned[idx.local().local()] = true;
@@ -156,12 +131,12 @@ Problem makeProblem(std::size_t nx, int overlap, bool with_dirichlet, int rank, 
 // The coarse space
 // ---------------------------------------------------------------------------------------------
 
-/// How the template vectors are laid out. All variants are built from a partition of unity, see the
-/// exactness argument in the file comment.
+/// How the template vectors are laid out
 enum class BasisKind : std::uint8_t {
   Trivial,  ///< One vector per rank: the indicator of the owned, non-overlapping subdomain.
   Standard, ///< One vector per rank: the standard partition of unity, which reaches into the overlap.
-  Ragged,   ///< 1 + rank % 3 vectors per rank, so the ranks disagree on how many they contribute.
+  Ragged,   ///< 1 + rank % 3 vectors per rank, so ranks contribute different numbers of template vectors
+  Sparse,   ///< One vector on even ranks, none on odd ones, so some ranks own no row of the coarse matrix
 };
 
 const char* basisName(BasisKind kind)
@@ -170,8 +145,19 @@ const char* basisName(BasisKind kind)
     case BasisKind::Trivial: return "trivial POU";
     case BasisKind::Standard: return "standard POU";
     case BasisKind::Ragged: return "ragged counts";
+    case BasisKind::Sparse: return "empty basis on odd ranks";
   }
   return "";
+}
+
+/// Number of template vectors @p rank contributes for @p kind.
+std::size_t basisSize(BasisKind kind, int rank)
+{
+  switch (kind) {
+    case BasisKind::Ragged: return 1 + static_cast<std::size_t>(rank % 3);
+    case BasisKind::Sparse: return rank % 2 == 0 ? 1 : 0;
+    default: return 1;
+  }
 }
 
 /** @brief The rank-local template vectors of the coarse space.
@@ -185,7 +171,7 @@ std::vector<Vector> buildBasis(BasisKind kind, const Problem& p, int rank)
   const auto pou_type = kind == BasisKind::Standard ? PartitionOfUnityType::Standard : PartitionOfUnityType::Trivial;
   const PartitionOfUnity pou(*p.A_ovlp, *p.ovlp_comm, pou_type, 0, p.overlap);
 
-  const std::size_t num_t = kind == BasisKind::Ragged ? 1 + static_cast<std::size_t>(rank % 3) : 1;
+  const std::size_t num_t = basisSize(kind, rank);
   std::vector<Vector> ts(num_t, Vector(pou.size()));
   for (auto& v : ts) v = 0.0;
 
@@ -302,15 +288,6 @@ double asymmetry(const Prec::CoarseMatrix& A0)
 
 /** @brief The overlapping matrix must reproduce the global matrix wherever it stores an entry.
  *
- *  This is the precondition the exactness of the distributed Galerkin assembly rests on, see the
- *  file comment, and it is easy to violate — the local matrix handed out by distributeMatrixFrom0()
- *  carries identity placeholder rows at its non-owner indices, and those inflate the interface
- *  entries if they reach the overlap extension. Checking it separately means such a regression is
- *  reported where it originates instead of surfacing as an unexplained coarse matrix mismatch.
- *
- *  The pattern is allowed to be incomplete only where it has to be: a row may omit a neighbour that
- *  lies outside the local index set, but not one that lies inside it.
- *
  *  Collective.
  */
 void checkOverlappingMatrix(Dune::TestSuite& t, const Problem& p)
@@ -353,23 +330,26 @@ void checkOverlappingMatrix(Dune::TestSuite& t, const Problem& p)
 /** @brief Builds the coarse space for @p kind and checks the coarse matrix and the correction.
  *
  *  @p expect_symmetric says whether the fine matrix is symmetric, and hence whether the coarse
- *  matrix has to come out symmetric as well. That is a check the reference comparison does not
- *  subsume: it fails when the products between two different ranks are assembled inconsistently,
- *  independently of whether the reference happens to be reproduced.
+ *  matrix has to come out symmetric as well.
  *
- *  Collective; every check is recorded rather than thrown so that all ranks reach all collectives.
+ *  @p mode selects where the coarse problem is solved. Both modes have to produce the same coarse
+ *  matrix and the same correction; they differ in which ranks hold the matrix.
+ *
+ *  Collective.
  */
-void checkCoarseSpace(Dune::TestSuite& t, const Problem& p, BasisKind kind, bool expect_symmetric)
+void checkCoarseSpace(Dune::TestSuite& t, const Problem& p, BasisKind kind, bool expect_symmetric, CoarseSolveMode mode = CoarseSolveMode::RankZero)
 {
   int rank = 0;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  const std::string prefix = std::string(basisName(kind)) + (expect_symmetric ? "" : " with Dirichlet rows");
+  const bool redundant = mode == CoarseSolveMode::Redundant;
+  const std::string prefix = std::string(basisName(kind)) + (expect_symmetric ? "" : " with Dirichlet rows") + (redundant ? ", redundant solve" : "");
 
   const auto ts = buildBasis(kind, p, rank);
   const auto R = gatherGlobalRows(ts, *p.ovlp_comm, p.N);
 
   Dune::ParameterTree ptree;
   ptree["galerkin.type"] = "umfpack";
+  ptree["galerkin.solve_mode"] = redundant ? "redundant" : "rank_zero";
 
   Prec prec(*p.A_ovlp, ts, p.ovlp_comm, ptree);
   const auto& A0 = prec.get_coarse_matrix();
@@ -402,8 +382,38 @@ void checkCoarseSpace(Dune::TestSuite& t, const Problem& p, BasisKind kind, bool
       }
     }
   }
+  else if (redundant) {
+    t.check(A0.N() == m and A0.M() == m, prefix + ": coarse matrix present on every rank") << "expected " << m << "x" << m << ", got " << A0.N() << "x" << A0.M();
+  }
   else {
     t.check(A0.N() == 0 and A0.M() == 0, prefix + ": coarse matrix is empty off rank 0") << "got " << A0.N() << "x" << A0.M();
+  }
+
+  // Every rank factorizes its own copy of the coarse matrix, so the copies have to agree bitwise,
+  // not just to round-off. Comparing the elementwise minimum against the maximum over all ranks
+  // catches any difference, in the pattern as well as in the values.
+  if (redundant) {
+    std::vector<double> vals;
+    for (auto ri = A0.begin(); ri != A0.end(); ++ri)
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci) vals.push_back((*ci)[0][0]);
+
+    const std::array<std::size_t, 2> shape = {{A0.N(), vals.size()}};
+    std::array<std::size_t, 2> shape_min{};
+    std::array<std::size_t, 2> shape_max{};
+    MPI_Allreduce(shape.data(), shape_min.data(), 2, MPI_UNSIGNED_LONG, MPI_MIN, MPI_COMM_WORLD);
+    MPI_Allreduce(shape.data(), shape_max.data(), 2, MPI_UNSIGNED_LONG, MPI_MAX, MPI_COMM_WORLD);
+
+    const bool same_shape = shape_min == shape_max;
+    t.check(same_shape, prefix + ": the copies of the coarse matrix have the same shape everywhere")
+        << shape_min[0] << " to " << shape_max[0] << " rows, " << shape_min[1] << " to " << shape_max[1] << " nonzeros";
+
+    if (same_shape) {
+      std::vector<double> vmin(vals.size());
+      std::vector<double> vmax(vals.size());
+      MPI_Allreduce(vals.data(), vmin.data(), static_cast<int>(vals.size()), MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+      MPI_Allreduce(vals.data(), vmax.data(), static_cast<int>(vals.size()), MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+      t.check(vmin == vmax, prefix + ": the copies of the coarse matrix are bitwise identical");
+    }
   }
 
   // ---- The coarse correction -----------------------------------------------------------------
@@ -458,12 +468,7 @@ void checkCoarseSpace(Dune::TestSuite& t, const Problem& p, BasisKind kind, bool
   std::array<double, 2> global_errs = {{0.0, 0.0}};
   MPI_Allreduce(local_errs.data(), global_errs.data(), 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 
-  t.check(global_errs[0] <= tolerance * std::max(1.0, u_scale), prefix + ": apply() computes R^T (R A R^T)^-1 R d")
-      << "max deviation " << global_errs[0] << ", reference magnitude " << u_scale;
-
-  // Not bit for bit: the order in which the prolongation sums the contributions of the neighbouring
-  // subdomains is up to MPI, which is worth a last digit. Stale scratch state would be visible at a
-  // wholly different magnitude.
+  t.check(global_errs[0] <= tolerance * std::max(1.0, u_scale), prefix + ": apply() computes R^T (R A R^T)^-1 R d") << "max deviation " << global_errs[0] << ", reference magnitude " << u_scale;
   t.check(global_errs[1] <= 1e-14 * std::max(1.0, u_scale), prefix + ": apply() is repeatable") << "two calls differ by " << global_errs[1];
 }
 
@@ -498,6 +503,15 @@ int main(int argc, char** argv)
       // Different numbers of template vectors per rank, which is what the padding to max_num_t, the
       // per-rank offsets and the ragged gather of the coarse rows exist for.
       checkCoarseSpace(t, neumann, BasisKind::Ragged, true);
+
+      // Ranks without a template vector own no row of the coarse matrix, but still take part in
+      // every collective of the setup and of apply().
+      if (size > 1) checkCoarseSpace(t, neumann, BasisKind::Sparse, true);
+
+      // The same coarse spaces solved redundantly on every rank rather than centrally on rank 0.
+      // Has to give the same coarse matrix and the same correction as the runs above.
+      checkCoarseSpace(t, neumann, BasisKind::Ragged, true, CoarseSolveMode::Redundant);
+      if (size > 1) checkCoarseSpace(t, neumann, BasisKind::Sparse, true, CoarseSolveMode::Redundant);
     }
 
     // Identity rows in the matrix: the template vectors have to be zeroed there before the Galerkin
@@ -508,6 +522,7 @@ int main(int argc, char** argv)
     if (dirichlet.active) {
       checkOverlappingMatrix(t, dirichlet);
       checkCoarseSpace(t, dirichlet, BasisKind::Ragged, false);
+      checkCoarseSpace(t, dirichlet, BasisKind::Ragged, false, CoarseSolveMode::Redundant);
     }
   });
 }

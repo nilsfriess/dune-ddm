@@ -44,3 +44,12 @@ dune_add_test(SOURCES test_galerkin_coarse_matrix.cc
   TIMEOUT 300
   LABELS ddm
 )
+
+# Assembles a simple problem on a parallel structured grid and solves
+# the resulting system with MsGFEM and GenEO
+dune_add_test(SOURCES structured_grid_test.cc
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 1 2 4 16
+  TIMEOUT 300
+  LABELS ddm
+)
