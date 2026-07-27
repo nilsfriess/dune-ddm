@@ -5,10 +5,10 @@
 #include <dune/istl/solvercategory.hh>
 
 #if HAVE_DUNE_PDELAB
+#include "additive_parallel_matrix_operator.hh"
 #include "coarsespaces/coarse_spaces.hh"
 #include "combined_preconditioner.hh"
 #include "galerkin_preconditioner.hh"
-#include "nonoverlapping_operator.hh"
 #include "overlap_extension.hh"
 #include "pdelab_helper.hh"
 #include "schwarz.hh"
@@ -59,7 +59,7 @@ public:
   {
     using Dune::PDELab::Backend::Native;
     using Dune::PDELab::Backend::native;
-    using Op = NonOverlappingOperator<NativeMat, NativeVec, NativeVec, Communication>;
+    using Op = AdditiveParallelMatrixOperator<NativeMat, NativeVec, NativeVec, Communication>;
 
     if (!matrix_is_additive) ::make_additive(A, *novlp_comm);
 
@@ -131,7 +131,7 @@ public:
 
     auto solver = Dune::getSolverFromFactory(op, solver_subtree, prec);
 
-    // Make the rhs consistent (this is how the preconditioner, nonoverlapping operator and scalar product expect it)
+    // Make the rhs consistent (this is how the preconditioner, the operator and the scalar product expect it)
     auto& d = native(r);
     novlp_comm->addOwnerCopyToAll(d, d);
 

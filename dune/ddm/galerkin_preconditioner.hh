@@ -157,7 +157,7 @@ public:
     build_solver(A, ptree, subtree_name);
   }
 
-  Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
+  Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::overlapping; }
 
   void pre(Vec&, Vec&) override {}
   void post(Vec&) override {}

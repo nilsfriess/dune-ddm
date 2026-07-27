@@ -102,7 +102,7 @@ public:
     init();
   }
 
-  Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::nonoverlapping; }
+  Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::overlapping; }
 
   void pre(Vec&, Vec&) override {}
   void post(Vec&) override {}
@@ -125,13 +125,15 @@ public:
   {
     Logger::ScopedLog sl(apply_event);
 
-    // 1. Copy local values from non-overlapping to overlapping defect
+    // 1. Copy local values from the incoming defect to the overlapping one
     Logger::get().startEvent(get_defect_event);
     *d_ovlp = 0;
     for (std::size_t i = 0; i < d.size(); ++i) (*d_ovlp)[i] = d[i];
 
-    // 2. Get remaining values from other ranks
-    comm->copyOwnerToAll(*d_ovlp, *d_ovlp);
+    // 2. Fetch the entries of the overlap extension, which this rank has no other way of knowing.
+    // When the two index sets have the same size there is no extension to fill, and the defect is
+    // already consistent by the invariant in ddm.hh, so the communication would be a no-op.
+    if (d.size() < d_ovlp->size()) comm->copyOwnerToAll(*d_ovlp, *d_ovlp);
 
     // 2.5 Zero at subdomain boundary and Dirichlet boundary
     for (std::size_t i = 0; i < d_ovlp->size(); ++i)

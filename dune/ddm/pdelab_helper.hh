@@ -19,7 +19,7 @@ auto make_communication(const GFS& gfs)
 
   using Communication = Dune::OwnerOverlapCopyCommunication<std::size_t, int>;
   auto communicator = gfs.gridView().comm();
-  auto communication = std::make_shared<Communication>(communicator, Dune::SolverCategory::nonoverlapping);
+  auto communication = std::make_shared<Communication>(communicator, Dune::SolverCategory::overlapping);
   auto rank = gfs.gridView().comm().rank();
 
   using EntitySet = typename GFS::Traits::EntitySet;

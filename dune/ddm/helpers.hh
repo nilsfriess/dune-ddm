@@ -105,21 +105,20 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec>& rows, MPI_
   MPI_CHECK(MPI_Comm_size(comm, &size));
   MPI_CHECK(MPI_Comm_rank(comm, &rank));
 
-  if (rows.size() == 0) DUNE_THROW(Dune::Exception, "No rows to build matrix from");
-
-  std::size_t columns = rows[0].N();
+  std::size_t columns = rows.empty() ? 0 : rows[0].N();
   for (const auto& row : rows)
     if (row.N() != columns) DUNE_THROW(Dune::Exception, "Rows have different sizes");
 
-  // Check that all rows on all ranks have the same size
-  std::size_t min_columns = 0;
-  std::size_t max_columns = 0;
+  // A rank may contribute no row at all, as long as some rank does, so the number of columns is
+  // agreed on globally rather than read off this rank's first row.
+  std::size_t global_columns = 0;
   // Use the standard MPI type for size_t
   static_assert(sizeof(std::size_t) == sizeof(unsigned long), "size_t must be unsigned long");
   MPI_Datatype size_t_type = MPI_UNSIGNED_LONG;
-  MPI_CHECK(MPI_Allreduce(&columns, &min_columns, 1, size_t_type, MPI_MIN, comm));
-  MPI_CHECK(MPI_Allreduce(&columns, &max_columns, 1, size_t_type, MPI_MAX, comm));
-  if (min_columns != max_columns) DUNE_THROW(Dune::Exception, "Rows have different sizes");
+  MPI_CHECK(MPI_Allreduce(&columns, &global_columns, 1, size_t_type, MPI_MAX, comm));
+  if (global_columns == 0) DUNE_THROW(Dune::Exception, "No rank contributed a row to build the matrix from");
+  if (not rows.empty() and columns != global_columns) DUNE_THROW(Dune::Exception, "Rows have different sizes");
+  columns = global_columns;
 
   constexpr int nitems = 4;
   std::array<int, nitems> blocklengths = {1, 1, 1, 1};
@@ -200,6 +199,8 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const Vec& row, MPI_Comm comm, dou
 /** @brief Variant of gatherMatrixFromRows where the rows are passed in a column major 1d array.
 
     The parameter \p n_cols is the length of the individual rows, the number of rows is inferred from the \p rows array.
+    A rank may pass an empty \p rows and thereby contribute no row at all, as long as some rank
+    contributes one.
 */
 inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFlat(const std::vector<double>& rows, std::size_t n_cols, MPI_Comm comm, double clip_tolerance = 0)
 {
@@ -210,7 +211,7 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
   MPI_CHECK(MPI_Comm_size(comm, &size));
   MPI_CHECK(MPI_Comm_rank(comm, &rank));
 
-  if (rows.size() == 0) DUNE_THROW(Dune::Exception, "No rows to build matrix from");
+  if (n_cols == 0) DUNE_THROW(Dune::Exception, "Cannot build a matrix without columns");
 
   if (rows.size() % n_cols != 0) DUNE_THROW(Dune::Exception, "Rows size is not a multiple of the number of columns");
   const auto n_rows = rows.size() / n_cols;
@@ -308,6 +309,8 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
   MPI_CHECK(MPI_Gatherv(values.data(), static_cast<int>(values.size()), MPI_DOUBLE, global_values.data(), col_values_counts.data(), col_values_displacements.data(), MPI_DOUBLE, 0, comm));
 
   if (rank == 0) {
+    if (total_n_rows == 0) DUNE_THROW(Dune::Exception, "No rank contributed a row to build the matrix from");
+
     // Set the last row offset to the total number of nonzeros
     global_row_offsets[total_n_rows] = total_nnz;
 
@@ -337,6 +340,70 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
   }
 
   return Mat{};
+}
+
+/** @brief Broadcasts a matrix from @p root to every rank of @p comm.
+
+    Counterpart of gatherMatrixFromRowsFlat(), for the case where every rank needs the assembled
+    matrix rather than just the root. Every rank ends up with a bitwise identical copy, so that a
+    redundant factorization gives the same answer everywhere.
+
+    On @p root the matrix is left untouched, elsewhere its previous content is replaced.
+*/
+inline void broadcastMatrix(Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>& A, MPI_Comm comm, int root = 0)
+{
+  using Mat = Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>;
+
+  int rank = 0;
+  MPI_CHECK(MPI_Comm_rank(comm, &rank));
+
+  // Use the standard MPI type for size_t
+  static_assert(sizeof(std::size_t) == sizeof(unsigned long), "size_t must be unsigned long");
+  MPI_Datatype size_t_type = MPI_UNSIGNED_LONG;
+
+  std::array<std::size_t, 3> shape{}; // rows, columns, nonzeros
+  if (rank == root) shape = {A.N(), A.M(), A.nonzeroes()};
+  MPI_CHECK(MPI_Bcast(shape.data(), 3, size_t_type, root, comm));
+
+  const auto n_rows = shape[0];
+  const auto n_cols = shape[1];
+  const auto nnz = shape[2];
+
+  // CSR, same layout gatherMatrixFromRowsFlat() assembles from
+  std::vector<std::size_t> row_offsets(n_rows + 1, 0);
+  std::vector<std::size_t> col_indices(nnz);
+  std::vector<double> values(nnz);
+
+  if (rank == root) {
+    std::size_t pos = 0;
+    for (auto ri = A.begin(); ri != A.end(); ++ri) {
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+        col_indices[pos] = ci.index();
+        values[pos] = (*ci)[0][0];
+        ++pos;
+      }
+      row_offsets[ri.index() + 1] = pos;
+    }
+  }
+
+  MPI_CHECK(MPI_Bcast(row_offsets.data(), static_cast<int>(n_rows + 1), size_t_type, root, comm));
+  MPI_CHECK(MPI_Bcast(col_indices.data(), static_cast<int>(nnz), size_t_type, root, comm));
+  MPI_CHECK(MPI_Bcast(values.data(), static_cast<int>(nnz), MPI_DOUBLE, root, comm));
+
+  if (rank == root) return;
+
+  // Built separately and moved in, because setBuildMode() rejects a matrix that is already built.
+  Mat received;
+  received.setBuildMode(Mat::implicit);
+  // Average number of nonzeros per row, at least one (see gatherMatrixFromRows).
+  received.setImplicitBuildModeParameters(std::max<std::size_t>(1, n_rows == 0 ? 1 : nnz / n_rows), 1);
+  received.setSize(n_rows, n_cols);
+
+  for (std::size_t i = 0; i < n_rows; ++i)
+    for (std::size_t j = row_offsets[i]; j < row_offsets[i + 1]; ++j) received.entry(i, col_indices[j]) = values[j];
+
+  received.compress();
+  A = std::move(received);
 }
 
 /** @brief Return value of buildDistributedCommunication.

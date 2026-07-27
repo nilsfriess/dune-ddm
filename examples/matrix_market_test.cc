@@ -2,6 +2,7 @@
 #include "config.h"
 #endif
 
+#include "dune/ddm/additive_parallel_matrix_operator.hh"
 #include "dune/ddm/algebraic_neumann.hh"
 #include "dune/ddm/coarsespaces/coarse_spaces.hh"
 #include "dune/ddm/combined_preconditioner.hh"
@@ -15,7 +16,6 @@
 #include <dune/common/parallel/mpihelper.hh>
 #include <dune/common/parametertreeparser.hh>
 #include <dune/istl/matrixmarket.hh>
-#include <dune/istl/novlpschwarz.hh>
 #include <dune/istl/solverfactory.hh>
 #include <iostream>
 
@@ -53,8 +53,11 @@ int main(int argc, char** argv)
     // Print size of local matrix and size of index set in communicator
     logger::debug_all("Local matrix size: {}x{}, local index set size: {}", localA->N(), localA->M(), novlp_comm->remoteIndices().sourceIndexSet().size());
 
-    using Op = Dune::NonoverlappingSchwarzOperator<Matrix, Vector, Vector, Comm>;
-    auto op = std::make_shared<Op>(localA, *novlp_comm);
+    // The project's own operator rather than Dune::NonoverlappingSchwarzOperator: the two apply the
+    // same additive product, but the Dune one hard-codes SolverCategory::nonoverlapping, which no
+    // longer matches the preconditioners below.
+    using Op = AdditiveParallelMatrixOperator<Matrix, Vector, Vector, Comm>;
+    auto op = std::make_shared<Op>(localA, novlp_comm);
 
     // Create overlapping index set and matrix
     int overlap = ptree.get("overlap", 1);

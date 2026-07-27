@@ -6,12 +6,12 @@
 #include <algorithm>
 #include <dune/common/parallel/mpihelper.hh>
 #include <dune/common/parametertree.hh>
+#include <dune/ddm/additive_parallel_matrix_operator.hh>
 #include <dune/ddm/algebraic_neumann.hh>
 #include <dune/ddm/coarsespaces/coarse_spaces.hh>
 #include <dune/ddm/combined_preconditioner.hh>
 #include <dune/ddm/galerkin_preconditioner.hh>
 #include <dune/ddm/logger.hh>
-#include <dune/ddm/nonoverlapping_operator.hh>
 #include <dune/ddm/overlap_extension.hh>
 #include <dune/ddm/pdelab_helper.hh>
 #include <dune/ddm/pou.hh>
@@ -176,7 +176,7 @@ public:
 
     // Create non-overlapping operator (needed for multiplicative coarse space correction)
     logger::debug("Creating non-overlapping operator");
-    using Op = NonOverlappingOperator<NativeMat, NativeVec, NativeVec, Communication>;
+    using Op = AdditiveParallelMatrixOperator<NativeMat, NativeVec, NativeVec, Communication>;
     novlp_op_ = std::make_shared<Op>(problem.getA().storage(), novlp_comm_);
 
     // Combine fine and coarse level preconditioners
@@ -200,8 +200,8 @@ public:
   std::shared_ptr<Communication> getNonOverlappingCommunication() const { return novlp_comm_; }
   std::shared_ptr<Communication> getOverlappingCommunication() const { return ovlp_comm_; }
 
-  using NonOverlappingOp = NonOverlappingOperator<NativeMat, NativeVec, NativeVec, Communication>;
-  std::shared_ptr<NonOverlappingOp> getNonOverlappingOperator() const { return novlp_op_; }
+  using AdditiveOp = AdditiveParallelMatrixOperator<NativeMat, NativeVec, NativeVec, Communication>;
+  std::shared_ptr<AdditiveOp> getAdditiveParallelMatrixOperator() const { return novlp_op_; }
 
   const std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>>& get_basis() const { return basis_; }
 
@@ -216,6 +216,6 @@ private:
   std::shared_ptr<Communication> ovlp_comm_;
   std::shared_ptr<PartitionOfUnity> pou_;
   std::shared_ptr<CombinedPreconditioner<NativeVec>> combined_prec_;
-  std::shared_ptr<NonOverlappingOp> novlp_op_;
+  std::shared_ptr<AdditiveOp> novlp_op_;
   std::vector<Dune::BlockVector<Dune::FieldVector<double, 1>>> basis_;
 };

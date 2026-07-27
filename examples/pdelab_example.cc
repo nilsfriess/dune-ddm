@@ -13,8 +13,8 @@
 #include "problem_traits.hh"
 
 #include <dune/common/parallel/mpihelper.hh>
+#include <dune/ddm/additive_parallel_matrix_operator.hh>
 #include <dune/ddm/logger.hh>
-#include <dune/ddm/nonoverlapping_operator.hh>
 #include <dune/grid/io/file/vtk/subsamplingvtkwriter.hh>
 #include <dune/grid/uggrid.hh>
 #include <dune/grid/utility/parmetisgridpartitioner.hh>
@@ -59,10 +59,10 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
   auto prec = std::make_shared<Prec>(*problem, ptree, helper);
 
   // Get the non-overlapping operator from the preconditioner
-  auto op = prec->getNonOverlappingOperator();
+  auto op = prec->getAdditiveParallelMatrixOperator();
 
   // Set up the solver
-  using Op = Prec::NonOverlappingOp;
+  using Op = Prec::AdditiveOp;
   Dune::initSolverFactories<Op>();
   auto solver_subtree = ptree.sub("solver");
   solver_subtree["verbose"] = helper.rank() == 0 ? solver_subtree["verbose"] : "0";
