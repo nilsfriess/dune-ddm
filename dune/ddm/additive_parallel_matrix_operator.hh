@@ -19,7 +19,7 @@
  *
  *  This is the counterpart of Dune::MatrixAdapter for a distributed, additively stored matrix. Use
  *  it wherever the matrix comes out of a distributed assembly; for a matrix that is a consistent
- *  copy of the global rows on an overlapping subdomain, use OverlappingMatrixOperator instead.
+ *  copy of the global rows on an overlapping subdomain, use ConsistentParallelMatrixOperator instead.
  */
 template <class Mat, class X, class Y, class Communication>
 class AdditiveParallelMatrixOperator : public Dune::AssembledLinearOperator<Mat, X, Y> {

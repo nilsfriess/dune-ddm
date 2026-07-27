@@ -11,10 +11,14 @@
  *         overlapping subdomain.
  *
  *  This is the situation after assembling on an overlapping grid view, or after extending a
- *  distributed matrix with create_overlapping_matrix(): every row belonging to an index this rank
- *  owns is complete, so the local product already carries the right value there. The rows of the
- *  copied indices at the outer rim of the subdomain are not complete, which is why apply() finishes
- *  by overwriting the copies with the values of their owners.
+ *  distributed matrix with create_overlapping_matrix().
+ *
+ *  The local product is almost, but not quite, consistent already. Entry i of A*x is right whenever
+ *  row i holds every global nonzero of that row, and a consistent x supplies the right value at
+ *  every column it reaches. That covers all owned indices, and the copies well inside the overlap
+ *  too -- but not the copies on the outermost layer, whose rows are truncated where the subdomain
+ *  ends. Since the result is right exactly on the owned entries, one copyOwnerToAll() repairs the
+ *  rest, and that is what apply() does.
  *
  *  Unlike Dune::OverlappingSchwarzOperator, which projects its result onto the owners and leaves it
  *  to the preconditioner to restore consistency, this returns a consistent vector and so satisfies
@@ -25,7 +29,7 @@
  *  For a matrix stored additively across the ranks use AdditiveParallelMatrixOperator instead.
  */
 template <class Mat, class X, class Y, class Communication>
-class OverlappingMatrixOperator : public Dune::AssembledLinearOperator<Mat, X, Y> {
+class ConsistentParallelMatrixOperator : public Dune::AssembledLinearOperator<Mat, X, Y> {
 public:
   using domain_type = X;
   using range_type = Y;
@@ -33,17 +37,17 @@ public:
   using communication_type = Communication;
   using field_type = typename X::field_type;
 
-  OverlappingMatrixOperator(std::shared_ptr<Mat> A, std::shared_ptr<Communication> comm)
+  ConsistentParallelMatrixOperator(std::shared_ptr<Mat> A, std::shared_ptr<Communication> comm)
       : A(std::move(A))
       , comm(std::move(comm))
   {
   }
 
-  OverlappingMatrixOperator(const OverlappingMatrixOperator&) = delete;
-  OverlappingMatrixOperator(OverlappingMatrixOperator&&) = delete;
-  OverlappingMatrixOperator& operator=(const OverlappingMatrixOperator&) = delete;
-  OverlappingMatrixOperator& operator=(OverlappingMatrixOperator&&) = delete;
-  ~OverlappingMatrixOperator() = default;
+  ConsistentParallelMatrixOperator(const ConsistentParallelMatrixOperator&) = delete;
+  ConsistentParallelMatrixOperator(ConsistentParallelMatrixOperator&&) = delete;
+  ConsistentParallelMatrixOperator& operator=(const ConsistentParallelMatrixOperator&) = delete;
+  ConsistentParallelMatrixOperator& operator=(ConsistentParallelMatrixOperator&&) = delete;
+  ~ConsistentParallelMatrixOperator() = default;
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::overlapping; }
 
@@ -55,13 +59,12 @@ public:
 
   void applyscaleadd(field_type alpha, const X& x, Y& y) const override
   {
-    // y is consistent on entry, so only alpha*A*x has to be made consistent before adding it on.
-    // Overwriting copies cannot be done in place on the sum, unlike the additive case.
-    X ax(y);
-    ax = 0;
-    A->usmv(alpha, x, ax);
-    comm->copyOwnerToAll(ax, ax);
-    y += ax;
+    // y and alpha*A*x are both right on the owned entries, hence so is their sum, and a single
+    // reconstruction repairs the copies of the sum. No temporary is needed, unlike in
+    // AdditiveParallelMatrixOperator, where the communication sums across the ranks and so must not
+    // see the already consistent y.
+    A->usmv(alpha, x, y);
+    comm->copyOwnerToAll(y, y);
   }
 
   const Mat& getmat() const override { return *A; }
@@ -76,7 +79,7 @@ private:
 
 namespace Dune {
 template <class M, class X, class Y, class C>
-std::shared_ptr<ConsistentScalarProduct<X, C>> createScalarProduct(const std::shared_ptr<OverlappingMatrixOperator<M, X, Y, C>>& op)
+std::shared_ptr<ConsistentScalarProduct<X, C>> createScalarProduct(const std::shared_ptr<ConsistentParallelMatrixOperator<M, X, Y, C>>& op)
 {
   return std::make_shared<ConsistentScalarProduct<X, C>>(op->getCommunicationPtr());
 }

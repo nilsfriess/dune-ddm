@@ -5,7 +5,7 @@
 #include "dune/ddm/combined_preconditioner.hh"
 #include "dune/ddm/galerkin_preconditioner.hh"
 #include "dune/ddm/logger.hh"
-#include "dune/ddm/overlapping_matrix_operator.hh"
+#include "dune/ddm/consistent_parallel_matrix_operator.hh"
 #include "dune/ddm/pou.hh"
 #include "dune/ddm/schwarz.hh"
 #include "test_utils.hh"
@@ -197,7 +197,7 @@ int main(int argc, char** argv)
     Problem p(gv, is_dirichlet, coefficient, source);
     comm->copyOwnerToAll(p.b, p.b); // Make b consistent
 
-    using Operator = OverlappingMatrixOperator<typename Problem::Matrix, typename Problem::Vector, typename Problem::Vector, Communication>;
+    using Operator = ConsistentParallelMatrixOperator<typename Problem::Matrix, typename Problem::Vector, typename Problem::Vector, Communication>;
     auto op = std::make_shared<Operator>(p.A, comm);
 
     Dune::initSolverFactories<Operator>();

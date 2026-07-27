@@ -15,7 +15,7 @@
  *  - A linear operator maps a consistent argument to a consistent image. If the matrix is stored
  *    additively, that means summing the local products (AdditiveParallelMatrixOperator); if it is a
  *    consistent copy of the global rows on an overlapping subdomain, it means overwriting the copies
- *    from their owners (OverlappingMatrixOperator).
+ *    from their owners (ConsistentParallelMatrixOperator).
  *  - A preconditioner maps a consistent defect to a consistent correction. Corrections from several
  *    preconditioners may therefore simply be added, which is what CombinedPreconditioner does.
  *  - A scalar product masks the sum to the owned entries, see ConsistentScalarProduct. That is exact
