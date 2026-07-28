@@ -5,7 +5,4 @@
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/dune/ddm
         FILES_MATCHING
-        PATTERN "*.hh"
-        PATTERN "test" EXCLUDE)
-
-add_subdirectory(test)
+        PATTERN "*.hh")
