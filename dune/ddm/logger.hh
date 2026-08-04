@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <deque>
 #include <dune/common/parallel/mpitraits.hh>
+#include <format>
 #include <iomanip>
 #include <iostream>
 #include <mpi.h>
@@ -31,6 +32,8 @@
 #include <ratio>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 /**
@@ -81,64 +84,44 @@ inline const char* level_name(Level level)
   return "unknown";
 }
 
-// Overload for std::vector types
-template <class T>
-std::ostream& operator<<(std::ostream& out, const std::vector<T>& data)
-{
-  out << "[ ";
-  for (std::size_t i = 0; i < data.size(); ++i) {
-    out << data[i];
-    if (i + 1 != data.size()) out << ", ";
-  }
-  out << " ]";
-  return out;
-}
-
-// Simple format string replacement for {} placeholders
-template <typename T>
-std::string format_string(const std::string& fmt, T&& value)
-{
-  std::ostringstream oss;
-  oss << value;
-  std::string result = fmt;
-  size_t pos = result.find("{}");
-  if (pos != std::string::npos) result.replace(pos, 2, oss.str());
-  return result;
-}
-
-template <typename T, typename... Args>
-std::string format_string(const std::string& fmt, T&& first, Args&&... args)
-{
-  std::ostringstream oss;
-  oss << first;
-  std::string result = fmt;
-  size_t pos = result.find("{}");
-  if (pos != std::string::npos) {
-    result.replace(pos, 2, oss.str());
-    return format_string(result, std::forward<Args>(args)...);
-  }
-  return result;
-}
-
-inline std::string format_string(const std::string& fmt) { return fmt; }
-
-template <typename... Args>
-void log_impl(Level level, bool all_ranks, const std::string& message, Args&&... args)
+//! Whether a message of this level is printed by this rank
+inline bool enabled(Level level, bool all_ranks)
 {
   ensure_initialized();
+  return level >= current_level && (all_ranks || mpi_rank == 0);
+}
 
-  if (level < current_level) return;
-  if (!all_ranks && mpi_rank != 0) return;
-
+inline void emit(Level level, std::string_view message)
+{
   std::lock_guard<std::mutex> lock(log_mutex);
+  std::cout << "[" << level_name(level) << ":" << mpi_rank << "] " << message << std::endl;
+}
 
-  std::string formatted_msg;
-  if (sizeof...(args) > 0) formatted_msg = format_string(message, std::forward<Args>(args)...);
-  else formatted_msg = message;
-
-  std::cout << "[" << level_name(level) << ":" << mpi_rank << "] " << formatted_msg << std::endl;
+template <typename... Args>
+void log_impl(Level level, bool all_ranks, std::format_string<Args...> fmt, Args&&... args)
+{
+  // Check first, so that filtered-out messages are never formatted
+  if (not enabled(level, all_ranks)) return;
+  emit(level, std::format(fmt, std::forward<Args>(args)...));
 }
 } // namespace detail
+
+/** \brief Formats a range as "[ a, b, c ]".
+ *
+ * std::format only knows how to format ranges from C++23 on, so until then containers
+ * have to go through this helper: logger::info("counts: {}", logger::join(counts)).
+ */
+template <class Range>
+std::string join(const Range& range, std::string_view separator = ", ")
+{
+  std::string result = "[ ";
+  for (auto it = std::begin(range); it != std::end(range); ++it) {
+    if (it != std::begin(range)) result += separator;
+    result += std::format("{}", *it);
+  }
+  result += " ]";
+  return result;
+}
 
 // Set log level
 inline void set_level(Level level) { detail::current_level = level; }
@@ -157,64 +140,68 @@ inline void init(int rank)
   detail::initialized = true;
 }
 
-// Logging functions for rank 0 only
+// Logging functions for rank 0 only.
+//
+// The message is a std::format format string: it is checked against the argument types at
+// compile time, and the arguments need a std::formatter (which is not the same thing as an
+// operator<<; see join() above for containers).
 template <typename... Args>
-void trace(const std::string& message, Args&&... args)
+void trace(std::format_string<Args...> message, Args&&... args)
 {
   detail::log_impl(Level::trace, false, message, std::forward<Args>(args)...);
 }
 
 template <typename... Args>
-void debug(const std::string& message, Args&&... args)
+void debug(std::format_string<Args...> message, Args&&... args)
 {
   detail::log_impl(Level::debug, false, message, std::forward<Args>(args)...);
 }
 
 template <typename... Args>
-void info(const std::string& message, Args&&... args)
+void info(std::format_string<Args...> message, Args&&... args)
 {
   detail::log_impl(Level::info, false, message, std::forward<Args>(args)...);
 }
 
 template <typename... Args>
-void warn(const std::string& message, Args&&... args)
+void warn(std::format_string<Args...> message, Args&&... args)
 {
   detail::log_impl(Level::warn, false, message, std::forward<Args>(args)...);
 }
 
 template <typename... Args>
-void error(const std::string& message, Args&&... args)
+void error(std::format_string<Args...> message, Args&&... args)
 {
   detail::log_impl(Level::error, false, message, std::forward<Args>(args)...);
 }
 
 // Logging functions for all ranks
 template <typename... Args>
-void trace_all(const std::string& message, Args&&... args)
+void trace_all(std::format_string<Args...> message, Args&&... args)
 {
   detail::log_impl(Level::trace, true, message, std::forward<Args>(args)...);
 }
 
 template <typename... Args>
-void debug_all(const std::string& message, Args&&... args)
+void debug_all(std::format_string<Args...> message, Args&&... args)
 {
   detail::log_impl(Level::debug, true, message, std::forward<Args>(args)...);
 }
 
 template <typename... Args>
-void info_all(const std::string& message, Args&&... args)
+void info_all(std::format_string<Args...> message, Args&&... args)
 {
   detail::log_impl(Level::info, true, message, std::forward<Args>(args)...);
 }
 
 template <typename... Args>
-void warn_all(const std::string& message, Args&&... args)
+void warn_all(std::format_string<Args...> message, Args&&... args)
 {
   detail::log_impl(Level::warn, true, message, std::forward<Args>(args)...);
 }
 
 template <typename... Args>
-void error_all(const std::string& message, Args&&... args)
+void error_all(std::format_string<Args...> message, Args&&... args)
 {
   detail::log_impl(Level::error, true, message, std::forward<Args>(args)...);
 }

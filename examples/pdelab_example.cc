@@ -21,6 +21,7 @@
 #include <dune/grid/yaspgrid.hh>
 #include <dune/istl/solverfactory.hh>
 #include <dune/istl/solvers.hh>
+#include <dune/istl/umfpack.hh>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcpp"
@@ -102,7 +103,10 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
     const auto write_overlapping_vector = [&](const auto& vec, const std::string& name, bool zero_if_not_debug_rank = true) {
       auto vec_vis = vec;
       if (zero_if_not_debug_rank and (helper.rank() != ptree.get("debug_rank", 0))) vec_vis = 0;
-      if (zero_if_not_debug_rank) prec->getOverlappingCommunication()->addOwnerCopyToAll(vec_vis, vec_vis);
+
+      // Unconditional: with the zeroing this spreads the debug rank's vector over its overlapping
+      // subdomain, without it it sums the contributions of all subdomains.
+      prec->getOverlappingCommunication()->addOwnerCopyToAll(vec_vis, vec_vis);
 
       auto vec_small = std::make_shared<typename Prec::NativeVec>(problem->getX().N());
       for (std::size_t i = 0; i < vec_small->N(); ++i) (*vec_small)[i] = vec_vis[i];

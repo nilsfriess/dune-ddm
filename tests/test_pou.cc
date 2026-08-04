@@ -56,16 +56,21 @@ int main(int argc, char** argv)
 
     // Turn non-overlapping matrix into an overlapping one
     const int overlap = 4;
-    auto [ovlp_comm, A_ovlp, boundary] = create_overlapping_matrix(*novlp_comm, *localA, overlap, MatrixRepresentation::Consistent);
+    // Additive: distributeMatrixFrom0 hands out partial contributions, so entries shared between
+    // ranks have to be summed. With Consistent the interface rows keep one rank's contribution only,
+    // which no POU noticed as long as they all used the sparsity pattern alone -- MsFEM solves with
+    // the values, and a matrix that is not diagonally dominant there breaks its maximum principle.
+    auto [ovlp_comm, A_ovlp, boundary] = create_overlapping_matrix(*novlp_comm, *localA, overlap, MatrixRepresentation::Additive);
 
     struct Case {
       PartitionOfUnityType type;
       const char* name;
     };
-    const std::array<Case, 3> cases = {{
+    const std::array<Case, 4> cases = {{
         {PartitionOfUnityType::Trivial, "trivial"},
         {PartitionOfUnityType::Standard, "standard"},
         {PartitionOfUnityType::Distance, "distance"},
+        {PartitionOfUnityType::MsFEM, "msfem"},
     }};
     const std::array<int, 4> shrinks = {{0, 1, 2, 3}}; // shrink must be < overlap
 
@@ -88,6 +93,15 @@ int main(int argc, char** argv)
         Vector count(pou.size());
         for (std::size_t i = 0; i < pou.size(); ++i) count[i] = 1.0;
         ovlp_comm->addOwnerCopyToAll(count, count);
+
+        // Before the sum: every NaN comparison below is false, so a POU full of them would sail
+        // through the check that follows.
+        unsigned long long n_nan = 0;
+        unsigned long long global_nan = 0;
+        for (std::size_t i = 0; i < pou.size(); ++i)
+          if (!std::isfinite(pou[i][0])) ++n_nan;
+        MPI_Allreduce(&n_nan, &global_nan, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        t.check(global_nan == 0, std::string("POU '") + c.name + "' (shrink=" + std::to_string(shrink) + ") is finite") << global_nan << " non-finite entries";
 
         double max_err = 0.0;
         std::array<unsigned long long, 6> bad_by_count = {{0, 0, 0, 0, 0, 0}}; // index = min(count, 5)

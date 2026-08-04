@@ -48,7 +48,7 @@ auto make_communication(const GFS& gfs)
   std::vector<std::size_t> counts(gfs.gridView().comm().size());
   gfs.gridView().comm().allgather(&count, 1, counts.data());
 
-  logger::debug("Nonoverlapping dof count per rank: {}", counts);
+  logger::debug("Nonoverlapping dof count per rank: {}", logger::join(counts));
 
   // Find out where we need to start counting our own dofs
   auto start = std::accumulate(counts.begin(), counts.begin() + rank, 0UL);
