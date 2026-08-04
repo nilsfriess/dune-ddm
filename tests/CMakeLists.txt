@@ -28,6 +28,14 @@ dune_add_test(SOURCES test_helpers.cc
   LABELS ddm
 )
 
+# extract_submatrix: pattern and values must match an entry-by-entry reference extraction.
+dune_add_test(SOURCES test_matrix_helpers.cc
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 1
+  TIMEOUT 100
+  LABELS ddm
+)
+
 # distributeMatrixFrom0: owned rows must reassemble into the original matrix.
 dune_add_test(SOURCES test_distribute_matrix.cc
   LINK_LIBRARIES duneddm
