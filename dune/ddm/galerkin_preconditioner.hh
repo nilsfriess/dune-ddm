@@ -329,8 +329,6 @@ private:
    * without any summation across ranks, because A is the overlapping matrix, i.e. it agrees with
    * the global matrix wherever a local template vector is supported.
    */
-  // TODO: Remove some of the logging, this was just added to find out where the most time is spent,
-  //       because this function can become the bottleneck for large simulations.
   template <class Mat>
   void build_solver(const Mat& A)
   {
