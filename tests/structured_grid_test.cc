@@ -367,6 +367,8 @@ int main(int argc, char** argv)
     //   if (p.local_of_view[i] != Problem::invalid) x_vtk[i] = x[p.local_of_view[i]];
     // writer.addVertexData(x_vtk, "Solution");
     // writer.write("poisson");
+
+    Logger::get().report(MPI_COMM_WORLD);
   }
   catch (const Dune::Exception& e) {
     std::cout << "Dune exception thrown: " << e.what() << "\n";
