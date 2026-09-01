@@ -43,12 +43,7 @@ enum class CoarseSolveMode : std::uint8_t {
    *  Every apply() then needs a single MPI_Allgatherv of the coarse defect, after which each rank
    *  solves the whole coarse problem itself and reads off its own part of the solution. That is one
    *  collective instead of two and no serial section, at the price of storing the coarse matrix and
-   *  its factorization on every rank. Setup costs one extra broadcast; the factorization itself is
-   *  no slower in wall-clock terms, since the ranks were waiting for rank 0 to do it anyway.
-   *
-   *  The broadcast matrix is bitwise identical everywhere, so all ranks factorize the same input.
-   *  Each rank uses only its own slice of the coarse solution, so even a solver that is not
-   *  bitwise reproducible would only perturb the preconditioner at round-off level.
+   *  its factorization on every rank.
    */
   Redundant,
 };
@@ -115,8 +110,9 @@ private:
      * @param size       Number of ranks, i.e. the size of the rank -> vector lookup table
      */
     VecDistributor(const Vec& temp, const std::vector<int>& neighbours, int rank, int size)
-        : rank{rank}
-        , by_rank(size, nullptr)
+        : by_rank(size, nullptr)
+        , rank{rank}
+
     {
       for (const auto& nb : neighbours) {
         auto& vec = others.emplace(nb, temp).first->second;

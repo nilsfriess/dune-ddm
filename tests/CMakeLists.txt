@@ -61,3 +61,27 @@ dune_add_test(SOURCES structured_grid_test.cc
   TIMEOUT 300
   LABELS ddm
 )
+add_sycl_to_target(TARGET structured_grid_test SOURCES structured_grid_test.cc)
+
+dune_add_test(SOURCES communication_test.cc
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 1 2 4 16
+  TIMEOUT 300
+  LABELS ddm
+)
+
+dune_add_test(SOURCES test_backend.cc
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 1
+  TIMEOUT 300
+  LABELS ddm
+)
+add_sycl_to_target(TARGET test_backend SOURCES test_backend.cc)
+
+dune_add_test(SOURCES test_sycl_comm.cc
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 1
+  TIMEOUT 300
+  LABELS ddm
+)
+add_sycl_to_target(TARGET test_sycl_comm SOURCES test_sycl_comm.cc)

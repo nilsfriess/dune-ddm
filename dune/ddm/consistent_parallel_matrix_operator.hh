@@ -1,7 +1,6 @@
 #pragma once
 
 #include "consistent_scalar_product.hh"
-#include "ddm.hh"
 
 #include <dune/istl/operators.hh>
 #include <dune/istl/scalarproducts.hh>
@@ -29,11 +28,10 @@
  *  For a matrix stored additively across the ranks use AdditiveParallelMatrixOperator instead.
  */
 template <class Mat, class X, class Y, class Communication>
-class ConsistentParallelMatrixOperator : public Dune::AssembledLinearOperator<Mat, X, Y> {
+class ConsistentParallelMatrixOperator : public Dune::LinearOperator<X, Y> {
 public:
   using domain_type = X;
   using range_type = Y;
-  using matrix_type = Mat;
   using communication_type = Communication;
   using field_type = typename X::field_type;
 
@@ -67,7 +65,7 @@ public:
     comm->copyOwnerToAll(y, y);
   }
 
-  const Mat& getmat() const override { return *A; }
+  // const Mat& getmat() const override { return *A; }
 
   const communication_type& getCommunication() const { return *comm; }
   std::shared_ptr<communication_type> getCommunicationPtr() const { return comm; }

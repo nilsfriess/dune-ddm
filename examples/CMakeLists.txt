@@ -35,7 +35,6 @@ else()
   message(WARNING "PDELab not found, not building examples")
 endif()
 
-find_package(AdaptiveCpp REQUIRED)
 add_executable(sycl_test sycl_test.cc)
 target_link_libraries(sycl_test PUBLIC duneddm)
 target_link_dune_default_libraries(sycl_test)

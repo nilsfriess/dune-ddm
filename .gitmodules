@@ -43,3 +43,7 @@
 	path = extern/dune-pdelab
 	url = https://gitlab.dune-project.org/pdelab/dune-pdelab.git
 	branch = releases/2.10
+[submodule "doc/doxygen-awesome-css"]
+	path = doc/doxygen-awesome-css
+	url = https://github.com/jothepro/doxygen-awesome-css.git
+	branch = main

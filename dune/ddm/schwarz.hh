@@ -7,6 +7,8 @@
     and restricted additive Schwarz methods for domain decomposition preconditioning.
 */
 
+#include "backend/host/backend.hh"
+#include "communication.hh"
 #include "helpers.hh"
 #include "logger.hh"
 #include "pou.hh"
@@ -47,10 +49,11 @@ enum class SchwarzType : std::uint8_t {
  * @tparam Mat Matrix type for the linear system
  * @tparam Communication A communication object, e.g. ISTL's OwnerOverlapCopyCommunication
  */
-template <class Mat, class Vec, class Communication>
+template <class Mat, class Vec>
 class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   using Op = Dune::MatrixAdapter<Mat, Vec, Vec>;
   using Solver = Dune::InverseOperator<Vec, Vec>;
+  using Backend = ddm::backend::backend_of_t<Vec>;
 
 public:
   /**
@@ -66,10 +69,11 @@ public:
    * @param ptree Parameter tree containing configuration
    * @param subtree_name Name of the subtree containing Schwarz parameters
    */
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, std::shared_ptr<Communication> comm, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree& ptree,
+  template <class OwnerOverlapCopyCommunication>
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const OwnerOverlapCopyCommunication& oocc, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree& ptree,
                         const std::string& subtree_name = "schwarz", const std::string& solver_subtree_name = "subdomain_solver")
       : Aovlp(std::move(Aovlp))
-      , comm(std::move(comm))
+      , comm(ddm::make_communication_from_dune(oocc))
       , pou(std::move(pou))
   {
     auto* init_event = Logger::get().registerOrGetEvent("Schwarz", "init");
@@ -127,17 +131,11 @@ public:
 
     // 1. Copy local values from the incoming defect to the overlapping one
     Logger::get().startEvent(get_defect_event);
-    *d_ovlp = 0;
-    for (std::size_t i = 0; i < d.size(); ++i) (*d_ovlp)[i] = d[i];
+    Backend::copy_n(d, d.size(), *d_ovlp);
 
-    // 2. Fetch the entries of the overlap extension, which this rank has no other way of knowing.
-    // When the two index sets have the same size there is no extension to fill, and the defect is
-    // already consistent by the invariant in ddm.hh, so the communication would be a no-op.
-    if (d.size() < d_ovlp->size()) comm->copyOwnerToAll(*d_ovlp, *d_ovlp);
-
-    // 2.5 Zero at subdomain boundary and Dirichlet boundary
-    for (std::size_t i = 0; i < d_ovlp->size(); ++i)
-      if (boundary[i]) (*d_ovlp)[i] = 0;
+    // 2. Fetch the entries in the overlap region from the owner rank (by the general assumption of this module
+    //    incoming defects are consistent, so it's sufficient to ask the owner for the value)
+    if (d.size() < d_ovlp->size()) comm.broadcast(*d_ovlp); // comm->copyOwnerToAll(*d_ovlp, *d_ovlp);
 
     Logger::get().endEvent(get_defect_event);
 
@@ -150,33 +148,28 @@ public:
 
     // 4. Make the solution consistent according to the type of the Schwarz method
     Logger::get().startEvent(add_solution_event);
-    if (type == SchwarzType::Standard) { comm->addOwnerCopyToOwnerCopy(*x_ovlp, *x_ovlp); }
+    if (type == SchwarzType::Standard) { comm.reduce(*x_ovlp); }
     else if (type == SchwarzType::Restricted) {
       if (pou)
         for (std::size_t i = 0; i < pou->size(); ++i) (*x_ovlp)[i] *= (*pou)[i];
-      comm->addOwnerCopyToOwnerCopy(*x_ovlp, *x_ovlp);
+      comm.reduce(*x_ovlp);
     }
 
     // 4. Restrict the solution to the non-overlapping subdomain
-    for (std::size_t i = 0; i < x.size(); ++i) x[i] = (*x_ovlp)[i];
+    Backend::copy_n(*x_ovlp, x.size(), x);
 
     Logger::get().endEvent(add_solution_event);
   }
 
-  /**
-   * @brief Get reference to the local subdomain solver.
-   * @return Reference to the solver instance
-   */
-  std::shared_ptr<Solver> get_solver() { return solver; }
-
-  std::shared_ptr<Communication> novlp_comm;
+  // /**
+  //  * @brief Get reference to the local subdomain solver.
+  //  * @return Reference to the solver instance
+  //  */
+  // std::shared_ptr<Solver> get_solver() { return solver; }
 
 private:
-  /**
-   * @brief Initialize the preconditioner.
+  /** @brief Initialize the preconditioner.
    *
-   * Sets up communication interfaces, creates solver instance (if not delayed),
-   * and allocates working vectors.
    */
   void init()
   {
@@ -187,24 +180,12 @@ private:
     get_defect_event = Logger::get().registerOrGetEvent("Schwarz", "get defect");
     add_solution_event = Logger::get().registerOrGetEvent("Schwarz", "add solution");
 
-    // Validate that remote indices match the overlapping matrix size
-    const auto remote_indices_size = comm->indexSet().size();
-    const auto matrix_size = Aovlp->N();
-    if (remote_indices_size != matrix_size)
-      DUNE_THROW(Dune::InvalidStateException, "Remote indices size (" << remote_indices_size << ") does not match overlapping matrix size (" << matrix_size << ").");
-
-    // Validate that partition of unity has the correct size
-    if (pou && pou->size() != matrix_size) DUNE_THROW(Dune::InvalidStateException, "Partition of unity size (" << pou->size() << ") does not match overlapping matrix size (" << matrix_size << ").");
-
     d_ovlp = std::make_unique<Vec>(Aovlp->N());
     x_ovlp = std::make_unique<Vec>(Aovlp->N());
-
-    // Initialise the boundary mask (detect Dirichlet DOFs from identity rows)
-    boundary = detect_dirichlet_dofs(*Aovlp);
   }
 
   std::shared_ptr<Mat> Aovlp; ///< Overlapping subdomain matrix
-  std::shared_ptr<Communication> comm;
+  ddm::Communication comm;
 
   std::shared_ptr<Solver> solver; ///< Local subdomain solver
   std::unique_ptr<Vec> d_ovlp;    ///< Defect on overlapping index set
@@ -213,8 +194,6 @@ private:
   std::shared_ptr<PartitionOfUnity> pou{nullptr}; ///< Partition of unity (might be null)
 
   SchwarzType type; ///< Type of Schwarz method (standard or restricted)
-
-  std::vector<bool> boundary;
 
   // Performance monitoring events
   Logger::Event* apply_event{nullptr};           ///< Event for timing the apply method

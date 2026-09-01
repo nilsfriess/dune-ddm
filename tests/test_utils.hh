@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <dune/common/exceptions.hh>
 #include <dune/common/parallel/mpihelper.hh>
@@ -195,14 +196,42 @@ private:
  * This function takes a grid view, then creates a unique global index for each vertex, and also
  * determines a owner for each vertex (vertices that exist on multiple ranks, the rank with the
  * smallest rank number is determined as the owner).
+ *
+ * If @p patch_mask is non-empty, only vertices for which the mask is true enter the index set (the
+ * resulting communication then lives on the subdomain "patch" defined by the mask rather than on
+ * the whole grid view). In that case the local indices are renumbered contiguously 0..n-1 in
+ * ascending grid view index order, so that they match the contiguous renumbering the caller has
+ * to apply to its matrix rows / vector entries. Ownership is still determined on the whole view,
+ * which is safe as long as the owner of every kept vertex keeps it in its own patch — true
+ * whenever the mask only drops vertices more than one element layer away from the rank's
+ * subdomain (the owner of a vertex is always within one element layer of it). The remote indices
+ * are rebuilt on the filtered index set, so ranks sharing no patch vertex simply end up with
+ * empty remote lists.
  */
 template <class GridView>
-std::shared_ptr<Dune::OwnerOverlapCopyCommunication<int, int>> create_communication_for_grid(const GridView& gv)
+std::shared_ptr<Dune::OwnerOverlapCopyCommunication<int, int>> create_communication_for_grid(const GridView& gv, const std::vector<bool>& patch_mask = {})
 {
+  if (not patch_mask.empty() and patch_mask.size() != static_cast<std::size_t>(gv.size(GridView::dimension)))
+    DUNE_THROW(Dune::InvalidStateException, "patch_mask has size " << patch_mask.size() << " but the grid view has " << gv.size(GridView::dimension) << " vertices");
+  const bool filter = not patch_mask.empty();
+  constexpr int dim = GridView::dimension;
+
+  // Renumber the patch vertices contiguously in ascending grid view index order. The caller's
+  // matrix/vector entries must follow exactly this numbering.
+  std::vector<int> local_of_view;
+  if (filter) {
+    std::vector<int> patch_vertices;
+    for (const auto& v : vertices(gv))
+      if (patch_mask[gv.indexSet().index(v)]) patch_vertices.push_back(gv.indexSet().index(v));
+    std::sort(patch_vertices.begin(), patch_vertices.end());
+
+    local_of_view.assign(gv.size(dim), -1);
+    for (std::size_t i = 0; i < patch_vertices.size(); ++i) local_of_view[patch_vertices[i]] = static_cast<int>(i);
+  }
+
   using Communication = Dune::OwnerOverlapCopyCommunication<int, int>;
   auto comm = std::make_shared<Communication>();
 
-  const int dim = GridView::dimension;
   const int rank = gv.comm().rank();
 
   // Get a globally unique numbering of all vertices
@@ -224,18 +253,20 @@ std::shared_ptr<Dune::OwnerOverlapCopyCommunication<int, int>> create_communicat
   for (const auto& v : vertices(gv)) {
     auto gidx = gidxs.index(v);
     auto lidx = gv.indexSet().index(v);
+    if (filter and not patch_mask[lidx]) continue;
     auto owned = owner[lidx] == rank;
+    const int local = filter ? local_of_view[lidx] : lidx;
     // TODO: The last parameter of the local index structure is set to true here.
     // It is named `isPublic` and it seems to only influence the setup of the remote
     // index set below slightly (in the sense that setting this flag to `true` is
     // always correct, setting it to true only on those indices that are actually
     // communicated might slightly speed up the setup). For later operations it
     // doesn't seem to be used, so let's just leave it like that.
-    parallel_idxs.add(gidx, {lidx, owned ? Attribute::owner : Attribute::copy, true});
+    parallel_idxs.add(gidx, {static_cast<std::size_t>(local), owned ? Attribute::owner : Attribute::copy, true});
   }
   parallel_idxs.endResize();
   comm->remoteIndices().template rebuild<true>();
 
-  return std::move(comm);
+  return comm;
 }
 } // namespace ddmtest
