@@ -32,6 +32,8 @@ struct CommunicationNodes {
 namespace detail {
 inline std::vector<int> identify_neighbours(MPI_Comm comm, const std::vector<CommunicationNodes>& roots)
 {
+  Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Communication", "neighbours")};
+
   int size{};
   int rank{};
   MPI_Comm_size(comm, &size);
@@ -141,6 +143,8 @@ private:
    */
   void build_broadcast_plan(const std::vector<CommunicationNodes>& roots, const std::unordered_map<std::int64_t, int>& gid_to_local)
   {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Communication", "broadcast plan")};
+
     int rank;
     MPI_Comm_rank(comm, &rank);
 
@@ -242,6 +246,8 @@ private:
    */
   void build_reduction_plan(const std::vector<CommunicationNodes>& roots, const std::unordered_map<std::int64_t, int>& gid_to_local)
   {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Communication", "reduction plan")};
+
     int rank;
     MPI_Comm_rank(comm, &rank);
 
@@ -497,6 +503,10 @@ public:
 
   explicit Exchanger(std::shared_ptr<const CommunicationPattern> pattern_)
       : pattern(std::move(pattern_))
+      , broadcast_begin_event{Logger::get().registerOrGetEvent("Communication", "broadcast begin")}
+      , broadcast_wait_event{Logger::get().registerOrGetEvent("Communication", "broadcast wait")}
+      , reduce_begin_event{Logger::get().registerOrGetEvent("Communication", "reduce begin")}
+      , reduce_wait_event{Logger::get().registerOrGetEvent("Communication", "reduce wait")}
   {
   }
 
@@ -507,12 +517,24 @@ public:
     if (broadcast_state.busy() or reduction_state.busy()) logger::error("Communication was destroyed while an exchange was in flight");
   }
 
-  void broadcast_begin(Context ctx, T* data) { broadcast_state.begin(pattern->broadcast_indices(), pattern->communicator(), ctx, data, ReductionOperation::None); }
+  void broadcast_begin(Context ctx, T* data)
+  {
+    Logger::ScopedLog sl{broadcast_begin_event};
+    broadcast_state.begin(pattern->broadcast_indices(), pattern->communicator(), ctx, data, ReductionOperation::None);
+  }
 
-  void reduce_begin(Context ctx, T* data, ReductionOperation op) { reduction_state.begin(pattern->reduction_indices(), pattern->communicator(), ctx, data, op); }
+  void reduce_begin(Context ctx, T* data, ReductionOperation op)
+  {
+    Logger::ScopedLog sl{reduce_begin_event};
+    reduction_state.begin(pattern->reduction_indices(), pattern->communicator(), ctx, data, op);
+  }
 
   void finish(PlanKind plan) noexcept override
   {
+    // This is where the exchange actually costs time: begin() only posts the messages, the
+    // MPI_Waitall and the unpacking happen here.
+    Logger::ScopedLog sl{plan == PlanKind::Broadcast ? broadcast_wait_event : reduce_wait_event};
+
     // There is nobody to report a failure to: we are on the way out of ~Exchange(). MPI's default
     // error handler aborts rather than returns, so in practice this catches Backend::sync().
     try {
@@ -531,6 +553,13 @@ private:
   std::shared_ptr<const CommunicationPattern> pattern;
   ExchangeState<Backend, T> broadcast_state;
   ExchangeState<Backend, T> reduction_state;
+
+  // Registered once per exchanger, so that the hot path only dereferences a pointer. The events
+  // themselves are shared by name with every other exchanger (and pre-registered by Communication).
+  Logger::Event* broadcast_begin_event{nullptr}; ///< packing and posting of a broadcast
+  Logger::Event* broadcast_wait_event{nullptr};  ///< waiting for and unpacking a broadcast
+  Logger::Event* reduce_begin_event{nullptr};    ///< packing and posting of a reduction
+  Logger::Event* reduce_wait_event{nullptr};     ///< waiting for and unpacking a reduction
 };
 } // namespace detail
 
@@ -634,11 +663,22 @@ public:
       : pattern(std::make_shared<const CommunicationPattern>(comm, roots))
       , c(comm)
       , owner_mask(roots.size())
+      , dot_local_event{Logger::get().registerOrGetEvent("Communication", "dot (local)")}
+      , dot_allreduce_event{Logger::get().registerOrGetEvent("Communication", "dot (allreduce)")}
   {
     std::transform(roots.begin(), roots.end(), owner_mask.begin(), [&](const auto& r) {
       // Return 1 if we're the owner, zero otherwise
       return r.rank == c.rank() ? 1 : 0;
     });
+
+    // The exchangers are created lazily, on the first exchange of a given backend and element type,
+    // and register these events themselves. Logger::report() is collective and reduces over the
+    // events in registration order, so pin that order here, where we are on a collective path
+    // anyway. The exchangers pick the same events up again via registerOrGetEvent().
+    Logger::get().registerOrGetEvent("Communication", "broadcast begin");
+    Logger::get().registerOrGetEvent("Communication", "broadcast wait");
+    Logger::get().registerOrGetEvent("Communication", "reduce begin");
+    Logger::get().registerOrGetEvent("Communication", "reduce wait");
   }
 
   // /// Builds a Communication on an existing pattern, sharing its topology and its communicator.
@@ -713,8 +753,13 @@ public:
     // TOOD: This assumes that the vector is ddm::Sycl::Vec
     static Vector mask = Vector::from_host_vector(v.queue(), owner_mask);
 
+    Logger::get().startEvent(dot_local_event);
     result = v.masked_dot(mask, w);
+    Logger::get().endEvent(dot_local_event);
+
+    Logger::get().startEvent(dot_allreduce_event);
     MPI_Allreduce(MPI_IN_PLACE, &result, 1, Dune::MPITraits<typename Vector::field_type>::getType(), MPI_SUM, pattern->communicator());
+    Logger::get().endEvent(dot_allreduce_event);
   }
 
   template <class Vector>
@@ -754,6 +799,11 @@ private:
 
   Communicator c;
   std::vector<std::uint8_t> owner_mask;
+
+  // The local part and the collective are timed separately: the Allreduce is the synchronisation
+  // point, so it is where load imbalance elsewhere in the solver shows up.
+  Logger::Event* dot_local_event{nullptr};     ///< the masked local dot product
+  Logger::Event* dot_allreduce_event{nullptr}; ///< the MPI_Allreduce that combines it
 };
 
 /** Builds the roots array for a Dune::OwnerOverlapCopyCommunication.
@@ -774,6 +824,8 @@ private:
 template <class T1, class T2>
 std::vector<CommunicationNodes> make_roots_from_dune(const Dune::OwnerOverlapCopyCommunication<T1, T2>& oocc)
 {
+  Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Communication", "roots from Dune")};
+
   using Attribute = Dune::OwnerOverlapCopyAttributeSet;
 
   const auto& pis = oocc.indexSet();
