@@ -188,41 +188,32 @@ private:
 
   /** Sums f(0) + ... + f(n-1) on the device.
    *
-   *  A hand-written chunked two-stage reduction. Each of nchunks work items sums one contiguous
-   *  chunk of elements (measurable, cache-friendly work per item), a second kernel folds the
-   *  partial sums, and finish_reduction() copies the result to the host. On the AdaptiveCpp OpenMP
-   *  target this is ~3-5x faster than sycl::reduction, whose hierarchical work-group reduction
-   *  engine plus per-submit scratch setup dominates small (~1 MB) reductions; a microbenchmark
-   *  measured 0.34 ms vs 0.10 ms per 3-array dot of 66k doubles under 4-way rank contention.
+   *  One kernel over the full range, with the fold left to sycl::reduction so that each backend
+   *  uses its own tuned tree reduction. finish_reduction() then copies the result to the host.
+   *
+   *  This replaces a hand-written chunked two-stage reduction (nchunks work items summing one
+   *  contiguous chunk each, then a second kernel folding the partials). That version was tuned for
+   *  the AdaptiveCpp OpenMP target, where a microbenchmark measured it ~3-5x faster than
+   *  sycl::reduction (0.10 ms vs 0.34 ms per 3-array dot of 66k doubles under 4-way rank
+   *  contention) — sycl::reduction's work-group machinery and per-submit scratch setup dominate a
+   *  reduction that small. On a GPU the same shape is the wrong one: it caps the first stage at
+   *  1024 work items reading contiguous per-item blocks (underoccupied and uncoalesced), and folds
+   *  the partials in a *single* work item, i.e. 1024 dependent latency-bound global loads. A
+   *  profile of structured_grid_test on 4 GPU ranks put masked_dot at 339 us per call for n ~ 70k.
+   *
+   *  If the OpenMP target regresses noticeably, dispatch on q.get_device().is_gpu() and keep the
+   *  chunked kernel for the CPU case rather than reverting this.
    */
   template <class F>
   void reduce(F f) const
   {
     if (n == 0) return;
 
-    if (partials == nullptr) {
-      nchunks = std::clamp<Index>(n / 64, 8, 1024);
-      partials = sycl::malloc_device<field_type>(nchunks, q);
-    }
-
-    const auto count = n;
-    const auto nc = nchunks;
-    const std::size_t chunk = (count + nc - 1) / nc;
-    auto* part = partials;
     auto* sum = red_dev;
-    q.parallel_for(sycl::range<1>(nc), [=](auto idx) {
-      const std::size_t c = idx[0];
-      const std::size_t lo = c * chunk;
-      const std::size_t hi = std::min<std::size_t>(count, (c + 1) * chunk);
-      field_type s{0};
-      for (std::size_t i = lo; i < hi; ++i) s += f(i);
-      part[c] = s;
-    });
-    q.parallel_for(sycl::range<1>(1), [=](auto) {
-      field_type s{0};
-      for (Index c = 0; c < nc; ++c) s += part[c];
-      sum[0] = s;
-    });
+    // initialize_to_identity is required: without it the reduction combines into whatever the
+    // previous reduce() left in red_dev.
+    q.parallel_for(sycl::range<1>(n), sycl::reduction(sum, sycl::plus<field_type>{}, sycl::property::reduction::initialize_to_identity{}),
+                   [=](sycl::id<1> idx, auto& s) { s += f(static_cast<Index>(idx[0])); });
   }
 
   /// Copies the result of a preceding reduce() back to the host. Blocks until it has arrived.
@@ -240,17 +231,14 @@ private:
     sycl::free(data_, q);
     sycl::free(red_dev, q);
     sycl::free(red_host, q);
-    if (partials) sycl::free(partials, q);
   }
 
   mutable sycl::queue q;
   Index n;
   field_type* data_;
 
-  // Scratch for the reductions in dot/masked_dot/two_norm: one partial sum per chunk on the
-  // device, plus the device and pinned host locations of the final result.
-  mutable Index nchunks = 0;
-  mutable field_type* partials = nullptr;
+  // Scratch for the reductions in dot/masked_dot/two_norm: the device and pinned host locations
+  // of the final result.
   field_type* red_dev;
   field_type* red_host;
 };
