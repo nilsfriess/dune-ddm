@@ -46,6 +46,9 @@ public:
   Mat(const Mat&) = delete;
   Mat& operator=(const Mat&) = delete;
 
+  // Note: nnz MUST be moved along with r/c/a; nonzeros() would otherwise report
+  // garbage after a move (e.g. when from_bcrs's return value is moved into a
+  // shared_ptr), which silently corrupts every consumer of the CSR description.
   Mat(Mat&& other) noexcept
       : q(other.q)
       , rows(other.rows)
@@ -53,12 +56,14 @@ public:
       , r(other.r)
       , c(other.c)
       , a(other.a)
+      , nnz(other.nnz)
   {
     other.rows = 0;
     other.cols = 0;
     other.r = nullptr;
     other.c = nullptr;
     other.a = nullptr;
+    other.nnz = 0;
   }
 
   Mat& operator=(Mat&& other) noexcept
@@ -70,12 +75,14 @@ public:
       r = other.r;
       c = other.c;
       a = other.a;
+      nnz = other.nnz;
 
       other.rows = 0;
       other.cols = 0;
       other.r = nullptr;
       other.c = nullptr;
       other.a = nullptr;
+      other.nnz = 0;
     }
     return *this;
   }
@@ -197,12 +204,12 @@ public:
 private:
   mutable sycl::queue q; // q.parallel_for is not const, but this->mv needs to be const
 
-  Index rows;
-  Index cols;
+  Index rows{};
+  Index cols{};
 
-  Index* r;
-  Index* c;
-  block_type* a;
-  Index nnz;
+  Index* r = nullptr;
+  Index* c = nullptr;
+  block_type* a = nullptr;
+  Index nnz{};
 };
 } // namespace ddm::Sycl
