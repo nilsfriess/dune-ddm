@@ -28,7 +28,7 @@ inline void todo_impl(const char* file, int line, const char* message)
 template <class... Args>
 inline void check_impl(const char* file, int line, bool condition, std::format_string<Args...> fmt, Args&&... args)
 {
-  if (!condition) {
+  if (!condition) [[unlikely]] {
     std::cerr << file << ":" << line << ": CHECK failed: " << std::format(fmt, std::forward<Args>(args)...) << std::endl;
     std::abort();
   }
