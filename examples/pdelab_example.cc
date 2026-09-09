@@ -150,11 +150,11 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
 
     // Write ring region (for ring coarse spaces)
     if (problem->get_neumann_region_to_subdomain().size() > 0) {
-      typename Prec::NativeVec v(prec->getOverlappingCommunication()->indexSet().size());
-      v = 0;
-      for (const auto& idx : problem->get_neumann_region_to_subdomain()) v[idx] = 1;
+      typename Prec::NativeVec neumann_region(prec->getOverlappingCommunication()->indexSet().size());
+      neumann_region = 0;
+      for (const auto& idx : problem->get_neumann_region_to_subdomain()) neumann_region[idx] = 1;
 
-      write_overlapping_vector(v, "Ring region");
+      write_overlapping_vector(neumann_region, "Ring region");
     }
 
     // Visualise the basis vectors
@@ -163,10 +163,10 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
       auto i_padded = std::string(4 - std::min(4UL, istr.length()), '0') + istr;
       auto name = "Basis " + i_padded;
 
-      typename Prec::NativeVec v(prec->getOverlappingCommunication()->indexSet().size());
-      if (helper.rank() == ptree.get("debug_rank", 0)) v = prec->get_basis()[i];
-      else v = 0;
-      write_overlapping_vector(v, name);
+      typename Prec::NativeVec basis(prec->getOverlappingCommunication()->indexSet().size());
+      if (helper.rank() == ptree.get("debug_rank", 0)) basis = prec->get_basis()[i];
+      else basis = 0;
+      write_overlapping_vector(basis, name);
     }
 
     // Write A_neu * 1 (should be zero). Take the matrix from the preconditioner rather than from the
@@ -261,8 +261,8 @@ int main(int argc, char* argv[])
     setup_loggers(helper.rank(), argc, argv);
 
     Dune::ParameterTree configptree;
-    Dune::ParameterTreeParser ptreeparser;
-    ptreeparser.readOptions(argc, argv, configptree);
+    Dune::ParameterTreeParser configptreeparser;
+    configptreeparser.readOptions(argc, argv, configptree);
     if (!configptree.hasKey("problem") or !configptree.hasKey("ini_file")) {
       logger::error("Usage: {} -problem <problem> -ini_file <filename.ini>", argv[0]);
       logger::error("  Supported problems:");
