@@ -1,7 +1,10 @@
 #pragma once
 
 #include "backend/backend.hh"
+#include "backend/host/backend.hh"
+#include "backend/sycl/backend.hh"
 #include "logger.hh"
+#include "solvers/cudss.hh"
 
 #include <dune/common/exceptions.hh>
 #include <dune/common/parametertree.hh>
@@ -21,7 +24,7 @@ std::string defaultDirectSolverName()
   using Scalar = typename Matrix::field_type; // valid only if assembled, guarded below
 
   if constexpr (OpTraits::isAssembled && backend::IsGpuResident<Matrix>) {
-#if DUNE_DDM_HAVE_CUDSS
+#if defined(DUNE_DDM_HAVE_CUDSS)
     return "cudss";
 #endif
   }
@@ -33,7 +36,8 @@ std::string defaultDirectSolverName()
     if constexpr (std::is_same_v<Scalar, float> || std::is_same_v<Scalar, double>) return "strumpack";
 #endif
   }
-  DUNE_THROW(Dune::InvalidStateException, "No direct solver available for this operator type (" << Dune::className<Matrix>() << "). Build with UMFPack/cuDSS or set the solver explicitly.");
+  DUNE_THROW(Dune::InvalidStateException, "No direct solver available for this operator type ("
+                                              << Dune::className<Matrix>() << "). Build with UMFPack/cuDSS or set the solver explicitly.");
 }
 
 template <class Op>

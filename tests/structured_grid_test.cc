@@ -11,6 +11,7 @@
 #include "dune/ddm/schwarz.hh"
 #include "dune/ddm/sycl/mat.hh"
 #include "dune/ddm/sycl/vec.hh"
+#include "dune/ddm/backend/sycl/backend.hh"
 #include "test_utils.hh"
 
 #include <cstddef>
@@ -371,6 +372,9 @@ int main(int argc, char** argv)
       auto b = SyclVec::from_host_vector(q, p.b);
       auto A = std::make_shared<SyclMat>(SyclMat::from_bcrs(q, *p.A));
       auto pou = std::make_shared<PartitionOfUnity>(*p.A, *comm, PartitionOfUnityType::Standard);
+
+      using M = decltype(*A);
+      static_assert(ddm::backend::IsGpuResident<M>);
 
       solve_reference(helper, vec_comm, A, b, x);
       solve_single_level_schwarz(helper, comm, vec_comm, A, b, x, pou);

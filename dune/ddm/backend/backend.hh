@@ -26,7 +26,7 @@ using element_of_t = std::remove_cv_t<std::remove_pointer_t<decltype(std::declva
 /// True if T's storage lives on a device rather than in host memory.
 /// False for any T without a backend_traits specialization
 template <class T>
-concept IsGpuResident = requires { requires backend_traits<std::remove_cvref_t<T>>::is_device; };
+concept IsGpuResident = requires { requires backend_traits<std::remove_cvref_t<T>>::type::is_device; };
 
 template <class T, class Backend>
 class Buffer {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dune/ddm/helpers.hh"
+#include "../helpers.hh"
 
 #include <dune/common/fmatrix.hh>
 #include <dune/istl/bcrsmatrix.hh>
@@ -20,16 +20,20 @@ public:
   using index_type = Index;
   using allocator_type = std::allocator<Scalar>;
 
-  Mat(const sycl::queue& q_, Index rows_, Index cols_, std::span<const Index> host_r, std::span<const Index> host_c, std::span<const block_type> host_a)
+  Mat(const sycl::queue& q_, Index rows_, Index cols_, std::span<const Index> host_r, std::span<const Index> host_c,
+      std::span<const block_type> host_a)
       : q(q_)
       , rows(rows_)
       , cols(cols_)
       , r(sycl::malloc_device<Index>(host_r.size(), q))
       , c(sycl::malloc_device<Index>(host_c.size(), q))
       , a(sycl::malloc_device<block_type>(host_a.size(), q))
+      , nnz(host_a.size())
   {
-    DDM_CHECK(host_c.size() == host_a.size(), "Invalid CSR data (column index array size {} and data array size {} do not match)", host_c.size(), host_a.size());
-    DDM_CHECK(host_r.size() == rows + 1, "Invalid CSR data (row offsets array size {} does not match the provided number of rows {})", host_r.size(), rows + 1);
+    DDM_CHECK(host_c.size() == host_a.size(), "Invalid CSR data (column index array size {} and data array size {} do not match)",
+              host_c.size(), host_a.size());
+    DDM_CHECK(host_r.size() == rows + 1, "Invalid CSR data (row offsets array size {} does not match the provided number of rows {})",
+              host_r.size(), rows + 1);
 
     q.memcpy(r, host_r.data(), host_r.size_bytes());
     q.memcpy(c, host_c.data(), host_c.size_bytes());
@@ -116,6 +120,7 @@ public:
   }
 
   Index N() const { return rows; }
+  Index M() const { return cols; }
 
   void usmv(Scalar alpha, const Vec<Scalar, Index>& x, Vec<Scalar, Index>& y) const
   {
@@ -182,6 +187,11 @@ public:
     return diag;
   }
 
+  Index nonzeros() const { return nnz; }
+  const Index* row_offsets() const { return r; }
+  const Index* column_indices() const { return c; }
+  const block_type* values() const { return a; }
+
   sycl::queue queue() const { return q; }
 
 private:
@@ -193,5 +203,6 @@ private:
   Index* r;
   Index* c;
   block_type* a;
+  Index nnz;
 };
 } // namespace ddm::Sycl
