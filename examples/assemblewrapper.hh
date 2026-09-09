@@ -434,16 +434,16 @@ public:
    * This method also initializes the `neumann_correction_matrices` for each relevant rank.
    */
   template <class Mat>
-  void set_masks(const Mat& A, const std::map<int, std::vector<bool>>* on_boundary_mask_for_rank, const std::map<int, std::vector<bool>>* inside_boundary_mask_for_rank,
-                 const std::vector<bool>* on_boundary_mask, const std::vector<bool>* outside_boundary_mask)
+  void set_masks(const Mat& A, const std::map<int, std::vector<bool>>* on_boundary_mask_for_rank_, const std::map<int, std::vector<bool>>* inside_boundary_mask_for_rank_,
+                 const std::vector<bool>* on_boundary_mask_, const std::vector<bool>* outside_boundary_mask_)
   {
-    this->on_boundary_mask_for_rank = on_boundary_mask_for_rank;
-    this->inside_boundary_mask_for_rank = inside_boundary_mask_for_rank;
-    this->on_boundary_mask = on_boundary_mask;
-    this->outside_boundary_mask = outside_boundary_mask;
+    this->on_boundary_mask_for_rank = on_boundary_mask_for_rank_;
+    this->inside_boundary_mask_for_rank = inside_boundary_mask_for_rank_;
+    this->on_boundary_mask = on_boundary_mask_;
+    this->outside_boundary_mask = outside_boundary_mask_;
 
     const auto avg = A.nonzeroes() / A.N();
-    for (const auto& [rank, mask] : *on_boundary_mask_for_rank) {
+    for (const auto& [rank, mask] : *on_boundary_mask_for_rank_) {
       auto& An = neumann_correction_matrices[rank];
       An.setBuildMode(Dune::BCRSMatrix<double>::implicit);
       An.setImplicitBuildModeParameters(avg, 0.4);
@@ -465,9 +465,9 @@ public:
     An.setSize(A.N(), A.M());
 
     for (auto ri = A.begin(); ri != A.end(); ++ri) {
-      if ((*on_boundary_mask)[ri.index()]) {
+      if ((*on_boundary_mask_)[ri.index()]) {
         for (auto ci = A[ri.index()].begin(); ci != A[ri.index()].end(); ++ci)
-          if ((*on_boundary_mask)[ci.index()]) An.entry(ri.index(), ci.index()) = 0.0;
+          if ((*on_boundary_mask_)[ci.index()]) An.entry(ri.index(), ci.index()) = 0.0;
       }
     }
     An.compress();
