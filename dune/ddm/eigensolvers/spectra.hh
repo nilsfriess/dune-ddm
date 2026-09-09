@@ -7,8 +7,12 @@
 #include "eigensolver_result.hh"
 #include "helpers.hh"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
 #include <Spectra/SymGEigsShiftSolver.h>
 #include <Spectra/Util/CompInfo.h>
+#pragma GCC diagnostic pop
 #include <algorithm>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/bvector.hh>
