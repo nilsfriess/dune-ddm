@@ -21,8 +21,8 @@
 	branch = releases/2.11
 [submodule "extern/dune-istl"]
 	path = extern/dune-istl
-	url = https://gitlab.dune-project.org/core/dune-istl.git
-	branch = releases/2.11
+	url = https://gitlab.dune-project.org/nils.friess/dune-istl.git
+	branch = fix/preconditioner-registry-unsupported-matrices
 [submodule "extern/dune-localfunctions"]
 	path = extern/dune-localfunctions
 	url = https://gitlab.dune-project.org/core/dune-localfunctions.git
