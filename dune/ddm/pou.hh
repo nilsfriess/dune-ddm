@@ -29,7 +29,7 @@ enum class PartitionOfUnityType : std::uint8_t {
   Standard, ///< Standard weighting: 1 divided by the number of subdomains sharing each DOF
   Distance, ///< Distance-based weighting: weighted by distance from subdomain boundary (Toselli & Widlund, p. 84)
   User,     ///< User provided the POU
-  MsFEM,    ///< MsFEM based, solves a boundary problem within the overlap region to define the POU
+  // MsFEM,    ///< MsFEM based, solves a boundary problem within the overlap region to define the POU
 };
 
 /** @brief Partition of unity class for overlapping domain decomposition
@@ -70,7 +70,7 @@ public:
       MPI_Abort(MPI_COMM_WORLD, 16);
     }
 
-    pou_vector_.resize(A.N()); // Initialize partition of unity vector
+    pou_vector_.resize(A.N()); // Initialize partition of unity vector  auto pou = std::make_shared<PartitionOfUnity>(*A, *comm, PartitionOfUnityType::Standard);
 
     // Identify boundary DOFs (except for trivial partition which doesn't need them)
     std::vector<bool> boundary_mask;
@@ -142,61 +142,62 @@ public:
           if (idx.local().attribute() != Dune::OwnerOverlapCopyAttributeSet::owner) pou_vector_[idx.local()] = 0;
       } break;
 
-      case PartitionOfUnityType::MsFEM: {
-        // Initialize distance array - boundary DOFs have distance 0
-        std::vector<int> boundary_dst(comm.indexSet().size(), std::numeric_limits<int>::max() - 1);
-        for (std::size_t i = 0; i < boundary_dst.size(); ++i)
-          if (boundary_mask[i]) boundary_dst[i] = 0;
+        // case PartitionOfUnityType::MsFEM: {
+        //   // Initialize distance array - boundary DOFs have distance 0
+        //   std::vector<int> boundary_dst(comm.indexSet().size(), std::numeric_limits<int>::max() - 1);
+        //   for (std::size_t i = 0; i < boundary_dst.size(); ++i)
+        //     if (boundary_mask[i]) boundary_dst[i] = 0;
 
-        // Compute distances using the distance induced by the matrix graph.
-        // TODO: The factor 4*overlap might be larger than necessary, iirc 2*overlap sometimes didn't produce the correct results.
-        for (int round = 0; round <= 4 * overlap; ++round) {
-          for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
-            // Update distance based on neighboring DOFs in the matrix graph
-            for (auto cIt = A[i].begin(); cIt != A[i].end(); ++cIt) boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cIt.index()] + 1);
-          }
-        }
+        //   // Compute distances using the distance induced by the matrix graph.
+        //   // TODO: The factor 4*overlap might be larger than necessary, iirc 2*overlap sometimes didn't produce the correct results.
+        //   for (int round = 0; round <= 4 * overlap; ++round) {
+        //     for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
+        //       // Update distance based on neighboring DOFs in the matrix graph
+        //       for (auto cIt = A[i].begin(); cIt != A[i].end(); ++cIt) boundary_dst[i] = std::min(boundary_dst[i], boundary_dst[cIt.index()] + 1);
+        //     }
+        //   }
 
-        std::vector<std::size_t> overlap_region;
-        overlap_region.reserve(boundary_dst.size());
+        //   std::vector<std::size_t> overlap_region;
+        //   overlap_region.reserve(boundary_dst.size());
 
-        const auto inner_dist = 2 * overlap - shrink;
-        const auto outer_dist = shrink;
-        for (std::size_t i = 0; i < boundary_dst.size(); ++i)
-          if (boundary_dst[i] >= outer_dist and boundary_dst[i] <= inner_dist) overlap_region.push_back(i);
+        //   const auto inner_dist = 2 * overlap - shrink;
+        //   const auto outer_dist = shrink;
+        //   for (std::size_t i = 0; i < boundary_dst.size(); ++i)
+        //     if (boundary_dst[i] >= outer_dist and boundary_dst[i] <= inner_dist) overlap_region.push_back(i);
 
-        std::vector<bool> inner_mask(overlap_region.size(), false);
-        std::vector<bool> outer_mask(overlap_region.size(), false);
-        for (std::size_t i = 0; i < overlap_region.size(); ++i) {
-          if (boundary_dst[overlap_region[i]] == outer_dist) outer_mask[i] = true;
-          if (boundary_dst[overlap_region[i]] == inner_dist) inner_mask[i] = true;
-        }
+        //   std::vector<bool> inner_mask(overlap_region.size(), false);
+        //   std::vector<bool> outer_mask(overlap_region.size(), false);
+        //   for (std::size_t i = 0; i < overlap_region.size(); ++i) {
+        //     if (boundary_dst[overlap_region[i]] == outer_dist) outer_mask[i] = true;
+        //     if (boundary_dst[overlap_region[i]] == inner_dist) inner_mask[i] = true;
+        //   }
 
-        auto Aovlp = ddm::extract_submatrix(A, overlap_region, overlap_region);
-        ddm::eliminate_dirichlet(Aovlp, outer_mask, false);
-        ddm::eliminate_dirichlet(Aovlp, inner_mask, false);
+        //   auto Aovlp = ddm::extract_submatrix(A, overlap_region, overlap_region);
+        //   ddm::eliminate_dirichlet(Aovlp, outer_mask, false);
+        //   ddm::eliminate_dirichlet(Aovlp, inner_mask, false);
 
-        Dune::UMFPack solver(Aovlp);
-        using Vector = Dune::BlockVector<Dune::FieldVector<typename Mat::field_type, 1>>;
-        Vector rhs(overlap_region.size());
-        rhs = 0;
-        for (std::size_t i = 0; i < overlap_region.size(); ++i)
-          if (inner_mask[i]) rhs[i] = 1;
+        //   Dune::UMFPack solver(Aovlp);
+        //   using Vector = Dune::BlockVector<Dune::FieldVector<typename Mat::field_type, 1>>;
+        //   Vector rhs(overlap_region.size());
+        //   rhs = 0;
+        //   for (std::size_t i = 0; i < overlap_region.size(); ++i)
+        //     if (inner_mask[i]) rhs[i] = 1;
 
-        Vector pou_overlap(overlap_region.size());
+        //   Vector pou_overlap(overlap_region.size());
 
-        Dune::InverseOperatorResult res;
-        solver.apply(pou_overlap, rhs, res);
+        //   Dune::InverseOperatorResult res;
+        //   solver.apply(pou_overlap, rhs, res);
 
-        std::size_t ovlp_count = 0;
-        for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
-          if (boundary_dst[i] < outer_dist) pou_vector_[i] = 0;
-          if (boundary_dst[i] > inner_dist) pou_vector_[i] = 1;
-          if (boundary_dst[i] >= outer_dist and boundary_dst[i] <= inner_dist) pou_vector_[i] = pou_overlap[ovlp_count++];
-        }
+        //   std::size_t ovlp_count = 0;
+        //   for (std::size_t i = 0; i < boundary_dst.size(); ++i) {
+        //     if (boundary_dst[i] < outer_dist) pou_vector_[i] = 0;
+        //     if (boundary_dst[i] > inner_dist) pou_vector_[i] = 1;
+        //     if (boundary_dst[i] >= outer_dist and boundary_dst[i] <= inner_dist) pou_vector_[i] = pou_overlap[ovlp_count++];
+        //   }
 
-        normalise(comm, boundary_mask);
-      } break;
+        //   normalise(comm, boundary_mask);
+        // }
+        // break;
 
       case PartitionOfUnityType::User: {
         TODO("Report an error here, POU type 'User' does not make sense with this constructor");
@@ -268,7 +269,7 @@ private:
     if (type_string == "trivial") return PartitionOfUnityType::Trivial;
     else if (type_string == "standard") return PartitionOfUnityType::Standard;
     else if (type_string == "distance") return PartitionOfUnityType::Distance;
-    else if (type_string == "msfem") return PartitionOfUnityType::MsFEM;
+    // else if (type_string == "msfem") return PartitionOfUnityType::MsFEM;
     else DUNE_THROW(Dune::Exception, "Unknown partition of unity type: " + type_string);
   }
 
