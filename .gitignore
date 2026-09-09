@@ -6,6 +6,9 @@ doc/xml/
 doc/html/
 doc/latex/
 doc/doxygen/
+doc/*.tag
+doc/doxygen-warnings.log
+doc/undocumented.log
 doc/_templates/ 
 doc/_static/
 doc/_build/
