@@ -11,12 +11,15 @@
 #include <dune/ddm/coarsespaces/coarse_spaces.hh>
 #include <dune/ddm/combined_preconditioner.hh>
 #include <dune/ddm/galerkin_preconditioner.hh>
+#include <dune/ddm/deferred_solver.hh>
 #include <dune/ddm/logger.hh>
 #include <dune/ddm/overlap_extension.hh>
 #include <dune/ddm/pdelab_helper.hh>
 #include <dune/ddm/pou.hh>
 #include <dune/ddm/schwarz.hh>
+#include <dune/istl/operators.hh>
 #include <dune/istl/preconditioner.hh>
+#include <dune/istl/solver.hh>
 #include <dune/pdelab/backend/interface.hh>
 
 template <class X, class Y = X>
@@ -25,7 +28,7 @@ public:
   using NativeVec = X;
   using NativeMat = Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>;
   using Communication = Dune::OwnerOverlapCopyCommunication<std::size_t, int>;
-  using FineLevel = SchwarzPreconditioner<NativeMat, NativeVec, Communication>;
+  using FineLevel = SchwarzPreconditioner<NativeMat, NativeVec>;
   using CoarseLevel = GalerkinPreconditioner<NativeVec, Communication>;
 
   template <class GridView, class Traits>
@@ -61,8 +64,7 @@ public:
     // altogether. Everything else about the coarse space is unchanged, which is what makes a
     // comparison against neumann = assembled isolate exactly the effect of the approximation.
     const bool algebraic_neumann = neumann == "algebraic";
-    if (not algebraic_neumann and neumann != "assembled")
-      DUNE_THROW(Dune::NotImplemented, "Unknown coarsespace.neumann mode: " + neumann + " (expected 'assembled' or 'algebraic')");
+    if (not algebraic_neumann and neumann != "assembled") DUNE_THROW(Dune::NotImplemented, "Unknown coarsespace.neumann mode: " + neumann + " (expected 'assembled' or 'algebraic')");
     if (algebraic_neumann) {
       // On a ring region the Neumann matrix is indexed by the ring rather than by the subdomain, and
       // the outer ring boundary coincides with the subdomain boundary, so the correction would have to
@@ -142,29 +144,41 @@ public:
         if (problem.get_overlapping_dirichlet_mask()[i] > 0) x[i] = 0;
     };
 
-    // Create an A_dir matrix that corresponds to A_sub with subdomain boundary dofs eliminated
-    auto A_dir = std::make_shared<NativeMat>(*A_sub);
-    if (not Traits::is_dg) eliminate_dirichlet(*A_dir, boundary_mask, false); // false => don't eliminate symetrically
+    // Create a solver for the matrix A_dir (which is A_sub but with subdomain boundary dofs eliminated).
+    // This solver is needed for some of the coarse spaces.
+    using HarmonicExtensionSolver = Dune::InverseOperator<NativeVec, NativeVec>;
+    std::shared_ptr<HarmonicExtensionSolver> harmonic_extension_solver;
+    if ((domain == "ring" and constraint == "none") or (domain == "full" and constraint == "harmonic") or (domain == "ring" and constraint == "harmonic")) {
+      auto A_dir = std::make_shared<NativeMat>(*A_sub);
+      if (not Traits::is_dg) eliminate_dirichlet(*A_dir, boundary_mask, false); // false => don't eliminate symetrically
 
-    // Create fine level Schwarz preconditioner
-    logger::debug("Setting up fine level Schwarz preconditioner");
-    auto schwarz = std::make_shared<FineLevel>(A_dir, ovlp_comm_, pou_, ptree);
+      using Op = Dune::MatrixAdapter<NativeMat, NativeVec, NativeVec>;
+      Dune::initSolverFactories<Op>();
+      auto op = std::make_shared<Op>(A_dir);
+
+      // TODO: Introduce a way to define default parameters for solvers (maybe just a free function sub_or_default)
+      const auto& harmonic_extension_solver_subtree = ptree.sub("harmonic_extension_solver");
+      harmonic_extension_solver = ddm::getDeferredSolverFromFactory(op, harmonic_extension_solver_subtree);
+    }
 
     std::string coarse_space_ptree_prefix = "coarsespace";
 
     if (domain == "full" and constraint == "none") { coarse_space = build_geneo_coarse_space(*A_neu, *B_neu, *pou_, ptree, coarse_space_ptree_prefix); }
     else if (domain == "ring" and constraint == "none") {
       coarse_space =
-          build_geneo_ring_coarse_space(*A_neu, *B_neu, problem.get_neumann_region_to_subdomain(), *pou_, *A_sub, ptree, coarse_space_ptree_prefix, schwarz->get_solver().get(), boundary_mask);
+          build_geneo_ring_coarse_space(*A_neu, *B_neu, problem.get_neumann_region_to_subdomain(), *pou_, *A_sub, ptree, coarse_space_ptree_prefix, harmonic_extension_solver.get(), boundary_mask);
     }
     else if (domain == "full" and constraint == "harmonic") {
-      coarse_space = build_msgfem_coarse_space(*A_neu, *pou_, boundary_mask, ptree, coarse_space_ptree_prefix, A_sub.get(), dirichlet_mask, schwarz->get_solver().get());
+      coarse_space = build_msgfem_coarse_space(*A_neu, *pou_, boundary_mask, ptree, coarse_space_ptree_prefix, A_sub.get(), dirichlet_mask, harmonic_extension_solver.get());
     }
     else if (domain == "ring" and constraint == "harmonic") {
       coarse_space = build_msgfem_ring_coarse_space(*A_neu, problem.get_neumann_region_to_subdomain(), *pou_, *A_sub, dirichlet_mask, boundary_mask, ptree, coarse_space_ptree_prefix,
-                                                    schwarz->get_solver().get());
+                                                    harmonic_extension_solver.get());
     }
     else DUNE_THROW(Dune::NotImplemented, "Unknown coarse space configuration: domain=" + domain + ", constraint=" + constraint);
+
+    // Release the harmonic_extension_solver which is only needed for the eigenproblems
+    harmonic_extension_solver.reset();
 
     if (!coarse_space.basis.empty()) {
       basis_ = std::move(coarse_space.basis);
@@ -183,7 +197,7 @@ public:
     logger::debug("Setting up combined preconditioner");
     combined_prec_ = std::make_shared<CombinedPreconditioner<NativeVec>>(ptree);
     combined_prec_->set_op(novlp_op_);
-    combined_prec_->add(schwarz);
+    combined_prec_->add(std::make_shared<FineLevel>(A_sub, *ovlp_comm_, pou_, ptree));
     if (coarse) combined_prec_->add(coarse);
 
     logger::debug("TwoLevelSchwarzPreconditioner setup complete");
