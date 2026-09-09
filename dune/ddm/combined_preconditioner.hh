@@ -2,13 +2,12 @@
 
 #include "logger.hh"
 
+#include <cstdint>
 #include <dune/common/exceptions.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/istl/io.hh>
 #include <dune/istl/operators.hh>
 #include <dune/istl/preconditioner.hh>
-
-#include <cstdint>
 #include <memory>
 #include <mpi.h>
 #include <string>
@@ -51,9 +50,9 @@ public:
    *
    * @throws Dune::NotImplemented if an unknown mode is specified
    */
-  explicit CombinedPreconditioner(const Dune::ParameterTree &ptree, const std::string &subtree_name = "combined_preconditioner")
+  explicit CombinedPreconditioner(const Dune::ParameterTree& ptree, const std::string& subtree_name = "combined_preconditioner")
   {
-    const auto &subtree = subtree_name.size() == 0 ? ptree : ptree.sub(subtree_name);
+    const auto& subtree = subtree_name.size() == 0 ? ptree : ptree.sub(subtree_name);
     const auto mode_string = subtree.get("mode", "additive");
 
     if (mode_string == "additive") {
@@ -73,9 +72,7 @@ public:
 
   Dune::SolverCategory::Category category() const override
   {
-    if (precs.size() == 0) {
-      DUNE_THROW(Dune::Exception, "ERROR: No preconditioners added yet, add them using the `add` method");
-    }
+    if (precs.size() == 0) DUNE_THROW(Dune::Exception, "ERROR: No preconditioners added yet, add them using the `add` method");
 
     return precs[0]->category();
   }
@@ -90,9 +87,7 @@ public:
   void add(std::shared_ptr<Dune::Preconditioner<X, Y>> prec)
   {
     if (precs.size() > 0) {
-      if (prec->category() != precs[0]->category()) {
-        DUNE_THROW(Dune::Exception, "ERROR: Categories of the new preconditioner does not match");
-      }
+      if (prec->category() != precs[0]->category()) DUNE_THROW(Dune::Exception, "ERROR: Categories of the new preconditioner does not match");
     }
     precs.push_back(prec);
 
@@ -108,23 +103,19 @@ public:
    *
    * @param A The linear operator
    */
-  void set_op(std::shared_ptr<Dune::LinearOperator<X, Y>> A) { this->A = A; }
+  void set_op(std::shared_ptr<Dune::LinearOperator<X, Y>> A_) { this->A = std::move(A_); }
 
-  void pre(X &x, Y &y) override
+  void pre(X& x, Y& y) override
   {
-    for (auto &prec : precs) {
-      prec->pre(x, y);
-    }
+    for (auto& prec : precs) prec->pre(x, y);
   }
 
-  void post(X &x) override
+  void post(X& x) override
   {
-    for (auto &prec : precs) {
-      prec->post(x);
-    }
+    for (auto& prec : precs) prec->post(x);
   }
 
-  void apply(X &x, const Y &d) override
+  void apply(X& x, const Y& d) override
   {
     Logger::ScopedLog se(apply_event);
 
@@ -142,9 +133,7 @@ public:
       }
     }
     else if (mode == ApplyMode::Multiplicative) {
-      if (!A) {
-        DUNE_THROW(Dune::Exception, "ERROR: ApplyMode is multiplicative but operator A is not provided. Set with `set_op`");
-      }
+      if (!A) DUNE_THROW(Dune::Exception, "ERROR: ApplyMode is multiplicative but operator A is not provided. Set with `set_op`");
 
       Y dnext(d);
       for (std::size_t i = 1; i < precs.size(); ++i) {
@@ -176,5 +165,5 @@ private:
   std::shared_ptr<Dune::LinearOperator<X, Y>> A;
 
   /** @brief Logging event for timing the apply method */
-  Logger::Event *apply_event{};
+  Logger::Event* apply_event{};
 };
