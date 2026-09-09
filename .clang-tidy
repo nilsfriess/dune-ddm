@@ -1,4 +1,12 @@
 ---
+# Noise suppression: start from everything, turn off whole modules/groups that are pure
+# style churn for this codebase, and re-enable only specific valuable checks.
+#
+# Later glob entries win: '-modernize-*' turns off nearly all of the 'modernize' module
+# (C arrays -> std::array, pass-by-value rewrites, emplace{} vs push_back{},
+# std::ranges algorithms, designated initializers, macro->enum, trailing return types,
+# [[nodiscard]] everywhere, auto-everything, ...); the six entries directly after it
+# whitelist the few genuinely useful ones back in.
 Checks: "*,
         performance-*,
         clang-analyzer-*,
@@ -10,8 +18,13 @@ Checks: "*,
         -google-*,
         -llvm*,
         -boost*,
-        -modernize-use-trailing-return-type,
-	-modernize-use-nodiscard,
+        -modernize-*,
+        modernize-use-override,
+        modernize-use-equals-default,
+        modernize-use-equals-delete,
+        modernize-use-nullptr,
+        modernize-use-using,
+        modernize-loop-convert,
         -zircon-*,
         -readability-else-after-return,
         -readability-static-accessed-through-instance,
@@ -27,6 +40,8 @@ Checks: "*,
         -readability-convert-member-functions-to-static,
         -readability-math-missing-parentheses,
         -bugprone-easily-swappable-parameters,
+        -cppcoreguidelines-avoid-c-arrays,
+        -cppcoreguidelines-init-variables,
         -cppcoreguidelines-avoid-do-while,
         -cert-err09-cpp,
         -cert-err61-cpp,
