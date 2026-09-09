@@ -1,10 +1,7 @@
-
 #if HAVE_CONFIG_H
 #include "config.h"
 #endif
 
-#include "dune/ddm/sycl/vec.hh"
-  
 #include "dune/ddm/combined_preconditioner.hh"
 #include "dune/ddm/communication.hh"
 #include "dune/ddm/consistent_parallel_matrix_operator.hh"
@@ -13,6 +10,7 @@
 #include "dune/ddm/pou.hh"
 #include "dune/ddm/schwarz.hh"
 #include "dune/ddm/sycl/mat.hh"
+#include "dune/ddm/sycl/vec.hh"
 #include "test_utils.hh"
 
 #include <cstddef>
@@ -230,7 +228,7 @@ bool solve_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<Communication>
   solver_tree["maxit"] = "1000";
   solver_tree["restart"] = "30";
 
-  using SchwarzPrec = SchwarzPreconditioner<Matrix, Vector>;
+  using SchwarzPrec = ddm::SchwarzPreconditioner<Matrix, Vector>;
   using GalerkinPrec = GalerkinPreconditioner<Vector, Communication>;
   using Prec = CombinedPreconditioner<Vector>;
 
@@ -239,15 +237,12 @@ bool solve_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<Communication>
   // Build fine-level preconditioner
   Dune::ParameterTree schwarz_tree;
   schwarz_tree["schwarz.type"] = "standard";
-  schwarz_tree["schwarz.subdomain_solver.type"] = "umfpack";
-  auto fine_prec = std::make_shared<SchwarzPrec>(A, *comm, pou, schwarz_tree);
+  auto fine_prec = std::make_shared<SchwarzPrec>(A, *comm, *pou, schwarz_tree);
 
   // Build coarse-level preconditioner
-  Dune::ParameterTree galerkin_tree;
-  galerkin_tree["galerkin.type"] = "umfpack";
   Vector t(pou->vector().size());
   std::copy(pou->vector().begin(), pou->vector().end(), t.begin());
-  auto coarse_prec = std::make_shared<GalerkinPrec>(*A, std::vector<Vector>{t}, comm, galerkin_tree);
+  auto coarse_prec = std::make_shared<GalerkinPrec>(*A, std::vector<Vector>{t}, comm);
 
   // Combine the two in an additive way
   Dune::ParameterTree combined_tree;
@@ -255,6 +250,38 @@ bool solve_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<Communication>
   prec->add(fine_prec);
   prec->add(coarse_prec);
 
+  auto solver = Dune::getSolverFromFactory(op, solver_tree, prec);
+
+  // Solve the system
+  Dune::InverseOperatorResult res;
+  x = 0.;
+  auto rhs = b;
+  solver->apply(x, rhs, res);
+
+  return true;
+}
+
+template <class Communication, class VecCommunication, class Matrix, class Vector>
+bool solve_single_level_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<Communication>& comm, std::shared_ptr<VecCommunication>& vec_comm, std::shared_ptr<Matrix>& A, const Vector& b,
+                                Vector& x, std::shared_ptr<PartitionOfUnity> pou)
+{
+  using Operator = ConsistentParallelMatrixOperator<Matrix, Vector, Vector, VecCommunication>;
+  auto op = std::make_shared<Operator>(A, vec_comm);
+
+  Dune::initSolverFactories<Operator>();
+  Dune::ParameterTree solver_tree;
+  solver_tree["verbose"] = (helper.rank() == 0) ? "2" : "0";
+  solver_tree["type"] = "cgsolver";
+  solver_tree["reduction"] = "1e-8";
+  solver_tree["maxit"] = "1000";
+  solver_tree["restart"] = "30";
+
+  using SchwarzPrec = ddm::SchwarzPreconditioner<Matrix, Vector>;
+
+  // Build fine-level preconditioner
+  Dune::ParameterTree schwarz_tree;
+  schwarz_tree["schwarz.type"] = "standard";
+  auto prec = std::make_shared<SchwarzPrec>(A, *comm, *pou, schwarz_tree);
   auto solver = Dune::getSolverFromFactory(op, solver_tree, prec);
 
   // Solve the system
@@ -296,7 +323,7 @@ int main(int argc, char** argv)
     setup_loggers(helper.rank(), argc, argv);
 
     const int dim = 2;
-    const int gridsize = 256;
+    const int gridsize = 128;
     const int overlap = 4;
 
     // ----  Problem setup ----
@@ -343,8 +370,10 @@ int main(int argc, char** argv)
       SyclVec x(q, p.b.size());
       auto b = SyclVec::from_host_vector(q, p.b);
       auto A = std::make_shared<SyclMat>(SyclMat::from_bcrs(q, *p.A));
+      auto pou = std::make_shared<PartitionOfUnity>(*p.A, *comm, PartitionOfUnityType::Standard);
 
       solve_reference(helper, vec_comm, A, b, x);
+      solve_single_level_schwarz(helper, comm, vec_comm, A, b, x, pou);
     }
     // Both solves have to land on the same solution, up to the tolerance they were asked for.
     // auto diff = x;
