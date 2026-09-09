@@ -8,6 +8,7 @@
 #include "umfpack.hh"
 
 #include <cstdlib>
+#include <dune/ddm/deferred_solver.hh>
 #include <dune/ddm/logger.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/bvector.hh>
@@ -195,12 +196,17 @@ template <class Mat, class Scalar = typename Mat::field_type>
 }
 
 template <class Mat, class Scalar = typename Mat::field_type>
-[[nodiscard]] ddm::GevpSolution<Scalar>
-trl_gevp(const Mat& A, const Mat& B, Dune::InverseOperator<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>, Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>* constraint_solver,
-         const std::vector<bool>& subdomain_boundary, const EigensolverParams& params)
+[[nodiscard]] ddm::GevpSolution<Scalar> trl_gevp(const Mat& A, const Mat& B,
+                                                 Dune::InverseOperator<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>, Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>* constraint_solver,
+                                                 const std::vector<bool>& subdomain_boundary, const EigensolverParams& params)
 {
   constexpr unsigned int blocksize = 1;
   using EVP = TRLGEVP<Mat, blocksize>;
+
+  // The solver that is passed must either be a UMFPackSolver or a
+  // compatible DeferredSolver with the inner solver type being an UMFPack solver
+  using Operator = Dune::MatrixAdapter<Mat, Dune::BlockVector<Dune::FieldVector<Scalar, 1>>, Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>;
+  if (auto deferred_solver = dynamic_cast<ddm::DeferredSolver<Operator>*>(constraint_solver)) constraint_solver = deferred_solver->get_solver().get();
 
   if (auto umfpack_constraint_solver = dynamic_cast<Dune::UMFPack<Mat>*>(constraint_solver)) {
     auto evp = std::make_shared<EVP>(A, B, *umfpack_constraint_solver, &subdomain_boundary, params.shift);
