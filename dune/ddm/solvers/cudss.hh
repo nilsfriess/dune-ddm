@@ -60,11 +60,13 @@ public:
     auto xx = vec_to_cudss(x);
     auto bb = vec_to_cudss(b);
 
+    q.wait();
     CUDSS_CHECK(cudssExecute(handle, CUDSS_PHASE_ANALYSIS, solver_config, solver_data, a, xx, bb), "cudssExecute for analysis");
     CUDSS_CHECK(cudssExecute(handle, CUDSS_PHASE_FACTORIZATION, solver_config, solver_data, a, xx, bb), "cudssExecute for factor");
 
     CUDSS_CHECK(cudssMatrixDestroy(xx), "cudssMatrixDestroy for xx");
     CUDSS_CHECK(cudssMatrixDestroy(bb), "cudssMatrixDestroy for bb");
+    q.wait();
   }
 
   void apply(Vec& x, Vec& b, Dune::InverseOperatorResult& res) override
