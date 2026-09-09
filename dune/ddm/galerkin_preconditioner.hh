@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dune/ddm/factory.hh"
 #include "helpers.hh"
 #include "logger.hh"
 
@@ -185,7 +186,7 @@ public:
    *         provides a template vector at all, or if the coarse solver is not configured
    */
   template <class Mat>
-  GalerkinPreconditioner(const Mat& A, const std::vector<Vec>& ts, std::shared_ptr<Communication> comm, const Dune::ParameterTree& ptree, const std::string& subtree_name = "galerkin")
+  GalerkinPreconditioner(const Mat& A, const std::vector<Vec>& ts, std::shared_ptr<Communication> comm, const Dune::ParameterTree& ptree = {}, const std::string& subtree_name = "galerkin")
       : comm(std::move(comm))
       , n(A.N())
       , d_ovlp(n)
@@ -445,12 +446,8 @@ private:
       Dune::initSolverFactories<Op>();
       auto op = std::make_shared<Op>(a0);
 
-      // Since the error message that Dune gives us when there is no 'type' key in the solver subtree
-      // is useless, we check ourselves first and tell the user what they need to do.
       const auto& subtree = solver_subtree_name.size() == 0 ? solver_ptree : solver_ptree.sub(solver_subtree_name);
-      if (not subtree.hasKey("type"))
-        DUNE_THROW(Dune::Exception, "You must specify the solver in the subtree " << get_parameter_tree_prefix(solver_ptree) << solver_subtree_name << " using the key 'type'");
-      solver = Dune::getSolverFromFactory(op, subtree);
+      solver = ddm::getDirectSolverFromFactory(op, subtree);
     }
     Logger::get().endEvent(factor_A0);
   }
