@@ -16,6 +16,7 @@ template <class Scalar, class Index = std::uint_least32_t>
 class Mat {
 public:
   using block_type = Scalar;
+  using field_type = Scalar;
   using index_type = Index;
   using allocator_type = std::allocator<Scalar>;
 

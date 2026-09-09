@@ -5,9 +5,17 @@
 
 #include <sycl/sycl.hpp>
 
+namespace ddm::Sycl {
+template <class Scalar, class Index>
+class Mat;
+template <class Scalar, class Index>
+class Vec;
+} // namespace ddm::Sycl
+
 namespace ddm::backend {
 struct SyclBackend {
   using context_type = sycl::queue;
+  static constexpr bool is_device = true;
 
   template <class Container>
   static context_type context(const Container& c)
@@ -93,5 +101,15 @@ struct SyclBackend {
     auto ctx = context(x);
     ctx.parallel_for(sycl::range<1>(x.size()), [=](auto id) { yd[id] *= xd[id]; });
   }
+};
+
+template <class S, class I>
+struct backend_traits<ddm::Sycl::Mat<S, I>> {
+  using type = SyclBackend;
+};
+
+template <class S, class I>
+struct backend_traits<ddm::Sycl::Vec<S, I>> {
+  using type = SyclBackend;
 };
 } // namespace ddm::backend

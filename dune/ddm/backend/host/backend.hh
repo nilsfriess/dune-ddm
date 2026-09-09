@@ -1,7 +1,8 @@
 #pragma once
 
-#include "../backend.hh"
 #include "../../types.hh"
+#include "../backend.hh"
+#include "dune/ddm/helpers.hh"
 
 #include <algorithm>
 #include <dune/istl/bvector.hh>
@@ -11,6 +12,7 @@
 namespace ddm::backend {
 struct HostBackend {
   using context_type = std::monostate;
+  static constexpr bool is_device = false;
 
   template <class Container>
   static context_type context(const Container&)
@@ -77,6 +79,14 @@ struct HostBackend {
     std::copy_n(src.data(), n, dst.data());
   }
 
+  template <class V>
+  static void pointwise_mult(const V& x, V& y)
+  {
+    DDM_CHECK(x.size() == y.size(), "Vectors in pointwise_mult do not match");
+
+    for (std::size_t i = 0; i < x.size(); ++i) y[i] *= x[i];
+  }
+
   // template <class T>
   // static void copy_at_indices(const buffer_type<T>& src, const buffer_type<int>& indices, buffer_type<T>& dst)
   // {
@@ -88,7 +98,7 @@ template <class B, class A>
 struct backend_traits<std::vector<B, A>> {
   using type = HostBackend;
 };
-  
+
 template <class B, class A>
 struct backend_traits<Dune::BlockVector<B, A>> {
   using type = HostBackend;

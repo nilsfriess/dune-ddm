@@ -20,12 +20,13 @@ template <class T>
 using backend_of_t = backend_of<std::remove_cvref_t<T>>::type;
 
 /// The type of the elements a container stores, deduced from what data() points at.
-///
-/// This is deliberately not `T::value_type`: it is exactly the type the backend's gather/scatter
-/// primitives operate on, and it works uniformly for containers that name their scalar differently
-/// (ddm::Sycl::Vec calls it field_type) or not at all.
 template <class T>
 using element_of_t = std::remove_cv_t<std::remove_pointer_t<decltype(std::declval<T&>().data())>>;
+
+/// True if T's storage lives on a device rather than in host memory.
+/// False for any T without a backend_traits specialization
+template <class T>
+concept IsGpuResident = requires { requires backend_traits<std::remove_cvref_t<T>>::is_device; };
 
 template <class T, class Backend>
 class Buffer {

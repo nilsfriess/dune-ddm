@@ -2,6 +2,7 @@
 
 #include "dune/ddm/backend/backend.hh"
 #include "dune/ddm/backend/host/backend.hh"
+#include "dune/ddm/backend/sycl/backend.hh"
 #include "logger.hh"
 #include "types.hh"
 

@@ -7,11 +7,12 @@
     and restricted additive Schwarz methods for domain decomposition preconditioning.
 */
 
-#include "backend/host/backend.hh"
+#include "backend/backend.hh"
 #include "communication.hh"
-#include "helpers.hh"
+#include "factory.hh"
 #include "logger.hh"
 #include "pou.hh"
+#include "vector_factory.hh"
 
 #include <cstddef>
 #include <cstdint>
@@ -26,6 +27,8 @@
 #include <dune/istl/umfpack.hh>
 #include <memory>
 #include <mpi.h>
+
+namespace ddm {
 
 /**
  * @brief Type of Schwarz domain decomposition method.
@@ -47,7 +50,6 @@ enum class SchwarzType : std::uint8_t {
  *
  * @tparam Vec Vector type for the linear system
  * @tparam Mat Matrix type for the linear system
- * @tparam Communication A communication object, e.g. ISTL's OwnerOverlapCopyCommunication
  */
 template <class Mat, class Vec>
 class SchwarzPreconditioner : public Dune::Preconditioner<Vec, Vec> {
@@ -70,11 +72,10 @@ public:
    * @param subtree_name Name of the subtree containing Schwarz parameters
    */
   template <class OwnerOverlapCopyCommunication>
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const OwnerOverlapCopyCommunication& oocc, std::shared_ptr<PartitionOfUnity> pou, const Dune::ParameterTree& ptree,
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const OwnerOverlapCopyCommunication& oocc, const PartitionOfUnity& pou, const Dune::ParameterTree& ptree,
                         const std::string& subtree_name = "schwarz", const std::string& solver_subtree_name = "subdomain_solver")
       : Aovlp(std::move(Aovlp))
-      , comm(ddm::make_communication_from_dune(oocc))
-      , pou(std::move(pou))
+      , comm(make_communication_from_dune(oocc))
   {
     auto* init_event = Logger::get().registerOrGetEvent("Schwarz", "init");
     Logger::ScopedLog sl(init_event);
@@ -87,23 +88,22 @@ public:
 
     Dune::initSolverFactories<Op>();
     auto op = std::make_shared<Op>(this->Aovlp);
-    // Since the error message that Dune gives us when there is no 'type' key in the solver_subtree
-    // is useless, we check ourselves first and tell the user what they need to do.
-    const auto& solver_subtree = subtree.sub(solver_subtree_name);
-    if (not solver_subtree.hasKey("type"))
-      DUNE_THROW(Dune::Exception, "You must specify the solver in the subtree " << get_parameter_tree_prefix(ptree) << subtree_name << "." << solver_subtree_name << " using the key 'type'");
+    // if (not solver_subtree.hasKey("type"))
+    //   DUNE_THROW(Dune::Exception, "You must specify the solver in the subtree " << get_parameter_tree_prefix(ptree) << subtree_name << "." << solver_subtree_name << " using the key 'type'");
 
-    // We also handle one special case ourselves, namely a solver named umfpack_metis
-    // which we define as UMFPack with METIS reordering
-    if (solver_subtree["type"] == "umfpack_metis") {
-      solver = std::make_shared<Dune::UMFPack<Mat>>();
-      auto umfpack_solver = std::dynamic_pointer_cast<Dune::UMFPack<Mat>>(solver);
-      umfpack_solver->setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
-      umfpack_solver->setOption(UMFPACK_IRSTEP, 0); // Disable iterative refinement for performance
-      umfpack_solver->setMatrix(*this->Aovlp);
-    }
-    else solver = Dune::getSolverFromFactory(op, solver_subtree);
-    init();
+    const auto& solver_subtree = subtree.sub(solver_subtree_name);
+    solver = getDirectSolverFromFactory(op, solver_subtree);
+    // // We also handle one special case ourselves, namely a solver named umfpack_metis
+    // // which we define as UMFPack with METIS reordering
+    // if (solver_subtree["type"] == "umfpack_metis") {
+    //   solver = std::make_shared<Dune::UMFPack<Mat>>();
+    //   auto umfpack_solver = std::dynamic_pointer_cast<Dune::UMFPack<Mat>>(solver);
+    //   umfpack_solver->setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
+    //   umfpack_solver->setOption(UMFPACK_IRSTEP, 0); // Disable iterative refinement for performance
+    //   umfpack_solver->setMatrix(*this->Aovlp);
+    // }
+    // else solver = Dune::getSolverFromFactory(op, solver_subtree);
+    init(pou);
   }
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::overlapping; }
@@ -150,8 +150,9 @@ public:
     Logger::get().startEvent(add_solution_event);
     if (type == SchwarzType::Standard) { comm.reduce(*x_ovlp); }
     else if (type == SchwarzType::Restricted) {
-      if (pou)
-        for (std::size_t i = 0; i < pou->size(); ++i) (*x_ovlp)[i] *= (*pou)[i];
+      if (pou_vec) Backend::pointwise_mult(*pou_vec, *x_ovlp);
+      // for (std::size_t i = 0; i < pou->size(); ++i) (*x_ovlp)[i] *= (*pou)[i];
+
       comm.reduce(*x_ovlp);
     }
 
@@ -171,7 +172,7 @@ private:
   /** @brief Initialize the preconditioner.
    *
    */
-  void init()
+  void init(const PartitionOfUnity& pou)
   {
     logger::debug("Setting up Schwarz preconditioner in {} mode", type == SchwarzType::Standard ? "standard" : "restricted");
 
@@ -180,18 +181,22 @@ private:
     get_defect_event = Logger::get().registerOrGetEvent("Schwarz", "get defect");
     add_solution_event = Logger::get().registerOrGetEvent("Schwarz", "add solution");
 
-    d_ovlp = std::make_unique<Vec>(Aovlp->N());
-    x_ovlp = std::make_unique<Vec>(Aovlp->N());
+    d_ovlp = std::make_unique<Vec>(create_vector_for_matrix(*Aovlp));
+    x_ovlp = std::make_unique<Vec>(create_vector_for_matrix(*Aovlp));
+    // d_ovlp = std::make_unique<Vec>(Aovlp->N());
+    // x_ovlp = std::make_unique<Vec>(Aovlp->N());
+
+    pou_vec = std::make_unique<Vec>(create_vector_like_from_host(*d_ovlp, pou.vector()));
   }
 
   std::shared_ptr<Mat> Aovlp; ///< Overlapping subdomain matrix
-  ddm::Communication comm;
+  Communication comm;
 
   std::shared_ptr<Solver> solver; ///< Local subdomain solver
   std::unique_ptr<Vec> d_ovlp;    ///< Defect on overlapping index set
   std::unique_ptr<Vec> x_ovlp;    ///< Solution on overlapping index set
 
-  std::shared_ptr<PartitionOfUnity> pou{nullptr}; ///< Partition of unity (might be null)
+  std::unique_ptr<Vec> pou_vec{nullptr}; ///< Partition of unity (might be null)
 
   SchwarzType type; ///< Type of Schwarz method (standard or restricted)
 
@@ -201,3 +206,5 @@ private:
   Logger::Event* get_defect_event{nullptr};      ///< Event for timing defect communication
   Logger::Event* add_solution_event{nullptr};    ///< Event for timing solution communication
 };
+
+} // namespace ddm

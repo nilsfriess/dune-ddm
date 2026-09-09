@@ -15,7 +15,7 @@ namespace ddm::Sycl {
  *  Data is allocated using SYCL's USM function sycl::malloc_device. It is assumed that the queue that is passed
  *  to the constructor is an in-order queue. Because of this assumption, most members don't call queue.wait()
  *  after enqueueing their operations; only operations that return values on the host (like dot() and two_norm())
- *  on the queue. The destructor also calls queue.wait().
+ *  The destructor also calls queue.wait() to ensure that memory that is used in queued kernels is not freed.
  *
  *  Methods that accept other Vec's as arguments must only be called for vectors that live on the same queue.
  */
@@ -243,11 +243,3 @@ private:
   field_type* red_host;
 };
 } // namespace ddm::Sycl
-
-namespace ddm::backend {
-template <class B, class A>
-struct backend_traits<ddm::Sycl::Vec<B, A>> {
-  using type = SyclBackend;
-};
-
-} // namespace ddm::backend
