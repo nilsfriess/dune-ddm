@@ -87,6 +87,14 @@ struct HostBackend {
     for (std::size_t i = 0; i < x.size(); ++i) y[i] *= x[i];
   }
 
+  template <class V>
+  static auto masked_dot(const V& x, const V& mask, const V& y)
+  {
+    auto tmp = x;
+    pointwise_mult(mask, tmp);
+    return tmp.dot(y);
+  }
+
   // template <class T>
   // static void copy_at_indices(const buffer_type<T>& src, const buffer_type<int>& indices, buffer_type<T>& dst)
   // {

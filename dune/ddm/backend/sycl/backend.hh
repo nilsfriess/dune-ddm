@@ -101,6 +101,12 @@ struct SyclBackend {
     auto ctx = context(x);
     ctx.parallel_for(sycl::range<1>(x.size()), [=](auto id) { yd[id] *= xd[id]; });
   }
+
+  template <class V>
+  static auto masked_dot(const V& x, const V& mask, const V& y)
+  {
+    return x.masked_dot(mask, y);
+  }
 };
 
 template <class S, class I>

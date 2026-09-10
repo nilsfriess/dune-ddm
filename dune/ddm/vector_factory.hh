@@ -38,15 +38,16 @@ auto create_vector_for_matrix(const ddm::Sycl::Mat<Scalar, Index>& A)
 }
 
 // TODO: Come up with some way to not copy here
-template <class F, class Allocator>
-auto create_vector_like_from_host([[maybe_unused]] const Dune::BlockVector<F, Allocator>& template_vector, const Dune::BlockVector<F, Allocator>& host_vector)
+template <class Container, class F, class Allocator>
+auto create_vector_like_from_host([[maybe_unused]] const Dune::BlockVector<F, Allocator>& template_vector, const Container& host_vector)
 {
-  return host_vector;
+  Dune::BlockVector<F, Allocator> v(host_vector.size());
+  std::copy_n(host_vector.data(), host_vector.size(), v.data());
+  return v;
 }
 
-// TODO: Come up with some way to not copy here
-template <class F, class Allocator, class Scalar, class Index>
-auto create_vector_like_from_host(const Sycl::Vec<Scalar, Index>& template_vector, const Dune::BlockVector<F, Allocator>& host_vector)
+template <class Container, class Scalar, class Index>
+auto create_vector_like_from_host(const Sycl::Vec<Scalar, Index>& template_vector, const Container& host_vector)
 {
   return Sycl::Vec<Scalar, Index>::from_host_vector(template_vector.queue(), host_vector);
 }

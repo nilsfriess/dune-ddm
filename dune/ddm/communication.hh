@@ -5,6 +5,7 @@
 #include "dune/ddm/backend/sycl/backend.hh"
 #include "logger.hh"
 #include "types.hh"
+#include "vector_factory.hh"
 
 #include <algorithm>
 #include <cstddef>
@@ -716,7 +717,8 @@ public:
   {
     using Backend = backend::backend_of_t<Vector>;
     auto exchanger = exchanger_for<Vector>();
-    exchanger->broadcast_begin(Backend::context(v), v.data());
+    using ptr = std::remove_const_t<std::remove_pointer_t<decltype(v.data())>>*;
+    exchanger->broadcast_begin(Backend::context(v), const_cast<ptr>(v.data()));
     return {std::move(exchanger), detail::PlanKind::Broadcast};
   }
 
@@ -734,7 +736,8 @@ public:
   {
     using Backend = backend::backend_of_t<Vector>;
     auto exchanger = exchanger_for<Vector>();
-    exchanger->reduce_begin(Backend::context(v), v.data(), op);
+    using ptr = std::remove_const_t<std::remove_pointer_t<decltype(v.data())>>*;
+    exchanger->reduce_begin(Backend::context(v), const_cast<ptr>(v.data()), op);
     return {std::move(exchanger), detail::PlanKind::Reduction};
   }
 
@@ -760,12 +763,10 @@ public:
   template <class Vector>
   void dot(const Vector& v, const Vector& w, typename Vector::field_type& result) const
   {
-    std::cout << "Communication::dot()\n";
-    // TOOD: This assumes that the vector is ddm::Sycl::Vec
-    static Vector mask = Vector::from_host_vector(v.queue(), owner_mask);
+    static Vector mask = create_vector_like_from_host(v, owner_mask);
 
     Logger::get().startEvent(dot_local_event);
-    result = v.masked_dot(mask, w);
+    result = backend::backend_of_t<Vector>::masked_dot(v, mask, w);
     Logger::get().endEvent(dot_local_event);
 
     Logger::get().startEvent(dot_allreduce_event);
