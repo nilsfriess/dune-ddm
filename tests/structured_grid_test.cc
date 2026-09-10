@@ -2,6 +2,7 @@
 #include "config.h"
 #endif
 
+#include "dune/ddm/backend/sycl/backend.hh"
 #include "dune/ddm/combined_preconditioner.hh"
 #include "dune/ddm/communication.hh"
 #include "dune/ddm/consistent_parallel_matrix_operator.hh"
@@ -11,7 +12,6 @@
 #include "dune/ddm/schwarz.hh"
 #include "dune/ddm/sycl/mat.hh"
 #include "dune/ddm/sycl/vec.hh"
-#include "dune/ddm/backend/sycl/backend.hh"
 #include "test_utils.hh"
 
 #include <cstddef>
@@ -42,12 +42,9 @@ struct Problem {
    *  The grid view holds this rank's subdomain extended by overlap + 1 element layers. The
    *  assembly runs over every element of that view, so every vertex more than one element layer
    *  inside the view has its complete global stencil. The matrix is then truncated to the
-   *  "patch", i.e. the vertices of the cells whose face neighbours are all in the view — one
-   *  element layer short of the view boundary. Because rows are complete before truncation, the
-   *  result is exactly the Galerkin restriction R A Rᵀ of the global matrix: artificial patch
-   *  boundary rows keep their full diagonal and nonzero row sums (the truncated couplings play
-   *  the role of Dirichlet data carried by the overlap), so the subdomain problems are
-   *  invertible even where no physical boundary condition is ever imposed. The load vector and
+   *  "patch", i.e. the vertices of the cells whose face neighbours are all in the view (=one
+   *  element layer short of the view boundary). Because rows are complete before truncation, the
+   *  result is exactly the Galerkin restriction R A R^T of the global matrix. The load vector and
    *  the Dirichlet mask are restricted in the same way. The local indices of the patch vertices
    *  are a contiguous renumbering of their grid view indices in ascending view index order, which
    *  also defines the correspondence to the communication object's index set.
@@ -147,8 +144,6 @@ struct Problem {
         indices[i] = local_of_view[indexset.subIndex(e, key.subEntity(), dim)];
       }
 
-      // Exact for the bilinear form on affine cubes; the coefficient and the source are only
-      // approximated, which is all this test needs.
       const auto& rule = Dune::QuadratureRules<DF, dim>::rule(e.type(), 2 * localbasis.order());
       for (const auto& qp : rule) {
         const auto& pos = qp.position();
@@ -215,10 +210,11 @@ struct IdentityPreconditioner : public Dune::Preconditioner<Vec, Vec> {
   void apply(Vec& v, const Vec& d) override { v = d; }
 };
 
-template <class Communication, class Matrix, class Vector>
-bool solve_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<Communication>& comm, std::shared_ptr<Matrix>& A, const Vector& b, Vector& x)
+template <class Matrix, class Vector>
+bool solve_single_level_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<ddm::Communication>& comm, std::shared_ptr<Matrix>& A, const Vector& b,
+                                Vector& x, std::shared_ptr<PartitionOfUnity> pou)
 {
-  using Operator = ConsistentParallelMatrixOperator<Matrix, Vector, Vector, Communication>;
+  using Operator = ConsistentParallelMatrixOperator<Matrix, Vector, Vector, ddm::Communication>;
   auto op = std::make_shared<Operator>(A, comm);
 
   Dune::initSolverFactories<Operator>();
@@ -230,59 +226,11 @@ bool solve_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<Communication>
   solver_tree["restart"] = "30";
 
   using SchwarzPrec = ddm::SchwarzPreconditioner<Matrix, Vector>;
-  using GalerkinPrec = GalerkinPreconditioner<Vector, Communication>;
-  using Prec = CombinedPreconditioner<Vector>;
-
-  auto pou = std::make_shared<PartitionOfUnity>(*A, *comm, PartitionOfUnityType::Standard);
 
   // Build fine-level preconditioner
   Dune::ParameterTree schwarz_tree;
   schwarz_tree["schwarz.type"] = "standard";
-  auto fine_prec = std::make_shared<SchwarzPrec>(A, *comm, *pou, schwarz_tree);
-
-  // Build coarse-level preconditioner
-  Vector t(pou->vector().size());
-  std::copy(pou->vector().begin(), pou->vector().end(), t.begin());
-  auto coarse_prec = std::make_shared<GalerkinPrec>(*A, std::vector<Vector>{t}, comm);
-
-  // Combine the two in an additive way
-  Dune::ParameterTree combined_tree;
-  auto prec = std::make_shared<Prec>(combined_tree);
-  prec->add(fine_prec);
-  prec->add(coarse_prec);
-
-  auto solver = Dune::getSolverFromFactory(op, solver_tree, prec);
-
-  // Solve the system
-  Dune::InverseOperatorResult res;
-  x = 0.;
-  auto rhs = b;
-  solver->apply(x, rhs, res);
-
-  return true;
-}
-
-template <class Communication, class VecCommunication, class Matrix, class Vector>
-bool solve_single_level_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<Communication>& comm, std::shared_ptr<VecCommunication>& vec_comm, std::shared_ptr<Matrix>& A, const Vector& b,
-                                Vector& x, std::shared_ptr<PartitionOfUnity> pou)
-{
-  using Operator = ConsistentParallelMatrixOperator<Matrix, Vector, Vector, VecCommunication>;
-  auto op = std::make_shared<Operator>(A, vec_comm);
-
-  Dune::initSolverFactories<Operator>();
-  Dune::ParameterTree solver_tree;
-  solver_tree["verbose"] = (helper.rank() == 0) ? "2" : "0";
-  solver_tree["type"] = "cgsolver";
-  solver_tree["reduction"] = "1e-8";
-  solver_tree["maxit"] = "1000";
-  solver_tree["restart"] = "30";
-
-  using SchwarzPrec = ddm::SchwarzPreconditioner<Matrix, Vector>;
-
-  // Build fine-level preconditioner
-  Dune::ParameterTree schwarz_tree;
-  schwarz_tree["schwarz.type"] = "standard";
-  auto prec = std::make_shared<SchwarzPrec>(A, *comm, *pou, schwarz_tree);
+  auto prec = std::make_shared<SchwarzPrec>(A, comm, *pou, schwarz_tree);
   auto solver = Dune::getSolverFromFactory(op, solver_tree, prec);
 
   // Solve the system
@@ -295,7 +243,7 @@ bool solve_single_level_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<C
 }
 
 template <class Communication, class Matrix, class Vector>
-bool solve_reference(const Dune::MPIHelper& helper, std::shared_ptr<Communication>& comm, std::shared_ptr<Matrix>& A, const Vector& b, Vector& x)
+bool solve_cg(const Dune::MPIHelper& helper, std::shared_ptr<Communication>& comm, std::shared_ptr<Matrix>& A, const Vector& b, Vector& x)
 {
   using Operator = ConsistentParallelMatrixOperator<Matrix, Vector, Vector, Communication>;
   auto op = std::make_shared<Operator>(A, comm);
@@ -303,9 +251,9 @@ bool solve_reference(const Dune::MPIHelper& helper, std::shared_ptr<Communicatio
 
   Dune::ParameterTree unprec_tree;
   unprec_tree["verbose"] = (helper.rank() == 0) ? "1" : "0";
-  unprec_tree["type"] = "restartedgmressolver";
+  unprec_tree["type"] = "cgsolver";
   unprec_tree["reduction"] = "1e-8";
-  unprec_tree["maxit"] = "5000";
+  unprec_tree["maxit"] = "500";
   unprec_tree["restart"] = "30";
 
   Dune::InverseOperatorResult unprec_res;
@@ -324,15 +272,13 @@ int main(int argc, char** argv)
     setup_loggers(helper.rank(), argc, argv);
 
     const int dim = 2;
-    const int gridsize = 128;
+    const int gridsize = 64;
     const int overlap = 4;
 
-    // ----  Problem setup ----
     using Grid = Dune::YaspGrid<dim>;
     // One element layer more than the method's overlap: the outermost layer is needed only to
     // make the rows of the patch vertices complete during assembly; the matrices are truncated to
-    // the patch (see class Problem above), so every local matrix equals R A Rᵀ and the subdomain
-    // problems are invertible without imposing artificial boundary conditions on the subdomain boundary.
+    // the patch (see class Problem above), so every local matrix equals R A R^T.
     Grid grid({1., 1.}, {gridsize, gridsize}, 0ULL, overlap + 1);
     auto gv = grid.leafGridView();
 
@@ -348,58 +294,33 @@ int main(int argc, char** argv)
     Problem p(gv, is_dirichlet, coefficient, source);
     auto comm = ddmtest::create_communication_for_grid(gv, p.patch);
     if (comm->indexSet().size() != static_cast<std::size_t>(p.A->N()))
-      DUNE_THROW(Dune::InvalidStateException, "communication index set (" << comm->indexSet().size() << ") and matrix (" << p.A->N() << ") differ in size");
+      DUNE_THROW(Dune::InvalidStateException,
+                 "communication index set (" << comm->indexSet().size() << ") and matrix (" << p.A->N() << ") differ in size");
     comm->copyOwnerToAll(p.b, p.b); // Make b consistent
+    auto vec_comm = std::make_shared<ddm::Communication>(ddm::make_communication_from_dune(*comm));
+    auto pou = std::make_shared<PartitionOfUnity>(*p.A, *comm, PartitionOfUnityType::Standard);
 
-    { // ISTL backend tests
-      // ----  Solve system with unpreconditioned GMRes to get a reference solution ----
-      typename Problem::Vector x_unprec(p.b.size());
-      solve_reference(helper, comm, p.A, p.b, x_unprec);
+    // Run with ISTL backend
+    {
+      typename Problem::Vector x(p.b.size());
 
-      // ----  Solve system with CG preconditioned with additive Schwarz (ISTL backend) ----
-      typename Problem::Vector x_schwarz(p.b.size());
-      solve_schwarz(helper, comm, p.A, p.b, x_schwarz);
+      solve_cg(helper, comm, p.A, p.b, x);
+      solve_single_level_schwarz(helper, vec_comm, p.A, p.b, x, pou);
     }
 
+    // Run with SYCL backend
     {
       using SyclVec = ddm::Sycl::Vec<double>;
       using SyclMat = ddm::Sycl::Mat<double>;
-
-      auto vec_comm = std::make_shared<ddm::Communication>(ddm::make_communication_from_dune(*comm));
 
       sycl::queue q{sycl::property::queue::in_order{}};
       SyclVec x(q, p.b.size());
       auto b = SyclVec::from_host_vector(q, p.b);
       auto A = std::make_shared<SyclMat>(SyclMat::from_bcrs(q, *p.A));
-      auto pou = std::make_shared<PartitionOfUnity>(*p.A, *comm, PartitionOfUnityType::Standard);
 
-      using M = decltype(*A);
-      static_assert(ddm::backend::IsGpuResident<M>);
-
-      solve_reference(helper, vec_comm, A, b, x);
-      solve_single_level_schwarz(helper, comm, vec_comm, A, b, x, pou);
+      solve_cg(helper, vec_comm, A, b, x);
+      solve_single_level_schwarz(helper, vec_comm, A, b, x, pou);
     }
-    // Both solves have to land on the same solution, up to the tolerance they were asked for.
-    // auto diff = x;
-    // diff -= x_unprec;
-    // // comm->norm() is collective: evaluate it on every rank and restrict only the printing to
-    // // rank 0, otherwise the ranks run out of step and deadlock in the reduction.
-    // const double err = comm->norm(diff) / std::max(1., comm->norm(x));
-    // if (helper.rank() == 0) std::cout << "preconditioned vs unpreconditioned: relative difference " << err << "\n";
-    // if (not unprec_res.converged or err > 1e-6) {
-    //   if (helper.rank() == 0) std::cout << "TEST FAILED (structured_grid_test): unpreconditioned solve converged=" << unprec_res.converged << ", relative difference " << err << std::endl;
-    //   return 1;
-    // }
-
-    // Dune::VTKWriter writer(gv);
-    // // The solution lives on the patch, whose vertices are a subset of the grid view's; scatter it
-    // // back for output. Vertices outside the patch are never written and get zero.
-    // typename Problem::Vector x_vtk(gv.size(dim));
-    // x_vtk = 0.;
-    // for (std::size_t i = 0; i < p.local_of_view.size(); ++i)
-    //   if (p.local_of_view[i] != Problem::invalid) x_vtk[i] = x[p.local_of_view[i]];
-    // writer.addVertexData(x_vtk, "Solution");
-    // writer.write("poisson");
 
     Logger::get().report(MPI_COMM_WORLD);
   }

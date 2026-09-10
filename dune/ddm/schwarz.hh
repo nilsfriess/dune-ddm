@@ -17,14 +17,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <dune/common/exceptions.hh>
-#include <dune/common/parallel/communicator.hh>
 #include <dune/common/parametertree.hh>
-#include <dune/istl/cholmod.hh>
 #include <dune/istl/io.hh>
 #include <dune/istl/operators.hh>
 #include <dune/istl/preconditioner.hh>
 #include <dune/istl/solver.hh>
-#include <dune/istl/umfpack.hh>
 #include <memory>
 #include <mpi.h>
 
@@ -71,12 +68,11 @@ public:
    * @param ptree Parameter tree containing configuration
    * @param subtree_name Name of the subtree containing Schwarz parameters
    */
-  template <class OwnerOverlapCopyCommunication>
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const OwnerOverlapCopyCommunication& oocc, const PartitionOfUnity& pou,
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, std::shared_ptr<Communication> comm, const PartitionOfUnity& pou,
                         const Dune::ParameterTree& ptree, const std::string& subtree_name = "schwarz",
                         const std::string& solver_subtree_name = "subdomain_solver")
       : Aovlp(std::move(Aovlp))
-      , comm(make_communication_from_dune(oocc))
+      , comm(std::move(comm))
   {
     auto* init_event = Logger::get().registerOrGetEvent("Schwarz", "init");
     Logger::ScopedLog sl(init_event);
@@ -123,7 +119,7 @@ public:
 
     // 2. Fetch the entries in the overlap region from the owner rank (by the general assumption of this module
     //    incoming defects are consistent, so it's sufficient to ask the owner for the value)
-    if (d.size() < d_ovlp->size()) comm.broadcast(*d_ovlp); // comm->copyOwnerToAll(*d_ovlp, *d_ovlp);
+    if (d.size() < d_ovlp->size()) comm->broadcast(*d_ovlp);
 
     Logger::get().endEvent(get_defect_event);
 
@@ -136,10 +132,10 @@ public:
 
     // 4. Make the solution consistent according to the type of the Schwarz method
     Logger::get().startEvent(add_solution_event);
-    if (type == SchwarzType::Standard) { comm.reduce(*x_ovlp); }
+    if (type == SchwarzType::Standard) { comm->reduce(*x_ovlp); }
     else if (type == SchwarzType::Restricted) {
       if (pou_vec) Backend::pointwise_mult(*pou_vec, *x_ovlp);
-      comm.reduce(*x_ovlp);
+      comm->reduce(*x_ovlp);
     }
 
     // 4. Restrict the solution to the non-overlapping subdomain
@@ -167,7 +163,7 @@ private:
   }
 
   std::shared_ptr<Mat> Aovlp; ///< Overlapping subdomain matrix
-  Communication comm;
+  std::shared_ptr<Communication> comm;
 
   std::shared_ptr<Solver> solver; ///< Local subdomain solver
   std::unique_ptr<Vec> d_ovlp;    ///< Defect on overlapping index set

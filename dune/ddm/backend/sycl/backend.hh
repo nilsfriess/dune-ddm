@@ -47,7 +47,7 @@ struct SyclBackend {
   }
 
   template <class T>
-  static void free([[maybe_unused]] context_type& ctx, T* p)
+  static void free(context_type& ctx, T* p)
   {
     ctx.wait();
     sycl::free(p, ctx);
