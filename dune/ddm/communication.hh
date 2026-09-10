@@ -54,7 +54,7 @@ inline std::vector<int> identify_neighbours(MPI_Comm comm, const std::vector<Com
 
   // Now v[rank] holds the number of incoming senders; post as many MPI_ANY_SOURCE receives as there are senders
   std::vector<MPI_Request> recv_reqs(v[rank]);
-  std::vector<int> recv_buf(v[rank], 1); // one dedicated buffer per receive: overlapping buffers are a formal MPI violation
+  std::vector<int> recv_buf(v[rank], 1);
   for (int i = 0; i < v[rank]; ++i) MPI_Irecv(recv_buf.data() + i, 1, MPI_INT, MPI_ANY_SOURCE, 0, comm, &recv_reqs[i]);
 
   // Post the corresponding sends
@@ -104,12 +104,13 @@ public:
     logger::trace_all("CommunicationPattern() neighbours: {}", logger::join(neighbours_));
 
     // Global ids are unique across all ranks, so the id alone identifies an entry of our roots
-    // array. Both plan builders need to translate ids they receive back into local indices.
+    // array. Both plan builders need to translate ids they receive back into local indices, so
+    // just build a global-to-local map here.
     std::unordered_map<std::int64_t, int> gid_to_local;
     gid_to_local.reserve(roots.size());
     for (std::size_t i = 0; i < roots.size(); ++i) gid_to_local[roots[i].gid] = (int)i;
 
-    build_broadcast_plan(roots, gid_to_local);
+    build_broadcast_plan(roots, gid_to_local); // this must go first because the reduction plan uses the broadcast plan
     build_reduction_plan(roots, gid_to_local);
   }
 
@@ -173,7 +174,8 @@ private:
     for (auto neighbour : neighbours_) {
       if (leave_count[neighbour] > 0) {
         leaves[neighbour].resize(leave_count[neighbour]);
-        MPI_Irecv(leaves[neighbour].data(), leave_count[neighbour], Dune::MPITraits<std::int64_t>::getType(), neighbour, 2, comm, &reqs.emplace_back());
+        MPI_Irecv(leaves[neighbour].data(), leave_count[neighbour], Dune::MPITraits<std::int64_t>::getType(), neighbour, 2, comm,
+                  &reqs.emplace_back());
       }
     }
 
@@ -194,7 +196,8 @@ private:
       count++;
     }
 
-    for (const auto& [peer, data] : leaves_data) MPI_Isend(data.data(), (int)data.size(), Dune::MPITraits<std::int64_t>::getType(), peer, 2, comm, &reqs.emplace_back());
+    for (const auto& [peer, data] : leaves_data)
+      MPI_Isend(data.data(), (int)data.size(), Dune::MPITraits<std::int64_t>::getType(), peer, 2, comm, &reqs.emplace_back());
     MPI_Waitall((int)reqs.size(), reqs.data(), MPI_STATUSES_IGNORE);
 
     // The indices in the leaves map use global ids. We need to convert them into local numbering on
@@ -252,14 +255,12 @@ private:
     int rank;
     MPI_Comm_rank(comm, &rank);
 
-    // ---- Owner-side discovery ---------------------------------------------------------------
     // On the owner, broadcast_idxs[p].send_idx holds the owner-local ids of all indices that leaf
     // p copies. Invert it to find, per owned index, all ranks holding copies of it.
     std::unordered_map<int, std::set<int>> holders; // my local idx -> ranks holding copies of it
     for (const auto& [peer, indices] : broadcast_idxs)
       for (auto idx : indices.send_idx) holders[idx].insert(peer);
 
-    // ---- Owner -> leaf introductions --------------------------------------------------------
     // For each leaf p and each index i it copies, the owner sends every other holder of i.
     // Payload: flattened pairs (sibling_rank, global_id). Peers are always neighbours
     // (they are exactly the leaves that reported to us in build_broadcast_plan).
@@ -277,7 +278,7 @@ private:
       }
     }
 
-    // ---- Exchange introduction counts (tag 1) ----------------------------------------------
+    // Exchange introduction counts
     std::unordered_map<int, int> nsend; // number of pairs we send per neighbour
     for (auto n : neighbours_) nsend[n] = 0;
     for (const auto& [peer, data] : intros_siblings) nsend.at(peer) = (int)data.size();
@@ -289,7 +290,7 @@ private:
     for (auto neighbour : neighbours_) MPI_Isend(&nsend[neighbour], 1, MPI_INT, neighbour, 1, comm, &reqs.emplace_back());
     MPI_Waitall((int)reqs.size(), reqs.data(), MPI_STATUSES_IGNORE);
 
-    // ---- Exchange introduction data (tag 2) -------------------------------------------------
+    // Exchange introduction data
     reqs.clear();
     std::unordered_map<int, std::vector<int>> recv_intros_siblings;
     std::unordered_map<int, std::vector<std::int64_t>> recv_intros_gids;
@@ -298,7 +299,8 @@ private:
         recv_intros_siblings[neighbour].resize(nrecv[neighbour]);
         recv_intros_gids[neighbour].resize(nrecv[neighbour]);
         MPI_Irecv(recv_intros_siblings[neighbour].data(), nrecv[neighbour], MPI_INT, neighbour, 2, comm, &reqs.emplace_back());
-        MPI_Irecv(recv_intros_gids[neighbour].data(), nrecv[neighbour], Dune::MPITraits<std::int64_t>::getType(), neighbour, 3, comm, &reqs.emplace_back());
+        MPI_Irecv(recv_intros_gids[neighbour].data(), nrecv[neighbour], Dune::MPITraits<std::int64_t>::getType(), neighbour, 3, comm,
+                  &reqs.emplace_back());
       }
     }
     for (const auto& [peer, data] : intros_siblings)
@@ -308,7 +310,6 @@ private:
 
     MPI_Waitall((int)reqs.size(), reqs.data(), MPI_STATUSES_IGNORE);
 
-    // ---- Translate received introductions to local indices ---------------------------------
     // Introductions always come from the owner of the index in question, so the sender must be the
     // owner rank we recorded for it. Each pair adds one sibling to one of my copy indices.
     std::unordered_map<int, std::set<int>> siblings; // my local idx -> sibling ranks
@@ -325,7 +326,6 @@ private:
       }
     }
 
-    // ---- Assemble the symmetric per-peer index lists ---------------------------------------
     // For every peer, collect all local indices shared with it in any role (see above),
     // keyed by (owner rank, global id) so both ends sort identically.
     std::unordered_map<int, std::map<std::pair<int, std::int64_t>, int>> shared; // peer -> (sort key -> local idx)
@@ -340,7 +340,6 @@ private:
       auto& idxs = reduction_idxs[peer];
       idxs.recv_idx.reserve(entries.size());
       for (const auto& [key, idx] : entries) idxs.recv_idx.push_back(idx);
-      logger::trace_all("reduction plan peer {}: indices [{}]", peer, logger::join(idxs.recv_idx));
       // Reduction is symmetric: we send the same indices we receive.
       idxs.send_idx = idxs.recv_idx;
     }
@@ -378,8 +377,7 @@ public:
   /** Sends the values of \p data at all send indices of the plan to the peers holding copies of
    *  them, and starts receiving the values of all recv indices from their owners.
    *
-   *  The exchange overlaps with the caller's computation; \p data must stay valid and must not be
-   *  reallocated before the matching end() call.
+   *  The \p data parameter must stay valid and must not be reallocated before the matching end() call.
    */
   void begin(const CommunicationPattern::IndexMap& host_idxs, MPI_Comm pcomm, Context new_ctx, T* data, ReductionOperation op)
   {
@@ -387,7 +385,8 @@ public:
 
     // The context (e.g. a sycl::queue) is taken from the caller's data and cached: buffers may
     // outlive the vector they were first created for
-    if (ctx_set && new_ctx != ctx) DUNE_THROW(Dune::InvalidStateException, "vectors used with the same Communication must live on the same context (e.g. queue)");
+    if (ctx_set && new_ctx != ctx)
+      DUNE_THROW(Dune::InvalidStateException, "vectors used with the same Communication must live on the same context (e.g. queue)");
     ctx = new_ctx;
     ctx_set = true;
 
@@ -416,6 +415,11 @@ public:
     // ... then wait for the gathers to complete before handing the buffers to MPI. On an
     // accelerator backend gather() only enqueues a kernel, and MPI knows nothing about the queue,
     // so without this the sends could read buffers that have not been written yet.
+    // TODO: We could also introduce a Backend::enqueue([](){...}); function that takes a lambda
+    //       and enqueues work as if it was a kernel. This is AdaptiveCpp's enqueue_custom_operation
+    //       and for other potential backends we might implement in the future, we can always implement
+    //       this as a sync() + call the lambda. But this also kind of defeats the purpose of the begin()
+    //       because the MPI_Isends might be posted much later.
     Backend::sync(ctx);
 
     // Post the sends
@@ -441,7 +445,9 @@ public:
       if (indices.recv_idx.empty()) continue;
       switch (reduction_op) {
         case ReductionOperation::None: Backend::scatter(ctx, recv_bufs[peer].data(), indices.recv_idx, target); break;
-        case ReductionOperation::Addition: Backend::template scatter_reduce<ReductionOperation::Addition>(ctx, recv_bufs[peer].data(), indices.recv_idx, target); break;
+        case ReductionOperation::Addition:
+          Backend::template scatter_reduce<ReductionOperation::Addition>(ctx, recv_bufs[peer].data(), indices.recv_idx, target);
+          break;
       }
     }
 
@@ -465,10 +471,11 @@ private:
 
   void upload_indices(const CommunicationPattern::IndexMap& host_idxs)
   {
-    for (const auto& [peer, host] : host_idxs) idxs.emplace(peer, Indices{Backend::make_buffer_from_host(ctx, host.send_idx), Backend::make_buffer_from_host(ctx, host.recv_idx)});
+    for (const auto& [peer, host] : host_idxs)
+      idxs.emplace(peer, Indices{Backend::make_buffer_from_host(ctx, host.send_idx), Backend::make_buffer_from_host(ctx, host.recv_idx)});
   }
 
-  std::unordered_map<int, Indices> idxs;
+  std::unordered_map<int, Indices> idxs; // One index set per neighbour
 
   bool indices_on_device = false;
   T* target = nullptr;                                        ///< where end() writes the received values; also marks an exchange as in flight
@@ -735,7 +742,8 @@ public:
   template <class Vector>
   void copyOwnerToAll(const Vector& v, Vector& w) const
   {
-    if (&v != &w) DUNE_THROW(Dune::Exception, "The compatibility method copyOwnerToAll is only supported when destination and source vector coincide");
+    if (&v != &w)
+      DUNE_THROW(Dune::Exception, "The compatibility method copyOwnerToAll is only supported when destination and source vector coincide");
 
     broadcast(v);
   }
@@ -743,7 +751,8 @@ public:
   template <class Vector>
   void addOwnerCopyToOwnerCopy(const Vector& v, Vector& w) const
   {
-    if (&v != &w) DUNE_THROW(Dune::Exception, "The compatibility method copyOwnerToAll is only supported when destination and source vector coincide");
+    if (&v != &w)
+      DUNE_THROW(Dune::Exception, "The compatibility method copyOwnerToAll is only supported when destination and source vector coincide");
 
     reduce(v);
   }
@@ -751,6 +760,7 @@ public:
   template <class Vector>
   void dot(const Vector& v, const Vector& w, typename Vector::field_type& result) const
   {
+    std::cout << "Communication::dot()\n";
     // TOOD: This assumes that the vector is ddm::Sycl::Vec
     static Vector mask = Vector::from_host_vector(v.queue(), owner_mask);
 
@@ -849,19 +859,22 @@ std::vector<CommunicationNodes> make_roots_from_dune(const Dune::OwnerOverlapCop
 
       auto local = remote.localIndexPair().local().local();
       if (roots[local].rank != -1)
-        DUNE_THROW(Dune::InvalidStateException, "local index " << local << " (global " << roots[local].gid << ") is claimed by more than one owner (" << roots[local].rank << " and " << peer << ")");
+        DUNE_THROW(Dune::InvalidStateException, "local index " << local << " (global " << roots[local].gid << ") is claimed by more than one owner ("
+                                                               << roots[local].rank << " and " << peer << ")");
       roots[local].rank = peer;
     }
   }
 
   for (std::size_t i = 0; i < roots.size(); ++i)
     if (roots[i].rank == -1)
-      DUNE_THROW(Dune::InvalidStateException, "no owner found for local index " << i << " (global " << roots[i].gid << "); are the remote indices built and is the index flagged public?");
+      DUNE_THROW(Dune::InvalidStateException, "no owner found for local index "
+                                                  << i << " (global " << roots[i].gid
+                                                  << "); are the remote indices built and is the index flagged public?");
 
   return roots;
 }
 
-/** Builds a Communication from a Dune::OwnerOverlapCopyCommunication. See make_roots_from_dune()
+/** Builds a ddm::Communication from a Dune::OwnerOverlapCopyCommunication. See make_roots_from_dune()
  *  for how the roots array is derived and what is required of \p oocc.
  */
 template <class T1, class T2>
