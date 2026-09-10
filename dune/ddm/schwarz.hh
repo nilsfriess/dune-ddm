@@ -72,8 +72,9 @@ public:
    * @param subtree_name Name of the subtree containing Schwarz parameters
    */
   template <class OwnerOverlapCopyCommunication>
-  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const OwnerOverlapCopyCommunication& oocc, const PartitionOfUnity& pou, const Dune::ParameterTree& ptree,
-                        const std::string& subtree_name = "schwarz", const std::string& solver_subtree_name = "subdomain_solver")
+  SchwarzPreconditioner(std::shared_ptr<Mat> Aovlp, const OwnerOverlapCopyCommunication& oocc, const PartitionOfUnity& pou,
+                        const Dune::ParameterTree& ptree, const std::string& subtree_name = "schwarz",
+                        const std::string& solver_subtree_name = "subdomain_solver")
       : Aovlp(std::move(Aovlp))
       , comm(make_communication_from_dune(oocc))
   {
@@ -88,21 +89,8 @@ public:
 
     Dune::initSolverFactories<Op>();
     auto op = std::make_shared<Op>(this->Aovlp);
-    // if (not solver_subtree.hasKey("type"))
-    //   DUNE_THROW(Dune::Exception, "You must specify the solver in the subtree " << get_parameter_tree_prefix(ptree) << subtree_name << "." << solver_subtree_name << " using the key 'type'");
-
     const auto& solver_subtree = subtree.sub(solver_subtree_name);
     solver = getDirectSolverFromFactory(op, solver_subtree);
-    // // We also handle one special case ourselves, namely a solver named umfpack_metis
-    // // which we define as UMFPack with METIS reordering
-    // if (solver_subtree["type"] == "umfpack_metis") {
-    //   solver = std::make_shared<Dune::UMFPack<Mat>>();
-    //   auto umfpack_solver = std::dynamic_pointer_cast<Dune::UMFPack<Mat>>(solver);
-    //   umfpack_solver->setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
-    //   umfpack_solver->setOption(UMFPACK_IRSTEP, 0); // Disable iterative refinement for performance
-    //   umfpack_solver->setMatrix(*this->Aovlp);
-    // }
-    // else solver = Dune::getSolverFromFactory(op, solver_subtree);
     init(pou);
   }
 
@@ -151,8 +139,6 @@ public:
     if (type == SchwarzType::Standard) { comm.reduce(*x_ovlp); }
     else if (type == SchwarzType::Restricted) {
       if (pou_vec) Backend::pointwise_mult(*pou_vec, *x_ovlp);
-      // for (std::size_t i = 0; i < pou->size(); ++i) (*x_ovlp)[i] *= (*pou)[i];
-
       comm.reduce(*x_ovlp);
     }
 
@@ -161,12 +147,6 @@ public:
 
     Logger::get().endEvent(add_solution_event);
   }
-
-  // /**
-  //  * @brief Get reference to the local subdomain solver.
-  //  * @return Reference to the solver instance
-  //  */
-  // std::shared_ptr<Solver> get_solver() { return solver; }
 
 private:
   /** @brief Initialize the preconditioner.
@@ -183,9 +163,6 @@ private:
 
     d_ovlp = std::make_unique<Vec>(create_vector_for_matrix(*Aovlp));
     x_ovlp = std::make_unique<Vec>(create_vector_for_matrix(*Aovlp));
-    // d_ovlp = std::make_unique<Vec>(Aovlp->N());
-    // x_ovlp = std::make_unique<Vec>(Aovlp->N());
-
     pou_vec = std::make_unique<Vec>(create_vector_like_from_host(*d_ovlp, pou.vector()));
   }
 
