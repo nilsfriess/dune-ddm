@@ -186,34 +186,50 @@ public:
 private:
   friend class Mat<Scalar, Index>;
 
-  /** Sums f(0) + ... + f(n-1) on the device.
-   *
-   *  One kernel over the full range, with the fold left to sycl::reduction so that each backend
-   *  uses its own tuned tree reduction. finish_reduction() then copies the result to the host.
-   *
-   *  This replaces a hand-written chunked two-stage reduction (nchunks work items summing one
-   *  contiguous chunk each, then a second kernel folding the partials). That version was tuned for
-   *  the AdaptiveCpp OpenMP target, where a microbenchmark measured it ~3-5x faster than
-   *  sycl::reduction (0.10 ms vs 0.34 ms per 3-array dot of 66k doubles under 4-way rank
-   *  contention) — sycl::reduction's work-group machinery and per-submit scratch setup dominate a
-   *  reduction that small. On a GPU the same shape is the wrong one: it caps the first stage at
-   *  1024 work items reading contiguous per-item blocks (underoccupied and uncoalesced), and folds
-   *  the partials in a *single* work item, i.e. 1024 dependent latency-bound global loads. A
-   *  profile of structured_grid_test on 4 GPU ranks put masked_dot at 339 us per call for n ~ 70k.
-   *
-   *  If the OpenMP target regresses noticeably, dispatch on q.get_device().is_gpu() and keep the
-   *  chunked kernel for the CPU case rather than reverting this.
-   */
+  /** Sums f(0) + ... + f(n-1) on the device.  */
   template <class F>
   void reduce(F f) const
   {
     if (n == 0) return;
 
+    if (local_size == 0) {
+      const auto dev = q.get_device();
+      const std::size_t cus = std::max<std::size_t>(1, dev.get_info<sycl::info::device::max_compute_units>());
+
+      local_size = 256;
+      std::size_t num_groups = 8 * cus;
+      global_size = local_size * num_groups;
+    }
+
     auto* sum = red_dev;
+    const auto N = n;
+#if 1
+    q.memset(sum, 0, sizeof(Scalar));
+    q.submit([&](sycl::handler& cgh) {
+      cgh.parallel_for(sycl::nd_range<1>(global_size, local_size), [=](sycl::nd_item<1> it) {
+        const Index gid = it.get_global_id(0);
+        const Index gsize = it.get_global_range(0);
+
+        // Reduce locally on this work-item ...
+        Scalar msum = 0;
+        for (Index i = gid; i < N; i += gsize) msum += f(static_cast<Index>(i));
+
+        // ... then reduce within the work-group ...
+        auto reduced_sum = sycl::reduce_over_group(it.get_group(), msum, sycl::plus<Scalar>());
+
+        // ... and finally let the leader reduce into the global sum using atomics
+        if (it.get_group().leader()) {
+          sycl::atomic_ref<Scalar, sycl::memory_order::relaxed, sycl::memory_scope::device> sum_ref(sum[0]);
+          sum_ref += reduced_sum;
+        }
+      });
+    });
+#else
     // initialize_to_identity is required: without it the reduction combines into whatever the
     // previous reduce() left in red_dev.
     q.parallel_for(sycl::range<1>(n), sycl::reduction(sum, sycl::plus<field_type>{}, sycl::property::reduction::initialize_to_identity{}),
                    [=](sycl::id<1> idx, auto& s) { s += f(static_cast<Index>(idx[0])); });
+#endif
   }
 
   /// Copies the result of a preceding reduce() back to the host. Blocks until it has arrived.
@@ -241,5 +257,8 @@ private:
   // of the final result.
   field_type* red_dev;
   field_type* red_host;
+
+  mutable std::size_t local_size = 0;
+  mutable std::size_t global_size;
 };
 } // namespace ddm::Sycl
