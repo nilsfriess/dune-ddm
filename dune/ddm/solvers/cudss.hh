@@ -39,36 +39,14 @@ inline const char* cudss_status_name(cudssStatus_t status)
 }
 } // namespace detail
 
-/// Checks a cuDSS call made on the host and throws if it failed. The status is part of the message: a solve that trips over
-/// corrupted memory reports CUDSS_STATUS_EXECUTION_FAILED, which is worth telling apart from an allocation failure.
-#define CUDSS_CHECK(call, name)                                                                                                            \
-  do {                                                                                                                                     \
-    const cudssStatus_t ddm_cudss_status = (call);                                                                                         \
-    if (ddm_cudss_status != CUDSS_STATUS_SUCCESS) [[unlikely]]                                                                             \
-      DUNE_THROW(Dune::Exception, "cuDSS call " << (name) << " failed with " << ddm::detail::cudss_status_name(ddm_cudss_status) << " ("   \
-                                                << static_cast<int>(ddm_cudss_status) << ")");                                             \
-  } while (0)
-
-/// Checks a cuDSS call that must not throw and aborts if it failed. Used inside the SYCL custom operation, which runs on an
-/// AdaptiveCpp worker thread where an escaping exception would hit std::terminate with no useful message.
-#define CUDSS_CHECK_FATAL(call, name)                                                                                                      \
-  do {                                                                                                                                     \
-    const cudssStatus_t ddm_cudss_status = (call);                                                                                         \
-    if (ddm_cudss_status != CUDSS_STATUS_SUCCESS) [[unlikely]] {                                                                           \
-      logger::error_all("cuDSS call {} failed with {} ({})", (name), ddm::detail::cudss_status_name(ddm_cudss_status),                     \
-                        static_cast<int>(ddm_cudss_status));                                                                               \
-      MPI_Abort(MPI_COMM_WORLD, 17);                                                                                                       \
-    }                                                                                                                                      \
-  } while (0)
-
-/// Checks a cuDSS cleanup call and only reports a failure. Used in the destructor, where there is nothing left to salvage and
-/// throwing would terminate.
-#define CUDSS_CHECK_CLEANUP(call, name)                                                                                                    \
-  do {                                                                                                                                     \
-    const cudssStatus_t ddm_cudss_status = (call);                                                                                         \
-    if (ddm_cudss_status != CUDSS_STATUS_SUCCESS) [[unlikely]]                                                                             \
-      logger::error("cuDSS cleanup call {} failed with {} ({})", (name), ddm::detail::cudss_status_name(ddm_cudss_status),                 \
-                    static_cast<int>(ddm_cudss_status));                                                                                   \
+#define CUDSS_CHECK(call, name)                                                                                                                      \
+  do {                                                                                                                                               \
+    const cudssStatus_t ddm_cudss_status = (call);                                                                                                   \
+    if (ddm_cudss_status != CUDSS_STATUS_SUCCESS) [[unlikely]] {                                                                                     \
+      logger::error_all("cuDSS call {} failed with {} ({})", (name), ddm::detail::cudss_status_name(ddm_cudss_status),                               \
+                        static_cast<int>(ddm_cudss_status));                                                                                         \
+      MPI_Abort(MPI_COMM_WORLD, 17);                                                                                                                 \
+    }                                                                                                                                                \
   } while (0)
 
 /** @brief Direct solver for a GPU-resident matrix, backed by NVIDIA's cuDSS.
@@ -112,17 +90,15 @@ public:
     const cudssMatrixViewType_t mview = CUDSS_MVIEW_FULL;
     const cudssIndexBase_t base = CUDSS_BASE_ZERO;
 
-    CUDSS_CHECK(cudssMatrixCreateCsr(&a, A.N(), A.M(), A.nonzeros(), A.row_offsets(), nullptr, A.column_indices(), A.values(),
-                                     cudss_index_type, cudss_index_type, cudss_value_type, mtype, mview, base),
+    CUDSS_CHECK(cudssMatrixCreateCsr(&a, A.N(), A.M(), A.nonzeros(), A.row_offsets(), nullptr, A.column_indices(), A.values(), cudss_index_type,
+                                     cudss_index_type, cudss_value_type, mtype, mview, base),
                 "cudssMatrixCreateCsr");
 
     // The two dense descriptors are created once here and retargeted at the caller's vectors in apply(); creating a pair per
     // solve leaks one descriptor per Krylov iteration. cudssMatrixCreateDn wants memory to describe, and the setup phases below
     // want a right hand side and a solution, so they start out on scratch vectors of our own.
-    CUDSS_CHECK(cudssMatrixCreateDn(&x_desc, n, 1, n, x_scratch.data(), cudss_value_type, CUDSS_LAYOUT_COL_MAJOR),
-                "cudssMatrixCreateDn (x)");
-    CUDSS_CHECK(cudssMatrixCreateDn(&b_desc, n, 1, n, b_scratch.data(), cudss_value_type, CUDSS_LAYOUT_COL_MAJOR),
-                "cudssMatrixCreateDn (b)");
+    CUDSS_CHECK(cudssMatrixCreateDn(&x_desc, n, 1, n, x_scratch.data(), cudss_value_type, CUDSS_LAYOUT_COL_MAJOR), "cudssMatrixCreateDn (x)");
+    CUDSS_CHECK(cudssMatrixCreateDn(&b_desc, n, 1, n, b_scratch.data(), cudss_value_type, CUDSS_LAYOUT_COL_MAJOR), "cudssMatrixCreateDn (b)");
     x_values = x_scratch.data();
     b_values = b_scratch.data();
 
@@ -145,12 +121,12 @@ public:
     // stream, so waiting on the queue is enough; it also covers the scratch vectors, which are freed right after this body.
     q.wait();
 
-    if (x_desc) CUDSS_CHECK_CLEANUP(cudssMatrixDestroy(x_desc), "cudssMatrixDestroy (x)");
-    if (b_desc) CUDSS_CHECK_CLEANUP(cudssMatrixDestroy(b_desc), "cudssMatrixDestroy (b)");
-    if (a) CUDSS_CHECK_CLEANUP(cudssMatrixDestroy(a), "cudssMatrixDestroy (A)");
-    if (solver_data) CUDSS_CHECK_CLEANUP(cudssDataDestroy(handle, solver_data), "cudssDataDestroy");
-    if (solver_config) CUDSS_CHECK_CLEANUP(cudssConfigDestroy(solver_config), "cudssConfigDestroy");
-    if (handle) CUDSS_CHECK_CLEANUP(cudssDestroy(handle), "cudssDestroy");
+    if (x_desc) CUDSS_CHECK(cudssMatrixDestroy(x_desc), "cudssMatrixDestroy (x)");
+    if (b_desc) CUDSS_CHECK(cudssMatrixDestroy(b_desc), "cudssMatrixDestroy (b)");
+    if (a) CUDSS_CHECK(cudssMatrixDestroy(a), "cudssMatrixDestroy (A)");
+    if (solver_data) CUDSS_CHECK(cudssDataDestroy(handle, solver_data), "cudssDataDestroy");
+    if (solver_config) CUDSS_CHECK(cudssConfigDestroy(solver_config), "cudssConfigDestroy");
+    if (handle) CUDSS_CHECK(cudssDestroy(handle), "cudssDestroy");
   }
 
   /** Solves A x = b for the factorisation built in the constructor.
@@ -161,8 +137,8 @@ public:
    */
   void apply(Vec& x, Vec& b, Dune::InverseOperatorResult& res) override
   {
-    DDM_CHECK(x.size() == n and b.size() == n, "cuDSS solver was factorised for {} unknowns but got x of size {} and b of size {}", n,
-              x.size(), b.size());
+    DDM_CHECK(x.size() == n and b.size() == n, "cuDSS solver was factorised for {} unknowns but got x of size {} and b of size {}", n, x.size(),
+              b.size());
 
     enqueue_phase(CUDSS_PHASE_SOLVE, "cudssExecute (solve)", x.data(), b.data());
 
@@ -182,25 +158,25 @@ private:
    *  the in-order queue orders it against everything before and after it.
    *
    *  The callable runs on an AdaptiveCpp worker thread, in submission order, so it must not let an exception escape -- hence
-   *  CUDSS_CHECK_FATAL. It runs on the host while earlier stream work may still be executing, which is why the descriptors are
+   *  CUDSS_CHECK. It runs on the host while earlier stream work may still be executing, which is why the descriptors are
    *  only retargeted when the caller actually handed us different memory: in the Schwarz preconditioner the same two vectors
    *  come back every iteration, so in the steady state the descriptors are never touched again.
    */
   void enqueue_phase(cudssPhase_t phase, const char* name, const Scalar* new_x, const Scalar* new_b)
   {
     q.AdaptiveCpp_enqueue_custom_operation([this, phase, name, new_x, new_b](sycl::interop_handle& h) {
-      CUDSS_CHECK_FATAL(cudssSetStream(handle, h.get_native_queue<sycl::backend::cuda>()), "cudssSetStream");
+      CUDSS_CHECK(cudssSetStream(handle, h.get_native_queue<sycl::backend::cuda>()), "cudssSetStream");
 
       if (new_x != x_values) {
-        CUDSS_CHECK_FATAL(cudssMatrixSetValues(x_desc, new_x), "cudssMatrixSetValues (x)");
+        CUDSS_CHECK(cudssMatrixSetValues(x_desc, new_x), "cudssMatrixSetValues (x)");
         x_values = new_x;
       }
       if (new_b != b_values) {
-        CUDSS_CHECK_FATAL(cudssMatrixSetValues(b_desc, new_b), "cudssMatrixSetValues (b)");
+        CUDSS_CHECK(cudssMatrixSetValues(b_desc, new_b), "cudssMatrixSetValues (b)");
         b_values = new_b;
       }
 
-      CUDSS_CHECK_FATAL(cudssExecute(handle, phase, solver_config, solver_data, a, x_desc, b_desc), name);
+      CUDSS_CHECK(cudssExecute(handle, phase, solver_config, solver_data, a, x_desc, b_desc), name);
     });
   }
 
@@ -229,8 +205,7 @@ private:
 
 namespace Dune {
 DUNE_REGISTER_SOLVER("cudss",
-                     [](auto op_traits, const auto& op,
-                        const Dune::ParameterTree&) -> std::shared_ptr<typename decltype(op_traits)::solver_type> {
+                     [](auto op_traits, const auto& op, const Dune::ParameterTree&) -> std::shared_ptr<typename decltype(op_traits)::solver_type> {
                        using OpTraits = decltype(op_traits);
                        using Scalar = typename OpTraits::domain_type::field_type;
 
