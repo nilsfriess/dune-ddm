@@ -12,6 +12,25 @@
 #include <type_traits>
 
 namespace ddm::Sycl {
+namespace detail {
+template <class Group>
+void barrier_on_cpu(Group g)
+{
+  // Handle --acpp-targets=omp
+  __acpp_if_target_host(sycl::group_barrier(g););
+  // Handle --acpp-targets=generic
+  __acpp_if_target_sscp(
+      // Leverage AdaptiveCpp JIT-time reflection to figure
+      // out what we are jitting for
+      namespace jit = sycl::AdaptiveCpp_jit;
+      jit::compile_if(jit::reflect<jit::reflection_query::compiler_backend>() == jit::compiler_backend::host, //
+                      [=]() {                                                                                 //
+                        sycl::group_barrier(g);                                                               //
+                      });                                                                                     //
+  );                                                                                                          //
+}
+} // namespace detail
+
 /** @brief A Dune ISTL-compatible vector class that stores memory on the device associated with a sycl::queue
  *
  *  Data is allocated using SYCL's USM function sycl::malloc_device. It is assumed that the queue that is passed
@@ -214,7 +233,12 @@ private:
 
         // Reduce locally on this work-item ...
         Scalar msum = 0;
-        for (Index i = gid; i < N; i += gsize) msum += f(static_cast<Index>(i));
+        for (Index i = gid; i < N; i += gsize) {
+          msum += f(static_cast<Index>(i));
+
+          // See https://github.com/illuhad/acpp-best-practices/blob/main/best-practices.adoc#how-can-we-fix-this
+          detail::barrier_on_cpu(it.get_group());
+        }
 
         // ... then reduce within the work-group ...
         auto reduced_sum = sycl::reduce_over_group(it.get_group(), msum, sycl::plus<Scalar>());
