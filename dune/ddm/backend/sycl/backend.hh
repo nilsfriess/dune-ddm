@@ -1,5 +1,7 @@
 #pragma once
 
+#if __has_include(<sycl/sycl.hpp>)
+
 #include "../backend.hh"
 #include "dune/ddm/types.hh"
 
@@ -119,3 +121,5 @@ struct backend_traits<ddm::Sycl::Vec<S, I>> {
   using type = SyclBackend;
 };
 } // namespace ddm::backend
+
+#endif

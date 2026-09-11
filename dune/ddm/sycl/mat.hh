@@ -1,5 +1,7 @@
 #pragma once
 
+#if __has_include(<sycl/sycl.hpp>)
+
 #include "../helpers.hh"
 
 #include <dune/common/fmatrix.hh>
@@ -20,8 +22,7 @@ public:
   using index_type = Index;
   using allocator_type = std::allocator<Scalar>;
 
-  Mat(const sycl::queue& q_, Index rows_, Index cols_, std::span<const Index> host_r, std::span<const Index> host_c,
-      std::span<const block_type> host_a)
+  Mat(const sycl::queue& q_, Index rows_, Index cols_, std::span<const Index> host_r, std::span<const Index> host_c, std::span<const block_type> host_a)
       : q(q_)
       , rows(rows_)
       , cols(cols_)
@@ -30,10 +31,8 @@ public:
       , a(sycl::malloc_device<block_type>(host_a.size(), q))
       , nnz(host_a.size())
   {
-    DDM_CHECK(host_c.size() == host_a.size(), "Invalid CSR data (column index array size {} and data array size {} do not match)",
-              host_c.size(), host_a.size());
-    DDM_CHECK(host_r.size() == rows + 1, "Invalid CSR data (row offsets array size {} does not match the provided number of rows {})",
-              host_r.size(), rows + 1);
+    DDM_ASSERT(host_c.size() == host_a.size(), "Invalid CSR data (column index array size {} and data array size {} do not match)", host_c.size(), host_a.size());
+    DDM_ASSERT(host_r.size() == rows + 1, "Invalid CSR data (row offsets array size {} does not match the provided number of rows {})", host_r.size(), rows + 1);
 
     q.memcpy(r, host_r.data(), host_r.size_bytes());
     q.memcpy(c, host_c.data(), host_c.size_bytes());
@@ -171,7 +170,7 @@ public:
 
   Vec<Scalar, Index> getdiag() const
   {
-    DDM_CHECK(rows == cols, "getdiag only for square matrices");
+    DDM_ASSERT(rows == cols, "getdiag only for square matrices");
     Vec<Scalar, Index> diag(q, rows);
 
     const auto* rr = r;
@@ -213,3 +212,5 @@ private:
   Index nnz{};
 };
 } // namespace ddm::Sycl
+
+#endif

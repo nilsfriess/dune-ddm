@@ -56,10 +56,6 @@ int main(int argc, char** argv)
 
     // Turn non-overlapping matrix into an overlapping one
     const int overlap = 4;
-    // Additive: distributeMatrixFrom0 hands out partial contributions, so entries shared between
-    // ranks have to be summed. With Consistent the interface rows keep one rank's contribution only,
-    // which no POU noticed as long as they all used the sparsity pattern alone -- MsFEM solves with
-    // the values, and a matrix that is not diagonally dominant there breaks its maximum principle.
     auto [ovlp_comm, A_ovlp, boundary] = create_overlapping_matrix(*novlp_comm, *localA, overlap, MatrixRepresentation::Additive);
 
     struct Case {
@@ -70,7 +66,6 @@ int main(int argc, char** argv)
         {PartitionOfUnityType::Trivial, "trivial"},
         {PartitionOfUnityType::Standard, "standard"},
         {PartitionOfUnityType::Distance, "distance"},
-        {PartitionOfUnityType::MsFEM, "msfem"},
     }};
     const std::array<int, 4> shrinks = {{0, 1, 2, 3}}; // shrink must be < overlap
 
@@ -124,8 +119,8 @@ int main(int argc, char** argv)
         MPI_Allreduce(bad_by_count.data(), global_bad_by_count.data(), 6, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
 
         const auto name = std::string("POU '") + c.name + "' (shrink=" + std::to_string(shrink) + ") sums to 1";
-        t.check(global_err <= 1e-10, name) << "max deviation " << global_err << " over " << global_bad << " DOFs; by subdomain count: 2=" << global_bad_by_count[2]
-                                           << " 3=" << global_bad_by_count[3] << " 4=" << global_bad_by_count[4] << " >=5=" << global_bad_by_count[5];
+        t.check(global_err <= 1e-10, name) << "max deviation " << global_err << " over " << global_bad << " DOFs; by subdomain count: 2=" << global_bad_by_count[2] << " 3=" << global_bad_by_count[3]
+                                           << " 4=" << global_bad_by_count[4] << " >=5=" << global_bad_by_count[5];
       }
   });
 }

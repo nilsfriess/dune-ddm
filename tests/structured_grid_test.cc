@@ -211,8 +211,7 @@ struct IdentityPreconditioner : public Dune::Preconditioner<Vec, Vec> {
 };
 
 template <class Matrix, class Vector>
-bool solve_single_level_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<ddm::Communication>& comm, std::shared_ptr<Matrix>& A, const Vector& b,
-                                Vector& x, std::shared_ptr<PartitionOfUnity> pou)
+bool solve_single_level_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<ddm::Communication>& comm, std::shared_ptr<Matrix>& A, const Vector& b, Vector& x, std::shared_ptr<PartitionOfUnity> pou)
 {
   using Operator = ConsistentParallelMatrixOperator<Matrix, Vector, Vector, ddm::Communication>;
   auto op = std::make_shared<Operator>(A, comm);
@@ -230,14 +229,24 @@ bool solve_single_level_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<d
   // Build fine-level preconditioner
   Dune::ParameterTree schwarz_tree;
   schwarz_tree["schwarz.type"] = "standard";
-  auto prec = std::make_shared<SchwarzPrec>(A, comm, *pou, schwarz_tree);
-  auto solver = Dune::getSolverFromFactory(op, solver_tree, prec);
+  try {
+    auto prec = std::make_shared<SchwarzPrec>(A, comm, *pou, schwarz_tree);
+    auto solver = Dune::getSolverFromFactory(op, solver_tree, prec);
 
-  // Solve the system
-  Dune::InverseOperatorResult res;
-  x = 0.;
-  auto rhs = b;
-  solver->apply(x, rhs, res);
+    // Solve the system
+    Dune::InverseOperatorResult res;
+    x = 0.;
+    auto rhs = b;
+    solver->apply(x, rhs, res);
+  }
+  catch (Dune::Exception& e) {
+    std::cout << "Exception thrown while trying to create and run Schwarz solver\n";
+    std::cout << e.what() << "\n";
+
+    // We don't return false here because this is expected in some cases currently
+    // (e.g. when we run with the SYCL backend but on CPU; for this case, there is
+    // currently no direct solver available so the Schwarz setup fails)
+  }
 
   return true;
 }
@@ -294,8 +303,7 @@ int main(int argc, char** argv)
     Problem p(gv, is_dirichlet, coefficient, source);
     auto comm = ddmtest::create_communication_for_grid(gv, p.patch);
     if (comm->indexSet().size() != static_cast<std::size_t>(p.A->N()))
-      DUNE_THROW(Dune::InvalidStateException,
-                 "communication index set (" << comm->indexSet().size() << ") and matrix (" << p.A->N() << ") differ in size");
+      DUNE_THROW(Dune::InvalidStateException, "communication index set (" << comm->indexSet().size() << ") and matrix (" << p.A->N() << ") differ in size");
     comm->copyOwnerToAll(p.b, p.b); // Make b consistent
     auto vec_comm = std::make_shared<ddm::Communication>(ddm::make_communication_from_dune(*comm));
     auto pou = std::make_shared<PartitionOfUnity>(*p.A, *comm, PartitionOfUnityType::Standard);

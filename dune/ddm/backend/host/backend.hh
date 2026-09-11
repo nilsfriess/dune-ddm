@@ -82,7 +82,7 @@ struct HostBackend {
   template <class V>
   static void pointwise_mult(const V& x, V& y)
   {
-    DDM_CHECK(x.size() == y.size(), "Vectors in pointwise_mult do not match");
+    DDM_ASSERT(x.size() == y.size(), "Vectors in pointwise_mult do not match");
 
     for (std::size_t i = 0; i < x.size(); ++i) y[i] *= x[i];
   }

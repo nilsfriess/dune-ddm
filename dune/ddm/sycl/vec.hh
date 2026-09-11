@@ -1,5 +1,7 @@
 #pragma once
 
+#if __has_include(<sycl/sycl.hpp>)
+
 #include "../backend/backend.hh"
 #include "../backend/sycl/backend.hh"
 #include "mat.hh"
@@ -156,7 +158,7 @@ public:
 
   Vec& operator+=(const Vec& other)
   {
-    DDM_CHECK(n == other.n, "Size mismatch in operator+= ({} vs {})", n, other.n);
+    DDM_ASSERT(n == other.n, "Size mismatch in operator+= ({} vs {})", n, other.n);
     auto* v = data_;
     const auto* w = other.data_;
     q.parallel_for(sycl::range<1>(n), [=](auto idx) { v[idx] += w[idx]; });
@@ -165,7 +167,7 @@ public:
 
   Vec& operator-=(const Vec& other)
   {
-    DDM_CHECK(n == other.n, "Size mismatch in operator-= ({} vs {})", n, other.n);
+    DDM_ASSERT(n == other.n, "Size mismatch in operator-= ({} vs {})", n, other.n);
     auto* v = data_;
     const auto* w = other.data_;
     q.parallel_for(sycl::range<1>(n), [=](auto idx) { v[idx] -= w[idx]; });
@@ -174,7 +176,7 @@ public:
 
   void axpy(field_type a, const Vec& y)
   {
-    DDM_CHECK(n == y.n, "Size mismatch in axpy ({} vs {})", n, y.n);
+    DDM_ASSERT(n == y.n, "Size mismatch in axpy ({} vs {})", n, y.n);
     auto* v = data_;
     const auto* w = y.data_;
     q.parallel_for(sycl::range<1>(n), [=](auto idx) { v[idx] += a * w[idx]; });
@@ -262,3 +264,5 @@ private:
   mutable std::size_t global_size;
 };
 } // namespace ddm::Sycl
+
+#endif

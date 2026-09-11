@@ -12,6 +12,10 @@
  *  site that needs a working vector for a given matrix.
  */
 
+#if __has_include(<sycl/sycl.hpp>)
+#define DDM_HAVE_SYCL
+#endif
+
 #include "sycl/mat.hh"
 #include "sycl/vec.hh"
 
@@ -29,6 +33,7 @@ auto create_vector_for_matrix(const Dune::BCRSMatrix<F, Allocator>& A)
   return Dune::BlockVector<Dune::FieldVector<typename F::field_type, F::rows>>(A.N());
 }
 
+#ifdef DDM_HAVE_SYCL
 /// SYCL pairing: a GPU-resident matrix yields a GPU-resident vector on the
 /// same queue as the matrix.
 template <class Scalar, class Index>
@@ -36,6 +41,7 @@ auto create_vector_for_matrix(const ddm::Sycl::Mat<Scalar, Index>& A)
 {
   return ddm::Sycl::Vec<Scalar, Index>(A.queue(), A.N());
 }
+#endif
 
 // TODO: Come up with some way to not copy here
 template <class Container, class F, class Allocator>
@@ -46,10 +52,16 @@ auto create_vector_like_from_host([[maybe_unused]] const Dune::BlockVector<F, Al
   return v;
 }
 
+#ifdef DDM_HAVE_SYCL
 template <class Container, class Scalar, class Index>
 auto create_vector_like_from_host(const Sycl::Vec<Scalar, Index>& template_vector, const Container& host_vector)
 {
   return Sycl::Vec<Scalar, Index>::from_host_vector(template_vector.queue(), host_vector);
 }
+#endif
 
 } // namespace ddm
+
+#ifdef DDM_HAVE_SYCL
+#undef DDM_HAVE_SYCL
+#endif

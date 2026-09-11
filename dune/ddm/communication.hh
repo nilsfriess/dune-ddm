@@ -1,8 +1,8 @@
 #pragma once
 
-#include "dune/ddm/backend/backend.hh"
 #include "dune/ddm/backend/host/backend.hh"
 #include "dune/ddm/backend/sycl/backend.hh"
+#include "dune/ddm/backend/backend.hh"
 #include "logger.hh"
 #include "types.hh"
 #include "vector_factory.hh"
@@ -175,8 +175,7 @@ private:
     for (auto neighbour : neighbours_) {
       if (leave_count[neighbour] > 0) {
         leaves[neighbour].resize(leave_count[neighbour]);
-        MPI_Irecv(leaves[neighbour].data(), leave_count[neighbour], Dune::MPITraits<std::int64_t>::getType(), neighbour, 2, comm,
-                  &reqs.emplace_back());
+        MPI_Irecv(leaves[neighbour].data(), leave_count[neighbour], Dune::MPITraits<std::int64_t>::getType(), neighbour, 2, comm, &reqs.emplace_back());
       }
     }
 
@@ -197,8 +196,7 @@ private:
       count++;
     }
 
-    for (const auto& [peer, data] : leaves_data)
-      MPI_Isend(data.data(), (int)data.size(), Dune::MPITraits<std::int64_t>::getType(), peer, 2, comm, &reqs.emplace_back());
+    for (const auto& [peer, data] : leaves_data) MPI_Isend(data.data(), (int)data.size(), Dune::MPITraits<std::int64_t>::getType(), peer, 2, comm, &reqs.emplace_back());
     MPI_Waitall((int)reqs.size(), reqs.data(), MPI_STATUSES_IGNORE);
 
     // The indices in the leaves map use global ids. We need to convert them into local numbering on
@@ -300,8 +298,7 @@ private:
         recv_intros_siblings[neighbour].resize(nrecv[neighbour]);
         recv_intros_gids[neighbour].resize(nrecv[neighbour]);
         MPI_Irecv(recv_intros_siblings[neighbour].data(), nrecv[neighbour], MPI_INT, neighbour, 2, comm, &reqs.emplace_back());
-        MPI_Irecv(recv_intros_gids[neighbour].data(), nrecv[neighbour], Dune::MPITraits<std::int64_t>::getType(), neighbour, 3, comm,
-                  &reqs.emplace_back());
+        MPI_Irecv(recv_intros_gids[neighbour].data(), nrecv[neighbour], Dune::MPITraits<std::int64_t>::getType(), neighbour, 3, comm, &reqs.emplace_back());
       }
     }
     for (const auto& [peer, data] : intros_siblings)
@@ -386,8 +383,7 @@ public:
 
     // The context (e.g. a sycl::queue) is taken from the caller's data and cached: buffers may
     // outlive the vector they were first created for
-    if (ctx_set && new_ctx != ctx)
-      DUNE_THROW(Dune::InvalidStateException, "vectors used with the same Communication must live on the same context (e.g. queue)");
+    if (ctx_set && new_ctx != ctx) DUNE_THROW(Dune::InvalidStateException, "vectors used with the same Communication must live on the same context (e.g. queue)");
     ctx = new_ctx;
     ctx_set = true;
 
@@ -446,9 +442,7 @@ public:
       if (indices.recv_idx.empty()) continue;
       switch (reduction_op) {
         case ReductionOperation::None: Backend::scatter(ctx, recv_bufs[peer].data(), indices.recv_idx, target); break;
-        case ReductionOperation::Addition:
-          Backend::template scatter_reduce<ReductionOperation::Addition>(ctx, recv_bufs[peer].data(), indices.recv_idx, target);
-          break;
+        case ReductionOperation::Addition: Backend::template scatter_reduce<ReductionOperation::Addition>(ctx, recv_bufs[peer].data(), indices.recv_idx, target); break;
       }
     }
 
@@ -472,8 +466,7 @@ private:
 
   void upload_indices(const CommunicationPattern::IndexMap& host_idxs)
   {
-    for (const auto& [peer, host] : host_idxs)
-      idxs.emplace(peer, Indices{Backend::make_buffer_from_host(ctx, host.send_idx), Backend::make_buffer_from_host(ctx, host.recv_idx)});
+    for (const auto& [peer, host] : host_idxs) idxs.emplace(peer, Indices{Backend::make_buffer_from_host(ctx, host.send_idx), Backend::make_buffer_from_host(ctx, host.recv_idx)});
   }
 
   std::unordered_map<int, Indices> idxs; // One index set per neighbour
@@ -745,8 +738,7 @@ public:
   template <class Vector>
   void copyOwnerToAll(const Vector& v, Vector& w) const
   {
-    if (&v != &w)
-      DUNE_THROW(Dune::Exception, "The compatibility method copyOwnerToAll is only supported when destination and source vector coincide");
+    if (&v != &w) DUNE_THROW(Dune::Exception, "The compatibility method copyOwnerToAll is only supported when destination and source vector coincide");
 
     broadcast(v);
   }
@@ -754,8 +746,7 @@ public:
   template <class Vector>
   void addOwnerCopyToOwnerCopy(const Vector& v, Vector& w) const
   {
-    if (&v != &w)
-      DUNE_THROW(Dune::Exception, "The compatibility method copyOwnerToAll is only supported when destination and source vector coincide");
+    if (&v != &w) DUNE_THROW(Dune::Exception, "The compatibility method copyOwnerToAll is only supported when destination and source vector coincide");
 
     reduce(v);
   }
@@ -860,17 +851,14 @@ std::vector<CommunicationNodes> make_roots_from_dune(const Dune::OwnerOverlapCop
 
       auto local = remote.localIndexPair().local().local();
       if (roots[local].rank != -1)
-        DUNE_THROW(Dune::InvalidStateException, "local index " << local << " (global " << roots[local].gid << ") is claimed by more than one owner ("
-                                                               << roots[local].rank << " and " << peer << ")");
+        DUNE_THROW(Dune::InvalidStateException, "local index " << local << " (global " << roots[local].gid << ") is claimed by more than one owner (" << roots[local].rank << " and " << peer << ")");
       roots[local].rank = peer;
     }
   }
 
   for (std::size_t i = 0; i < roots.size(); ++i)
     if (roots[i].rank == -1)
-      DUNE_THROW(Dune::InvalidStateException, "no owner found for local index "
-                                                  << i << " (global " << roots[i].gid
-                                                  << "); are the remote indices built and is the index flagged public?");
+      DUNE_THROW(Dune::InvalidStateException, "no owner found for local index " << i << " (global " << roots[i].gid << "); are the remote indices built and is the index flagged public?");
 
   return roots;
 }

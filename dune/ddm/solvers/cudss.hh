@@ -1,6 +1,6 @@
 #pragma once
 
-#if defined(DUNE_DDM_HAVE_CUDSS)
+#if defined(DUNE_DDM_HAVE_CUDSS) && defined(__ADAPTIVECPP__)
 
 #include "../backend/backend.hh"
 #include "../sycl/mat.hh"
@@ -39,14 +39,13 @@ inline const char* cudss_status_name(cudssStatus_t status)
 }
 } // namespace detail
 
-#define CUDSS_CHECK(call, name)                                                                                                                      \
-  do {                                                                                                                                               \
-    const cudssStatus_t ddm_cudss_status = (call);                                                                                                   \
-    if (ddm_cudss_status != CUDSS_STATUS_SUCCESS) [[unlikely]] {                                                                                     \
-      logger::error_all("cuDSS call {} failed with {} ({})", (name), ddm::detail::cudss_status_name(ddm_cudss_status),                               \
-                        static_cast<int>(ddm_cudss_status));                                                                                         \
-      MPI_Abort(MPI_COMM_WORLD, 17);                                                                                                                 \
-    }                                                                                                                                                \
+#define CUDSS_CHECK(call, name)                                                                                                                                                                        \
+  do {                                                                                                                                                                                                 \
+    const cudssStatus_t ddm_cudss_status = (call);                                                                                                                                                     \
+    if (ddm_cudss_status != CUDSS_STATUS_SUCCESS) [[unlikely]] {                                                                                                                                       \
+      logger::error_all("cuDSS call {} failed with {} ({})", (name), ddm::detail::cudss_status_name(ddm_cudss_status), static_cast<int>(ddm_cudss_status));                                            \
+      MPI_Abort(MPI_COMM_WORLD, 17);                                                                                                                                                                   \
+    }                                                                                                                                                                                                  \
   } while (0)
 
 /** @brief Direct solver for a GPU-resident matrix, backed by NVIDIA's cuDSS.
@@ -78,9 +77,8 @@ public:
     // Everything here hands raw USM pointers to the CUDA runtime and enqueues work into the queue's CUDA stream, so the queue
     // has to be on the CUDA backend. The default device selector will happily place it elsewhere when no CUDA device is
     // visible, and we would then feed host pointers to cuDSS and get silent garbage instead of an error.
-    DDM_CHECK(q.get_device().get_backend() == sycl::backend::cuda, "cuDSS needs a queue on the CUDA backend, but this one runs on '{}'",
-              q.get_device().get_info<sycl::info::device::name>());
-    DDM_CHECK(q.is_in_order(), "cuDSS solver needs an in-order queue to be ordered against the kernels producing its right hand side");
+    DDM_CHECK(q.get_device().get_backend() == sycl::backend::cuda, "cuDSS needs a queue on the CUDA backend, but this one runs on '{}'", q.get_device().get_info<sycl::info::device::name>());
+    DDM_ASSERT(q.is_in_order(), "cuDSS solver needs an in-order queue to be ordered against the kernels producing its right hand side");
 
     CUDSS_CHECK(cudssCreate(&handle), "cudssCreate");
     CUDSS_CHECK(cudssConfigCreate(&solver_config), "cudssConfigCreate");
@@ -90,9 +88,9 @@ public:
     const cudssMatrixViewType_t mview = CUDSS_MVIEW_FULL;
     const cudssIndexBase_t base = CUDSS_BASE_ZERO;
 
-    CUDSS_CHECK(cudssMatrixCreateCsr(&a, A.N(), A.M(), A.nonzeros(), A.row_offsets(), nullptr, A.column_indices(), A.values(), cudss_index_type,
-                                     cudss_index_type, cudss_value_type, mtype, mview, base),
-                "cudssMatrixCreateCsr");
+    CUDSS_CHECK(
+        cudssMatrixCreateCsr(&a, A.N(), A.M(), A.nonzeros(), A.row_offsets(), nullptr, A.column_indices(), A.values(), cudss_index_type, cudss_index_type, cudss_value_type, mtype, mview, base),
+        "cudssMatrixCreateCsr");
 
     // The two dense descriptors are created once here and retargeted at the caller's vectors in apply(); creating a pair per
     // solve leaks one descriptor per Krylov iteration. cudssMatrixCreateDn wants memory to describe, and the setup phases below
@@ -137,8 +135,7 @@ public:
    */
   void apply(Vec& x, Vec& b, Dune::InverseOperatorResult& res) override
   {
-    DDM_CHECK(x.size() == n and b.size() == n, "cuDSS solver was factorised for {} unknowns but got x of size {} and b of size {}", n, x.size(),
-              b.size());
+    DDM_ASSERT(x.size() == n and b.size() == n, "cuDSS solver was factorised for {} unknowns but got x of size {} and b of size {}", n, x.size(), b.size());
 
     enqueue_phase(CUDSS_PHASE_SOLVE, "cudssExecute (solve)", x.data(), b.data());
 
@@ -204,28 +201,27 @@ private:
 } // namespace ddm
 
 namespace Dune {
-DUNE_REGISTER_SOLVER("cudss",
-                     [](auto op_traits, const auto& op, const Dune::ParameterTree&) -> std::shared_ptr<typename decltype(op_traits)::solver_type> {
-                       using OpTraits = decltype(op_traits);
-                       using Scalar = typename OpTraits::domain_type::field_type;
+DUNE_REGISTER_SOLVER("cudss", [](auto op_traits, const auto& op, const Dune::ParameterTree&) -> std::shared_ptr<typename decltype(op_traits)::solver_type> {
+  using OpTraits = decltype(op_traits);
+  using Scalar = typename OpTraits::domain_type::field_type;
 
-                       if constexpr (OpTraits::isAssembled                                          // direct solver, so not matrix-free
-                                     && ddm::backend::IsGpuResident<typename OpTraits::matrix_type> // matrix must live on GPU
-                                     && ddm::backend::IsGpuResident<typename OpTraits::domain_type> // vector must live on GPU
-                                     && std::is_same_v<typename OpTraits::domain_type,
-                                                       typename OpTraits::range_type> // rhs and solution vector must be of the
-                                                                                      // same type
-                                     && (std::is_same_v<Scalar, double> || std::is_same_v<Scalar, float>)) {
-                         const auto& A = op_traits.getAssembledOpOrThrow(op);
-                         const auto& mat = A->getmat();
+  if constexpr (OpTraits::isAssembled                                          // direct solver, so not matrix-free
+                && ddm::backend::IsGpuResident<typename OpTraits::matrix_type> // matrix must live on GPU
+                && ddm::backend::IsGpuResident<typename OpTraits::domain_type> // vector must live on GPU
+                && std::is_same_v<typename OpTraits::domain_type,
+                                  typename OpTraits::range_type> // rhs and solution vector must be of the
+                                                                 // same type
+                && (std::is_same_v<Scalar, double> || std::is_same_v<Scalar, float>)) {
+    const auto& A = op_traits.getAssembledOpOrThrow(op);
+    const auto& mat = A->getmat();
 
-                         return std::make_shared<ddm::CuDSSSolver<Scalar>>(mat);
-                       }
-                       else {
-                         DUNE_THROW(Dune::UnsupportedType, "cudss requires a GPU-resident matrix/vector pair");
-                       }
-                       return nullptr;
-                     });
+    return std::make_shared<ddm::CuDSSSolver<Scalar>>(mat);
+  }
+  else {
+    DUNE_THROW(Dune::UnsupportedType, "cudss requires a GPU-resident matrix/vector pair");
+  }
+  return nullptr;
+});
 } // namespace Dune
 
 #endif
