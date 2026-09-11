@@ -146,7 +146,7 @@ if (cudss_FOUND)
   message(STATUS "Found cudss ${cudss_VERSION}, trying to find CUBLAS and CUSOLVER")
   find_package(CUDAToolkit REQUIRED) 
 
-  target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_CUDSS)
+  target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_CUDSS=1)
   target_include_directories(duneddm INTERFACE ${cudss_INCLUDE_DIR} ${CUBLAS_INC_PATH} ${CUSOLVER_INC_PATH})
   target_link_directories(duneddm INTERFACE ${cudss_LIBRARY_DIR} ${CUBLAS_LIB_PATH} ${CUSOLVER_LIB_PATH})
   target_link_libraries(duneddm INTERFACE cudss CUDA::cublas CUDA::cusolver)
