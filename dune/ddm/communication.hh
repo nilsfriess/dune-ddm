@@ -420,6 +420,7 @@ public:
     Backend::sync(ctx);
 
     // Post the sends
+    // TODO(20260913-151931): Support non-GPU-aware MPI
     for (const auto& [peer, indices] : idxs) {
       if (indices.send_idx.empty()) continue;
       MPI_Isend(send_bufs[peer].data(), (int)indices.send_idx.size(), mpi_type, peer, 4, pcomm, &requests.emplace_back());
@@ -433,13 +434,6 @@ public:
    *  received values have been written into the data that was passed to begin().
    */
   void end()
-  {
-    if (not busy()) return; // nothing was started, or it has already been completed
-
-    MPI_Waitall((int)requests.size(), requests.data(), MPI_STATUSES_IGNORE);
-
-    for (const auto& [peer, indices] : idxs) {
-      if (indices.recv_idx.empty()) continue;
       switch (reduction_op) {
         case ReductionOperation::None: Backend::scatter(ctx, recv_bufs[peer].data(), indices.recv_idx, target); break;
         case ReductionOperation::Addition: Backend::template scatter_reduce<ReductionOperation::Addition>(ctx, recv_bufs[peer].data(), indices.recv_idx, target); break;
