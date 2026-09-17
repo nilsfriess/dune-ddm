@@ -1,8 +1,8 @@
 #pragma once
 
+#include "dune/ddm/backend/backend.hh"
 #include "dune/ddm/backend/host/backend.hh"
 #include "dune/ddm/backend/sycl/backend.hh"
-#include "dune/ddm/backend/backend.hh"
 #include "logger.hh"
 #include "types.hh"
 #include "vector_factory.hh"
@@ -434,6 +434,11 @@ public:
    *  received values have been written into the data that was passed to begin().
    */
   void end()
+  {
+    if (not busy()) return; // nothing was started, or it has already been completed
+    MPI_Waitall((int)requests.size(), requests.data(), MPI_STATUSES_IGNORE);
+    for (const auto& [peer, indices] : idxs) {
+      if (indices.recv_idx.empty()) continue;
       switch (reduction_op) {
         case ReductionOperation::None: Backend::scatter(ctx, recv_bufs[peer].data(), indices.recv_idx, target); break;
         case ReductionOperation::Addition: Backend::template scatter_reduce<ReductionOperation::Addition>(ctx, recv_bufs[peer].data(), indices.recv_idx, target); break;
