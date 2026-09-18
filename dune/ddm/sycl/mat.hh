@@ -3,9 +3,11 @@
 #if __has_include(<sycl/sycl.hpp>)
 
 #include "../helpers.hh"
+#include "../multivector.hh"
 
 #include <dune/common/fmatrix.hh>
 #include <dune/istl/bcrsmatrix.hh>
+#include <dune/istl/foreach.hh>
 #include <memory>
 #include <span>
 #include <sycl/sycl.hpp>
@@ -98,7 +100,7 @@ public:
   static Mat from_bcrs(sycl::queue& q, const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, d, d>, Allocator>& A)
   {
     Index nnz = 0;
-    const auto [fr, fc] = flatMatrixForEach(A, [&](auto&&, auto&&, auto&&) { ++nnz; });
+    const auto [fr, fc] = Dune::flatMatrixForEach(A, [&](auto&&, auto&&, auto&&) { ++nnz; });
     Index N = fr;
 
     std::vector<Index> row_ptr(N + 1, 0);
@@ -165,6 +167,35 @@ public:
       block_type sum{0};
       for (auto k = row_start; k < row_end; ++k) sum += aa[k] * x_data[cc[k]];
       y_data[row] = sum;
+    });
+  }
+
+  // TODO: Don't template the backend, this only works if the multivector lives on the SyclBackend
+  template <class Backend, class MultiVectorIndex>
+  void mv(const MultiVector<Scalar, Backend, MultiVectorIndex>& X, MultiVector<Scalar, Backend, MultiVectorIndex>& Y) const
+  {
+    auto* Y_data = Y.data();
+    const auto* const X_data = X.data();
+    const auto m = Y.cols();
+    const auto n = Y.rows();
+
+    const auto* rr = r;
+    const auto* cc = c;
+    const auto* aa = a;
+
+    q.parallel_for(sycl::range<1>(rows), [=](auto idx) {
+      const auto row = idx[0];
+      const auto row_start = rr[row];
+      const auto row_end = rr[row + 1];
+
+      for (MultiVectorIndex j = 0; j < m; ++j) {
+        auto* y = Y_data + j * n;
+        const auto* x = X_data + j * n;
+
+        block_type sum{0};
+        for (auto k = row_start; k < row_end; ++k) sum += aa[k] * x[cc[k]];
+        y[row] = sum;
+      }
     });
   }
 

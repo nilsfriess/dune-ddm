@@ -85,3 +85,10 @@ dune_add_test(SOURCES test_sycl_comm.cc
   LABELS ddm
 )
 add_sycl_to_target(TARGET test_sycl_comm SOURCES test_sycl_comm.cc)
+dune_add_test(SOURCES test_multivector.cc
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 1
+  TIMEOUT 300
+  LABELS ddm
+)
+add_sycl_to_target(TARGET test_multivector SOURCES test_multivector.cc)

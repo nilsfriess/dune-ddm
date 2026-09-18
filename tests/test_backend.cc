@@ -1,14 +1,20 @@
 #include "dune/ddm/backend/backend.hh"
 #include "dune/ddm/backend/host/backend.hh"
 #include "dune/ddm/backend/sycl/backend.hh"
+#include "dune/ddm/helpers.hh"
 #include "dune/ddm/logger.hh"
+#include "dune/ddm/multivector.hh"
 #include "dune/ddm/sycl/vec.hh"
 #include "test_utils.hh"
+#include "tests/poisson_problem.hh"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <dune/common/fmatrix.hh>
 #include <dune/common/fvector.hh>
 #include <dune/common/parallel/mpihelper.hh>
+#include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/bvector.hh>
 #include <numeric>
 #include <string>
@@ -16,60 +22,8 @@
 #include <type_traits>
 #include <vector>
 
-/** @file
- *
- *  Tests for the dune/ddm/backend headers: the generic backend machinery (backend_traits,
- *  HasBackend, backend_of/backend_of_t, Buffer) and the per-backend implementation
- *  (context, make_buffer/make_buffer_from_host, malloc/free, gather, scatter, scatter_reduce,
- *  copy_n).
- *
- *  The compile-time contract is pinned with static_asserts at namespace scope; every runtime
- *  test is a template over a TestHelper. Adding a new backend (e.g. SYCL) therefore only means
- *  providing a helper with the members documented below and a backend_traits specialisation;
- *  no test in this file knows the concrete backend.
- */
-
 namespace {
-
-// ---------------------------------------------------------------------------
-// TestHelper concept
-// ---------------------------------------------------------------------------
-//
-// There is no base class: tests are templates that work on any type with these members.
-//
-//   using scalar_type = ...;                                   // element data type
-//   using vector_t    = ...;                                   // a backend-traited container
-//   using backend_t   = ddm::backend::backend_of_t<vector_t>;  // resolved through backend_traits
-//
-//   vector_t make_vector(std::size_t n);                      // n == 0 must be allowed: contexts
-//                                                             // are obtained via make_vector(0)
-//   std::vector<scalar_type> to_host_vector(const vector_t&); // device -> host copy
-//   void fill(vector_t&, scalar_type);                        // v = x everywhere
-//   void fill_with(vector_t&, const std::vector<scalar_type>&); // v[i] = vals[i]
-//   void fill_iota(vector_t&);                                // v[i] = i + 1
-//
-// A context is obtained generically as Backend::context(h.make_vector(0)) (for ddm::Sycl::Vec
-// this is its queue()). Note that read-back verification is done through to_host_vector(), so
-// the tests never dereference raw device pointers directly.
-//
-// The tests derive the backend's element type as what vector_t::data() points at (double for
-// std::vector, Dune::FieldVector<double, 1> for Dune::BlockVector, field_type for
-// ddm::Sycl::Vec). Buffers and naked malloc memory use exactly that element type, so the test
-// matches what gather/scatter see in real use (e.g. in Communication). This is why
-// make_buffer_from_host is only exercised with int index buffers: int buffers are the only
-// kind the production code creates from host data.
-//
-// For a SYCL helper on top of ddm::Sycl::Vec<Scalar>:
-//   * make_vector(n)        -> Vec(queue, n), where queue is owned by the helper
-//   * to_host_vector(v)     -> q.memcpy(host.data(), v.data(), ...).wait()
-//   * fill(v, x)            -> v = x (q.fill)
-//   * fill_with/fill_iota   -> host loop into a std::vector + memcpy, since Vec has no operator[]
-
-// ---------------------------------------------------------------------------
-// Compile-time contract of the generic machinery
-// ---------------------------------------------------------------------------
-
-// backend_traits / HasBackend: only specialised containers have a backend
+// checks HasBackend
 static_assert(ddm::backend::HasBackend<std::vector<double>>);
 static_assert(ddm::backend::HasBackend<Dune::BlockVector<Dune::FieldVector<double, 1>>>);
 static_assert(!ddm::backend::HasBackend<int>);
@@ -82,7 +36,7 @@ static_assert(std::is_same_v<ddm::backend::backend_of<std::vector<double>>::type
 static_assert(std::is_same_v<ddm::backend::backend_of_t<std::vector<double, std::allocator<double>>>, ddm::backend::HostBackend>);
 static_assert(std::is_same_v<ddm::backend::backend_of_t<Dune::BlockVector<Dune::FieldVector<double, 1>>>, ddm::backend::HostBackend>);
 
-// Buffer is move-only, and its moves are noexcept (backend-agnostic)
+// Buffer is move-only, and its moves are noexcept
 using HostBuffer = ddm::backend::Buffer<double, ddm::backend::HostBackend>;
 static_assert(!std::is_copy_constructible_v<HostBuffer>);
 static_assert(!std::is_copy_assignable_v<HostBuffer>);
@@ -91,16 +45,6 @@ static_assert(std::is_move_assignable_v<HostBuffer>);
 static_assert(std::is_nothrow_move_constructible_v<HostBuffer>);
 static_assert(std::is_nothrow_move_assignable_v<HostBuffer>);
 
-// ---------------------------------------------------------------------------
-// Runtime contract of Buffer
-// ---------------------------------------------------------------------------
-
-/** @brief Buffer life-cycle: default state, size/empty/data, ownership transfer on moves.
- *
- *  Contents are verified by scattering data in and gathering it out through a helper vector, so
- *  the test is backend-agnostic; only size/empty/data-pointer invariants are checked directly on
- *  the wrapper (they never dereference device memory).
- */
 template <class TestHelper>
 void check_buffer(TestHelper& h, Dune::TestSuite& t)
 {
@@ -217,11 +161,6 @@ void check_buffer(TestHelper& h, Dune::TestSuite& t)
   }
 }
 
-// ---------------------------------------------------------------------------
-// Runtime contract of the backend primitives
-// ---------------------------------------------------------------------------
-
-/** @brief Data-movement primitives, exercised on backend memory through helper vectors. */
 template <class TestHelper>
 void check_backend_primitives(TestHelper& h, Dune::TestSuite& t)
 {
@@ -235,9 +174,7 @@ void check_backend_primitives(TestHelper& h, Dune::TestSuite& t)
   const std::vector<int> perm = {3, 1, 7, 0, 5, 2, 6, 4}; // a permutation of 0..7
   const auto idx_buf = Backend::make_buffer_from_host(ctx, perm);
 
-  // make_buffer_from_host copies, it does not alias the host data (exercised with an int index
-  // buffer, the only kind of buffer the production code builds from host data; its contents are
-  // read back by using it as a gather permutation)
+  // make_buffer_from_host copies, it does not alias the host data
   {
     std::vector<int> host = {5, 6, 7};
     auto buf = Backend::make_buffer_from_host(ctx, host);
@@ -344,10 +281,6 @@ void check_backend_primitives(TestHelper& h, Dune::TestSuite& t)
   }
 }
 
-// ---------------------------------------------------------------------------
-// End-to-end tests through a backend vector
-// ---------------------------------------------------------------------------
-
 /** @brief copy_n on the backend vector type, the way SchwarzPreconditioner uses it. */
 template <class TestHelper>
 void check_vector_copy_n(TestHelper& h, Dune::TestSuite& t)
@@ -400,18 +333,85 @@ void check_vector_roundtrip(TestHelper& h, Dune::TestSuite& t)
   for (std::size_t i = 0; i < n; ++i) t.check(got[i] == static_cast<scalar_type>(i + 1), "round trip recovers the values") << "i=" << i << " got=" << got[i];
 }
 
-// ---------------------------------------------------------------------------
-// Test helpers: one per backend-traited container type
-// ---------------------------------------------------------------------------
+template <class TestHelper>
+void check_multivector_ops(TestHelper& h, Dune::TestSuite& t)
+{
+  // spmm: Y = A*X, checked against a host reference computed from the BCRS matrix
+  using Backend = typename TestHelper::backend_t;
+  using scalar_type = typename TestHelper::scalar_type;
+  using Multivector = typename ddm::MultiVector<scalar_type, Backend>;
+
+  const auto A_bcrs = h.make_bcrs_matrix();
+  const std::size_t n = A_bcrs.N();
+
+  const auto reference = [&](const auto& Xcols) {
+    std::vector<std::vector<double>> Ycols(Xcols.size(), std::vector<double>(n, 0.0));
+    for (std::size_t i = 0; i < n; ++i)
+      for (std::size_t k = 0; k < Xcols.size(); ++k) {
+        double sum = 0.0;
+        for (auto ci = A_bcrs[i].begin(); ci != A_bcrs[i].end(); ++ci) sum += *ci * Xcols[k][ci.index()];
+        Ycols[k][i] = sum;
+      }
+    return Ycols;
+  };
+
+  const auto run = [&](std::size_t m, const char* label) {
+    auto A = h.make_test_matrix();
+    auto ctx = Backend::context(A);
+
+    Multivector X(ctx, n, m);
+    Multivector Y(ctx, n, m);
+    h.fill_multivector(X, [](std::size_t i, std::size_t k) { return (i + 1) * (k + 1); });
+    h.fill_multivector(Y, [](std::size_t, std::size_t) { return -1.0; }); // garbage: spmm must overwrite
+    const auto Xcols = h.to_host_columns(X);
+
+    Backend::spmm(A, X, Y);
+
+    const auto Ycols = h.to_host_columns(Y);
+    const auto refcols = reference(Xcols);
+    const double tol = std::is_same_v<scalar_type, float> ? 1e-5 : 1e-12;
+    for (std::size_t k = 0; k < m; ++k)
+      for (std::size_t i = 0; i < n; ++i) {
+        const double ref = refcols[k][i];
+        const double got = Ycols[k][i];
+        t.check(std::abs(got - ref) <= tol * (1.0 + std::abs(ref)), "spmm matches the host reference") << label << ": col=" << k << " i=" << i << " got=" << got << " ref=" << ref;
+      }
+  };
+
+  run(1, "m=1");
+  run(4, "m=4");
+  run(17, "m=17");
+}
 
 template <class Scalar = double>
 class ISTLTestHelper {
 public:
   using scalar_type = Scalar;
   using vector_t = Dune::BlockVector<Dune::FieldVector<Scalar, 1>>;
+  using matrix_t = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>;
   using backend_t = ddm::backend::backend_of_t<vector_t>;
 
   vector_t make_vector(std::size_t n) { return vector_t(n); }
+
+  static matrix_t make_bcrs_matrix()
+  {
+    matrix_t a;
+
+    // Assemble 2d Poisson problem
+    using Grid = Dune::YaspGrid<2>;
+    Grid grid({1., 1.}, {32, 32}, 0ULL);
+    auto gv = grid.leafGridView();
+
+    // Homogeneous Dirichlet conditions on the whole boundary of the unit square
+    auto is_dirichlet = [](const auto&) { return true; };
+    auto coefficient = [](const auto&) { return 1.; };
+    auto source = [](const auto&) { return 1.; };
+
+    ddmtest::PoissonProblem<Scalar> p(gv, is_dirichlet, coefficient, source);
+    return *p.A;
+  }
+
+  static matrix_t make_test_matrix() { return make_bcrs_matrix(); }
 
   std::vector<Scalar> to_host_vector(const vector_t& v) { return std::vector<Scalar>(v.begin(), v.end()); }
 
@@ -426,6 +426,21 @@ public:
   {
     for (std::size_t i = 0; i < v.size(); ++i) v[i] = static_cast<Scalar>(i + 1);
   }
+
+  template <class MV, class F>
+  void fill_multivector(MV& X, F&& f)
+  {
+    for (std::size_t k = 0; k < X.cols(); ++k)
+      for (std::size_t i = 0; i < X.rows(); ++i) X.col(k)[i] = static_cast<scalar_type>(f(i, k));
+  }
+
+  template <class MV>
+  std::vector<std::vector<scalar_type>> to_host_columns(const MV& Y)
+  {
+    std::vector<std::vector<scalar_type>> cols(Y.cols());
+    for (std::size_t k = 0; k < Y.cols(); ++k) cols[k].assign(Y.col(k), Y.col(k) + Y.rows());
+    return cols;
+  }
 };
 
 template <class Scalar = double>
@@ -433,9 +448,14 @@ class StdVectorTestHelper {
 public:
   using scalar_type = Scalar;
   using vector_t = std::vector<Scalar>;
+  using matrix_t = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>;
   using backend_t = ddm::backend::backend_of_t<vector_t>;
 
   vector_t make_vector(std::size_t n) { return vector_t(n); }
+
+  matrix_t make_test_matrix() { return ISTLTestHelper<Scalar>::make_test_matrix(); }
+
+  ISTLTestHelper<Scalar>::matrix_t make_bcrs_matrix() { return ISTLTestHelper<Scalar>::make_bcrs_matrix(); }
 
   std::vector<Scalar> to_host_vector(const vector_t& v) { return v; }
 
@@ -450,6 +470,21 @@ public:
   {
     for (std::size_t i = 0; i < v.size(); ++i) v[i] = static_cast<Scalar>(i + 1);
   }
+
+  template <class MV, class F>
+  void fill_multivector(MV& X, F&& f)
+  {
+    for (std::size_t k = 0; k < X.cols(); ++k)
+      for (std::size_t i = 0; i < X.rows(); ++i) X.col(k)[i] = static_cast<scalar_type>(f(i, k));
+  }
+
+  template <class MV>
+  std::vector<std::vector<scalar_type>> to_host_columns(const MV& Y)
+  {
+    std::vector<std::vector<scalar_type>> cols(Y.cols());
+    for (std::size_t k = 0; k < Y.cols(); ++k) cols[k].assign(Y.col(k), Y.col(k) + Y.rows());
+    return cols;
+  }
 };
 
 template <class Scalar = double>
@@ -457,6 +492,7 @@ class SyclTestHelper {
 public:
   using scalar_type = Scalar;
   using vector_t = ddm::Sycl::Vec<Scalar>;
+  using matrix_t = ddm::Sycl::Mat<Scalar>;
   using backend_t = ddm::backend::backend_of_t<vector_t>;
 
   explicit SyclTestHelper(sycl::queue q_)
@@ -465,6 +501,10 @@ public:
   }
 
   vector_t make_vector(std::size_t n) { return ddm::Sycl::Vec<Scalar>(q, n); }
+
+  ISTLTestHelper<Scalar>::matrix_t make_bcrs_matrix() { return ISTLTestHelper<Scalar>::make_bcrs_matrix(); }
+
+  matrix_t make_test_matrix() { return matrix_t::from_bcrs(q, make_bcrs_matrix()); }
 
   std::vector<Scalar> to_host_vector(const vector_t& v)
   {
@@ -481,6 +521,27 @@ public:
   {
     auto* ptr = v.data();
     q.parallel_for(sycl::range<1>(v.size()), [=](auto id) { ptr[id] = static_cast<Scalar>(id + 1); });
+  }
+
+  template <class MV, class F>
+  void fill_multivector(MV& X, F&& f)
+  {
+    std::vector<scalar_type> vals(X.rows());
+    for (std::size_t k = 0; k < X.cols(); ++k) {
+      for (std::size_t i = 0; i < X.rows(); ++i) vals[i] = static_cast<scalar_type>(f(i, k));
+      q.memcpy(X.col(k), vals.data(), vals.size() * sizeof(scalar_type));
+    }
+    q.wait();
+  }
+
+  template <class MV>
+  std::vector<std::vector<scalar_type>> to_host_columns(const MV& Y)
+  {
+    std::vector<scalar_type> flat(Y.rows() * Y.cols());
+    q.memcpy(flat.data(), Y.data(), flat.size() * sizeof(scalar_type)).wait();
+    std::vector<std::vector<scalar_type>> cols(Y.cols());
+    for (std::size_t k = 0; k < Y.cols(); ++k) cols[k] = std::vector<scalar_type>(flat.begin() + k * Y.rows(), flat.begin() + (k + 1) * Y.rows());
+    return cols;
   }
 
 private:
@@ -512,6 +573,7 @@ int test_backend(TestHelper& h)
     check_backend_primitives(h, t);
     check_vector_copy_n(h, t);
     check_vector_roundtrip(h, t);
+    check_multivector_ops(h, t);
   });
 }
 } // namespace

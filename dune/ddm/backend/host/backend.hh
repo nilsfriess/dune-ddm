@@ -3,8 +3,11 @@
 #include "../../types.hh"
 #include "../backend.hh"
 #include "dune/ddm/helpers.hh"
+#include "dune/ddm/multivector.hh"
 
 #include <algorithm>
+#include <dune/common/exceptions.hh>
+#include <dune/common/fmatrix.hh>
 #include <dune/istl/bvector.hh>
 #include <variant>
 #include <vector>
@@ -93,6 +96,26 @@ struct HostBackend {
     auto tmp = x;
     pointwise_mult(mask, tmp);
     return tmp.dot(y);
+  }
+
+  template <class Matrix, class Scalar, class Index>
+  static void spmm(const Matrix& A, const MultiVector<Scalar, HostBackend, Index>& X, MultiVector<Scalar, HostBackend, Index>& Y)
+  {
+    DDM_CHECK(A.M() == X.rows(), "The number of columns in A ({}) and rows in X ({}) do not match", A.M(), X.rows());
+    DDM_CHECK(A.N() == Y.rows(), "The number of rows in A ({}) and rows in Y ({}) do not match", A.N(), Y.rows());
+    DDM_CHECK(X.cols() == Y.cols(), "The number of cols in X ({}) and cols in Y ({}) do not match", X.cols(), Y.cols());
+
+    const Index m = X.cols();
+    for (auto ri = A.begin(); ri != A.end(); ++ri) {
+      const Index i = ri.index();
+      for (Index k = 0; k < m; ++k) {
+        const Scalar* x = X.col(k);
+
+        Scalar sum = 0;
+        for (auto ci = ri->begin(); ci != ri->end(); ++ci) sum += *ci * x[ci.index()];
+        Y.col(k)[i] = sum;
+      }
+    }
   }
 
   // template <class T>

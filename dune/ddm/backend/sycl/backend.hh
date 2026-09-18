@@ -3,6 +3,8 @@
 #if __has_include(<sycl/sycl.hpp>)
 
 #include "../backend.hh"
+#include "dune/ddm/helpers.hh"
+#include "dune/ddm/multivector.hh"
 #include "dune/ddm/types.hh"
 
 #include <sycl/sycl.hpp>
@@ -108,6 +110,12 @@ struct SyclBackend {
   static auto masked_dot(const V& x, const V& mask, const V& y)
   {
     return x.masked_dot(mask, y);
+  }
+
+  template <class MatrixScalar, class MatrixIndex, class VectorScalar>
+  static void spmm(const Sycl::Mat<MatrixScalar, MatrixIndex>& A, const MultiVector<VectorScalar, SyclBackend>& X, MultiVector<VectorScalar, SyclBackend>& Y)
+  {
+    A.mv(X, Y);
   }
 };
 
