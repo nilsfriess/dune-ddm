@@ -129,17 +129,7 @@ find_package(BLAS REQUIRED)
 find_package(LAPACK REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED)
-
-# AdaptiveCpp (SYCL). Found here rather than in a subdirectory because
-# add_sycl_to_target() reads ACPP_COMPILER_LAUNCH_RULE, a plain variable that
-# adaptivecpp-config.cmake sets in the scope of this find_package() call. A
-# function resolves variables in its caller's scope, so a find_package() in
-# examples/ would leave the variable empty in the sibling tests/ directory:
-# add_sycl_to_target() would then silently set an empty compiler launch rule and
-# the target would be built by plain clang++ while still linking libacpp-rt,
-# which fails at runtime rather than at build time.
-set(ACPP_TARGETS generic)
-find_package(AdaptiveCpp REQUIRED)
+find_package(AdaptiveCpp REQUIRED) # TODO: Don't make this a hard requirement
 
 find_package(cudss 0.8.0)
 if (cudss_FOUND)
