@@ -16,6 +16,7 @@
 #define DDM_HAVE_SYCL
 #endif
 
+#include "backend/backend.hh"
 #include "sycl/mat.hh"
 #include "sycl/vec.hh"
 
@@ -59,6 +60,25 @@ auto create_vector_like_from_host(const Sycl::Vec<Scalar, Index>& template_vecto
   return Sycl::Vec<Scalar, Index>::from_host_vector(template_vector.queue(), host_vector);
 }
 #endif
+
+/** @brief Creates a zero vector with the same type, size and backend as \p v.
+ *
+ *  Useful wherever generic code needs scratch storage shaped like an incoming vector, e.g. in
+ *  CombinedPreconditioner.
+ */
+template <class V>
+auto create_zero_vector_like(const V& v)
+{
+  if constexpr (backend::IsGpuResident<V>) {
+    V w(v.queue(), v.size());
+    w = 0;
+    return w;
+  } else {
+    V w(v.size());
+    w = 0;
+    return w;
+  }
+}
 
 } // namespace ddm
 

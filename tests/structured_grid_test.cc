@@ -110,6 +110,74 @@ bool solve_cg(const Dune::MPIHelper& helper, std::shared_ptr<Communication>& com
   return true;
 }
 
+template <class Matrix, class Vector>
+bool solve_two_level_schwarz(const Dune::MPIHelper& helper, std::shared_ptr<ddm::Communication>& comm, std::shared_ptr<Matrix>& A, const Vector& b, Vector& x, std::shared_ptr<PartitionOfUnity> pou,
+                             const std::vector<bool>& dirichlet)
+{
+  using Operator = ConsistentParallelMatrixOperator<Matrix, Vector, Vector, ddm::Communication>;
+  using SchwarzPrec = ddm::SchwarzPreconditioner<Matrix, Vector>;
+  using GalerkinPrec = ddm::GalerkinPreconditioner<Vector, ddm::Communication>;
+  using Backend = ddm::backend::backend_of_t<Vector>;
+  using Restriction = ddm::MultiVector<double, Backend>;
+
+  auto op = std::make_shared<Operator>(A, comm);
+  Dune::initSolverFactories<Operator>();
+  Dune::ParameterTree solver_tree;
+  solver_tree["verbose"] = (helper.rank() == 0) ? "2" : "0";
+  solver_tree["type"] = "cgsolver";
+  solver_tree["reduction"] = "1e-8";
+  solver_tree["maxit"] = "1000";
+  solver_tree["restart"] = "30";
+
+  // Coarse level: the Nicolaides space, i.e. the partition of unity itself as the single template
+  // vector of each rank, zeroed at the Dirichlet DOFs. The vector lives on the host and is copied
+  // into a multivector on the vector's backend, from where the preconditioner moves it.
+  Dune::BlockVector<Dune::FieldVector<double, 1>> t(pou->size());
+  std::copy(pou->vector().begin(), pou->vector().end(), t.begin());
+  for (std::size_t i = 0; i < t.size(); ++i)
+    if (dirichlet[i]) t[i] = 0;
+
+  Restriction R(Backend::context(*A), A->N(), 1);
+  ddm::copy_into_column(t, R, 0u);
+
+  Dune::ParameterTree galerkin_tree;
+  galerkin_tree["galerkin.type"] = "umfpack";
+  galerkin_tree["galerkin.solve_mode"] = "redundant";
+  auto coarse_prec = std::make_shared<GalerkinPrec>(*A, std::move(R), comm, galerkin_tree);
+
+  // Fine level: same construction as the single-level Schwarz. This needs a direct solver for the
+  // local problems, which not every backend provides (e.g. SYCL on CPU); without the fine level
+  // the two-level method is not meaningful (the coarse space alone cannot converge), so the solve
+  // is skipped in that case.
+  std::shared_ptr<SchwarzPrec> fine_prec;
+  try {
+    Dune::ParameterTree schwarz_tree;
+    schwarz_tree["schwarz.type"] = "standard";
+    fine_prec = std::make_shared<SchwarzPrec>(A, comm, *pou, schwarz_tree);
+  }
+  catch (Dune::Exception& e) {
+    std::cout << "Schwarz level unavailable (" << e.what() << "), skipping the two-level solve\n";
+    return false;
+  }
+
+  // Combine the two levels additively
+  auto prec = std::make_shared<CombinedPreconditioner<Vector>>(Dune::ParameterTree{});
+  prec->add(fine_prec);
+  prec->add(coarse_prec);
+
+  auto solver = Dune::getSolverFromFactory(op, solver_tree, prec);
+
+  // Solve the system
+  Dune::InverseOperatorResult res;
+  x = 0.;
+  auto rhs = b;
+  solver->apply(x, rhs, res);
+
+  if (helper.rank() == 0) std::cout << "two-level solve: " << res.iterations << " iterations, converged = " << res.converged << "\n";
+
+  return res.converged;
+}
+
 int main(int argc, char** argv)
 {
   try {
@@ -143,13 +211,15 @@ int main(int argc, char** argv)
     comm->copyOwnerToAll(p.b, p.b); // Make b consistent
     auto vec_comm = std::make_shared<ddm::Communication>(ddm::make_communication_from_dune(*comm));
     auto pou = std::make_shared<PartitionOfUnity>(*p.A, *comm, PartitionOfUnityType::Standard);
+    const auto dirichlet = detect_dirichlet_dofs(*p.A);
 
     // Run with ISTL backend
     {
-      typename ddmtest::PoissonProblem::Vector x(p.b.size());
+      typename ddmtest::PoissonProblem<>::Vector x(p.b.size());
 
       solve_cg(helper, comm, p.A, p.b, x);
       solve_single_level_schwarz(helper, vec_comm, p.A, p.b, x, pou);
+      solve_two_level_schwarz(helper, vec_comm, p.A, p.b, x, pou, dirichlet);
     }
 
     // Run with SYCL backend
@@ -164,6 +234,7 @@ int main(int argc, char** argv)
 
       solve_cg(helper, vec_comm, A, b, x);
       solve_single_level_schwarz(helper, vec_comm, A, b, x, pou);
+      solve_two_level_schwarz(helper, vec_comm, A, b, x, pou, dirichlet);
     }
 
     Logger::get().report(MPI_COMM_WORLD);

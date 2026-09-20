@@ -351,10 +351,18 @@ private:
 };
 
 namespace detail {
+
 /// Which of a CommunicationPattern's two plans an exchange runs on.
 enum class PlanKind : std::uint8_t {
   Broadcast,
   Reduction,
+  AllHolders,
+};
+
+/// One peer's block of columns in the receiving multivector of an all-holders exchange.
+struct ColumnBlock {
+  std::size_t offset; ///< first column of the block in the receiving multivector
+  std::size_t width;  ///< number of columns the peer provides (what it sends into the block)
 };
 
 /** The device-side mirror of one CommunicationPattern::IndexMap, together with the message buffers
@@ -399,6 +407,7 @@ public:
     for (const auto& [peer, indices] : idxs) {
       if (indices.recv_idx.empty()) continue;
       if (!recv_bufs.contains(peer)) recv_bufs[peer] = Backend::template make_buffer<T>(ctx, indices.recv_idx.size());
+      // TODO(20260920-094432): Use different tags in the communication
       MPI_Irecv(recv_bufs[peer].data(), (int)indices.recv_idx.size(), mpi_type, peer, 4, pcomm, &requests.emplace_back());
     }
 
@@ -439,9 +448,16 @@ public:
     MPI_Waitall((int)requests.size(), requests.data(), MPI_STATUSES_IGNORE);
     for (const auto& [peer, indices] : idxs) {
       if (indices.recv_idx.empty()) continue;
-      switch (reduction_op) {
-        case ReductionOperation::None: Backend::scatter(ctx, recv_bufs[peer].data(), indices.recv_idx, target); break;
-        case ReductionOperation::Addition: Backend::template scatter_reduce<ReductionOperation::Addition>(ctx, recv_bufs[peer].data(), indices.recv_idx, target); break;
+      if (column_blocks.contains(peer)) { // all-holders exchange: unpack into the peer's column block
+        const ColumnBlock& block = column_blocks.at(peer);
+        if (block.width == 0) continue;
+        Backend::scatter_columns(ctx, recv_bufs.at(peer).data(), indices.recv_idx, column_rows, block.width, target + block.offset * column_rows);
+      }
+      else {
+        switch (reduction_op) {
+          case ReductionOperation::None: Backend::scatter(ctx, recv_bufs[peer].data(), indices.recv_idx, target); break;
+          case ReductionOperation::Addition: Backend::template scatter_reduce<ReductionOperation::Addition>(ctx, recv_bufs[peer].data(), indices.recv_idx, target); break;
+        }
       }
     }
 
@@ -450,9 +466,72 @@ public:
 
     requests.clear();
     target = nullptr;
+    column_blocks.clear();
+    column_rows = 0;
   }
 
   bool busy() const { return target != nullptr; }
+
+  /** Column-wise variant of begin() for the all-holders exchange of multivectors.
+   *
+   *  Sends the values of all \p send_cols columns of \p send_data (column-major, \p rows entries
+   *  per column) at the send indices of every peer, and starts receiving the peers' values into
+   *  their blocks of \p recv_data: peer p writes the columns [block.offset, block.offset +
+   *  block.width) at its recv indices. Everything outside the blocks is left untouched, so
+   *  zero-fill \p recv_data beforehand to zero-extend the received vectors.
+   *
+   *  The per-peer index lists are the reduction plan's: the indices two ranks share are the same
+   *  in both directions. A peer with block.width == 0 (it provides no columns) sends nothing and
+   *  is not received from; likewise nothing is sent to anyone if send_cols == 0.
+   */
+  // TODO(20260920-094658): Validate the input of begin_columns to get rid of the exception that might be thrown after receives have been posted
+  void begin_columns(const CommunicationPattern::IndexMap& host_idxs, MPI_Comm pcomm, Context new_ctx, const T* send_data, std::size_t rows, std::size_t send_cols, T* recv_data,
+                     const std::map<int, ColumnBlock>& blocks)
+  {
+    if (busy()) DUNE_THROW(Dune::InvalidStateException, "an exchange on this plan is still in flight");
+
+    if (ctx_set && new_ctx != ctx) DUNE_THROW(Dune::InvalidStateException, "vectors used with the same Communication must live on the same context (e.g. queue)");
+    ctx = new_ctx;
+    ctx_set = true;
+
+    if (!indices_on_device) {
+      upload_indices(host_idxs);
+      indices_on_device = true;
+    }
+
+    auto mpi_type = Dune::MPITraits<T>::getType();
+    requests.reserve(2 * idxs.size());
+
+    // Post the receives: peer p sends block(p).width columns into block(p).offset
+    for (const auto& [peer, indices] : idxs) {
+      const ColumnBlock& block = blocks.at(peer);
+      if (block.width == 0 or indices.recv_idx.empty()) continue;
+      const std::size_t count = indices.recv_idx.size() * block.width;
+      MPI_Irecv(ensure_buffer(recv_bufs, peer, count).data(), (int)count, mpi_type, peer, 4, pcomm, &requests.emplace_back());
+    }
+
+    // Pack every send buffer first: our values at the send indices, for all our columns
+    for (const auto& [peer, indices] : idxs) {
+      if (send_cols == 0 or indices.send_idx.empty()) continue;
+      const std::size_t count = indices.send_idx.size() * send_cols;
+      Backend::gather_columns(ctx, send_data, indices.send_idx, rows, send_cols, ensure_buffer(send_bufs, peer, count).data());
+    }
+
+    // The gathers are enqueued kernels and MPI knows nothing about the queue: drain it before the
+    // buffers are handed to MPI, so no send reads data that has not been written yet.
+    Backend::sync(ctx);
+
+    for (const auto& [peer, indices] : idxs) {
+      if (send_cols == 0 or indices.send_idx.empty()) continue;
+      const std::size_t count = indices.send_idx.size() * send_cols;
+      MPI_Isend(send_bufs.at(peer).data(), (int)count, mpi_type, peer, 4, pcomm, &requests.emplace_back());
+    }
+
+    target = recv_data;
+    column_rows = rows;
+    column_blocks = blocks;
+    reduction_op = ReductionOperation::None;
+  }
 
 private:
   template <class U>
@@ -468,11 +547,26 @@ private:
     for (const auto& [peer, host] : host_idxs) idxs.emplace(peer, Indices{Backend::make_buffer_from_host(ctx, host.send_idx), Backend::make_buffer_from_host(ctx, host.recv_idx)});
   }
 
+  /** The buffer for \p peer, (re)allocated to hold at least \p n entries.
+   *
+   *  Buffers persist between exchanges but their contents are rebuilt on every begin(), so growing
+   *  one when a larger exchange needs more room is safe.
+   */
+  BackendBuffer<T>& ensure_buffer(std::unordered_map<int, BackendBuffer<T>>& buffers, int peer, std::size_t n)
+  {
+    auto it = buffers.find(peer);
+    if (it == buffers.end()) it = buffers.emplace(peer, Backend::template make_buffer<T>(ctx, n)).first;
+    else if (it->second.size() < n) it->second = Backend::template make_buffer<T>(ctx, n);
+    return it->second;
+  }
+
   std::unordered_map<int, Indices> idxs; // One index set per neighbour
 
   bool indices_on_device = false;
   T* target = nullptr;                                        ///< where end() writes the received values; also marks an exchange as in flight
   ReductionOperation reduction_op = ReductionOperation::None; ///< how end() combines them with what is already there
+  std::map<int, ColumnBlock> column_blocks;                   ///< set by begin_columns(), empty for a plain exchange
+  std::size_t column_rows = 0;                                ///< rows of the multivectors in a begin_columns() exchange
 
   std::unordered_map<int, BackendBuffer<T>> send_bufs; ///< gather buffers for outgoing data, reused between exchanges
   std::unordered_map<int, BackendBuffer<T>> recv_bufs; ///< buffers for incoming data, reused between exchanges
@@ -508,6 +602,8 @@ public:
       , broadcast_wait_event{Logger::get().registerOrGetEvent("Communication", "broadcast wait")}
       , reduce_begin_event{Logger::get().registerOrGetEvent("Communication", "reduce begin")}
       , reduce_wait_event{Logger::get().registerOrGetEvent("Communication", "reduce wait")}
+      , all_holders_begin_event{Logger::get().registerOrGetEvent("Communication", "all-holders begin")}
+      , all_holders_wait_event{Logger::get().registerOrGetEvent("Communication", "all-holders wait")}
   {
   }
 
@@ -515,7 +611,7 @@ public:
   {
     // An Exchange keeps its exchanger alive until it has been waited for, so getting here with an
     // exchange still in flight means one was started without an Exchange to complete it.
-    if (broadcast_state.busy() or reduction_state.busy()) logger::error("Communication was destroyed while an exchange was in flight");
+    if (broadcast_state.busy() or reduction_state.busy() or all_holders_state.busy()) logger::error("Communication was destroyed while an exchange was in flight");
   }
 
   void broadcast_begin(Context ctx, T* data)
@@ -530,16 +626,24 @@ public:
     reduction_state.begin(pattern->reduction_indices(), pattern->communicator(), ctx, data, op);
   }
 
+  /** Starts an all-holders exchange of multivectors, see ExchangeState::begin_columns(). */
+  void all_holders_begin(Context ctx, const T* send_data, std::size_t rows, std::size_t send_cols, T* recv_data, const std::map<int, ColumnBlock>& blocks)
+  {
+    Logger::ScopedLog sl{all_holders_begin_event};
+    all_holders_state.begin_columns(pattern->reduction_indices(), pattern->communicator(), ctx, send_data, rows, send_cols, recv_data, blocks);
+  }
+
   void finish(PlanKind plan) noexcept override
   {
     // This is where the exchange actually costs time: begin() only posts the messages, the
     // MPI_Waitall and the unpacking happen here.
-    Logger::ScopedLog sl{plan == PlanKind::Broadcast ? broadcast_wait_event : reduce_wait_event};
+    Logger::ScopedLog sl{plan == PlanKind::Broadcast ? broadcast_wait_event : plan == PlanKind::AllHolders ? all_holders_wait_event : reduce_wait_event};
 
     // There is nobody to report a failure to: we are on the way out of ~Exchange(). MPI's default
     // error handler aborts rather than returns, so in practice this catches Backend::sync().
     try {
       if (plan == PlanKind::Broadcast) broadcast_state.end();
+      else if (plan == PlanKind::AllHolders) all_holders_state.end();
       else reduction_state.end();
     }
     catch (const std::exception& e) {
@@ -554,13 +658,16 @@ private:
   std::shared_ptr<const CommunicationPattern> pattern;
   ExchangeState<Backend, T> broadcast_state;
   ExchangeState<Backend, T> reduction_state;
+  ExchangeState<Backend, T> all_holders_state;
 
   // Registered once per exchanger, so that the hot path only dereferences a pointer. The events
   // themselves are shared by name with every other exchanger (and pre-registered by Communication).
-  Logger::Event* broadcast_begin_event{nullptr}; ///< packing and posting of a broadcast
-  Logger::Event* broadcast_wait_event{nullptr};  ///< waiting for and unpacking a broadcast
-  Logger::Event* reduce_begin_event{nullptr};    ///< packing and posting of a reduction
-  Logger::Event* reduce_wait_event{nullptr};     ///< waiting for and unpacking a reduction
+  Logger::Event* broadcast_begin_event{nullptr};   ///< packing and posting of a broadcast
+  Logger::Event* broadcast_wait_event{nullptr};    ///< waiting for and unpacking a broadcast
+  Logger::Event* reduce_begin_event{nullptr};      ///< packing and posting of a reduction
+  Logger::Event* reduce_wait_event{nullptr};       ///< waiting for and unpacking a reduction
+  Logger::Event* all_holders_begin_event{nullptr}; ///< packing and posting of an all-holders exchange
+  Logger::Event* all_holders_wait_event{nullptr};  ///< waiting for and unpacking an all-holders exchange
 };
 } // namespace detail
 
@@ -680,6 +787,8 @@ public:
     Logger::get().registerOrGetEvent("Communication", "broadcast wait");
     Logger::get().registerOrGetEvent("Communication", "reduce begin");
     Logger::get().registerOrGetEvent("Communication", "reduce wait");
+    Logger::get().registerOrGetEvent("Communication", "all-holders begin");
+    Logger::get().registerOrGetEvent("Communication", "all-holders wait");
   }
 
   // /// Builds a Communication on an existing pattern, sharing its topology and its communicator.
@@ -731,6 +840,46 @@ public:
     using ptr = std::remove_const_t<std::remove_pointer_t<decltype(v.data())>>*;
     exchanger->reduce_begin(Backend::context(v), const_cast<ptr>(v.data()), op);
     return {std::move(exchanger), detail::PlanKind::Reduction};
+  }
+
+  /** @brief Exchanges every column of a MultiVector between all ranks that share indices.
+   *
+   *  Sends this rank's columns \p mine to every neighbour, which writes the received values into
+   *  its own block of \p received (overwrite, no accumulation). Every rank needs only the columns
+   *  of its neighbours: a rank that shares no index with us has columns that are zero on all of
+   *  our indices.
+   *
+   *  The column blocks of \p received are keyed by neighbour rank via \p block_offsets and must be
+   *  contiguous in the map's order: the width of a peer's block follows from the next peer's
+   *  offset, and the last block extends to received.cols(). Each width must equal the number of
+   *  columns the peer provides. Indices not shared with a peer keep their zero-filled value, which
+   *  zero-extends the peer's columns to the local index set.
+   *
+   *  Returns a handle to the started exchange, like broadcast() and reduce(). The exchange runs on
+   *  the reduction plan (the indices two ranks share are the same in both directions) and cannot
+   *  run concurrently with a reduce() on the same Communication.
+   *
+   *  @param mine          The columns this rank provides (not modified)
+   *  @param received      Must be zero-filled; peer p writes the block starting at
+   *                       block_offsets.at(p). Must stay valid until the exchange has been waited for.
+   *  @param block_offsets Column offset of each neighbour's block in \p received
+   */
+  template <class Scalar, class Backend, class Index>
+  Exchange exchange_all_holders(const MultiVector<Scalar, Backend, Index>& mine, MultiVector<Scalar, Backend, Index>& received, const std::map<int, Index>& block_offsets) const
+  {
+    using MultiVector = MultiVector<Scalar, Backend, Index>;
+
+    // Derive each peer's block width from the contiguity contract above
+    std::map<int, detail::ColumnBlock> blocks;
+    for (auto it = block_offsets.begin(); it != block_offsets.end(); ++it) {
+      auto next = std::next(it);
+      const std::size_t width = next == block_offsets.end() ? static_cast<std::size_t>(received.cols()) - it->second : next->second - it->second;
+      blocks.emplace(it->first, detail::ColumnBlock{it->second, width});
+    }
+
+    auto exchanger = exchanger_for<MultiVector>();
+    exchanger->all_holders_begin(mine.context(), mine.data(), mine.rows(), mine.cols(), received.data(), blocks);
+    return {std::move(exchanger), detail::PlanKind::AllHolders};
   }
 
   // Compatibility functions for DUNE

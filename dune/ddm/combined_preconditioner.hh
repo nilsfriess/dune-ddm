@@ -1,6 +1,7 @@
 #pragma once
 
 #include "logger.hh"
+#include "vector_factory.hh"
 
 #include <cstdint>
 #include <dune/common/exceptions.hh>
@@ -124,9 +125,8 @@ public:
     x = 0;
     precs[0]->apply(x, d);
     if (mode == ApplyMode::Additive) {
-      X xnext(x.N());
       for (std::size_t i = 1; i < precs.size(); ++i) {
-        xnext = 0;
+        X xnext = ddm::create_zero_vector_like(x);
         precs[i]->apply(xnext, d);
 
         x += xnext;
@@ -139,7 +139,7 @@ public:
       for (std::size_t i = 1; i < precs.size(); ++i) {
         A->applyscaleadd(-1.0, x, dnext);
 
-        X xnext(x.N());
+        X xnext = ddm::create_zero_vector_like(x);
         xnext = 0;
         precs[i]->apply(xnext, dnext);
 

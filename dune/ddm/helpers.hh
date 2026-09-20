@@ -59,11 +59,12 @@ inline void check_impl(const char* file, int line, bool condition, std::format_s
     }                                                                                                                                                                                                  \
   } while (0)
 
+template <class Scalar>
 struct TripleWithRank {
   int rank;
   std::size_t row;
   std::size_t col;
-  double val;
+  Scalar val;
 };
 
 enum class Attribute : std::uint8_t { owner, copy };
@@ -106,8 +107,8 @@ inline std::ostream& operator<<(std::ostream& out, Attribute attribute)
     exactly zero. Clipping never changes the shape of the matrix: a row whose entries are all clipped
     away still occupies an (empty) row of the result.
 */
-template <class Vec>
-Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec>& rows, MPI_Comm comm, double clip_tolerance = 0)
+template <class Scalar = double, class Vec>
+Dune::BCRSMatrix<Scalar> gatherMatrixFromRows(const std::vector<Vec>& rows, MPI_Comm comm, double clip_tolerance = 0)
 {
   int rank = 0;
   int size = 0;
@@ -131,17 +132,17 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec>& rows, MPI_
 
   constexpr int nitems = 4;
   std::array<int, nitems> blocklengths = {1, 1, 1, 1};
-  std::array<MPI_Datatype, nitems> types = {MPI_INT, MPI_UNSIGNED_LONG, MPI_UNSIGNED_LONG, MPI_DOUBLE};
+  std::array<MPI_Datatype, nitems> types = {MPI_INT, MPI_UNSIGNED_LONG, MPI_UNSIGNED_LONG, Dune::MPITraits<Scalar>::getType()};
   MPI_Datatype triple_type = MPI_DATATYPE_NULL;
   std::array<MPI_Aint, nitems> offsets{0};
-  offsets[0] = offsetof(TripleWithRank, rank);
-  offsets[1] = offsetof(TripleWithRank, row);
-  offsets[2] = offsetof(TripleWithRank, col);
-  offsets[3] = offsetof(TripleWithRank, val);
+  offsets[0] = offsetof(TripleWithRank<Scalar>, rank);
+  offsets[1] = offsetof(TripleWithRank<Scalar>, row);
+  offsets[2] = offsetof(TripleWithRank<Scalar>, col);
+  offsets[3] = offsetof(TripleWithRank<Scalar>, val);
   MPI_CHECK(MPI_Type_create_struct(nitems, blocklengths.data(), offsets.data(), types.data(), &triple_type));
   MPI_CHECK(MPI_Type_commit(&triple_type));
 
-  std::vector<TripleWithRank> my_triples;
+  std::vector<TripleWithRank<Scalar>> my_triples;
   my_triples.reserve(columns * rows.size());
   for (std::size_t i = 0; i < rows.size(); ++i) {
     const auto& row = rows[i];
@@ -170,7 +171,7 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec>& rows, MPI_
     std::inclusive_scan(row_offsets.begin(), row_offsets.end(), row_offsets.begin());
   }
 
-  std::vector<TripleWithRank> all_triples;
+  std::vector<TripleWithRank<Scalar>> all_triples;
   if (rank == 0) {
     auto sum = std::reduce(num_triples.begin(), num_triples.end(), std::size_t{0});
     all_triples.resize(sum);
@@ -199,10 +200,10 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const std::vector<Vec>& rows, MPI_
 }
 
 /** @brief Overload for special case of one vector per rank */
-template <class Vec>
-Dune::BCRSMatrix<double> gatherMatrixFromRows(const Vec& row, MPI_Comm comm, double clip_tolerance = 0)
+template <class Scalar = double, class Vec>
+Dune::BCRSMatrix<Scalar> gatherMatrixFromRows(const Vec& row, MPI_Comm comm, Scalar clip_tolerance = 0)
 {
-  return gatherMatrixFromRows(std::vector<Vec>{row}, comm, clip_tolerance);
+  return gatherMatrixFromRows<Scalar>(std::vector<Vec>{row}, comm, clip_tolerance);
 }
 
 /** @brief Variant of gatherMatrixFromRows where the rows are passed in a column major 1d array.
@@ -211,9 +212,10 @@ Dune::BCRSMatrix<double> gatherMatrixFromRows(const Vec& row, MPI_Comm comm, dou
     A rank may pass an empty \p rows and thereby contribute no row at all, as long as some rank
     contributes one.
 */
-inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFlat(const std::vector<double>& rows, std::size_t n_cols, MPI_Comm comm, double clip_tolerance = 0)
+template <class Scalar = double>
+Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>> gatherMatrixFromRowsFlat(const std::vector<Scalar>& rows, std::size_t n_cols, MPI_Comm comm, Scalar clip_tolerance = 0)
 {
-  using Mat = Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>;
+  using Mat = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>;
 
   int rank = 0;
   int size = 0;
@@ -240,7 +242,7 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
   // figuring out the correct row offsets.
   std::vector<std::size_t> row_offsets;
   std::vector<std::size_t> col_indices;
-  std::vector<double> values;
+  std::vector<Scalar> values;
 
   // We start by counting the nonzeros and sending this (along with the number of rows we own) to rank 0
   std::array<std::size_t, 2> nnz_and_n_rows{};
@@ -291,7 +293,7 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
   }
   std::vector<std::size_t> global_row_offsets;
   std::vector<std::size_t> global_col_indices;
-  std::vector<double> global_values;
+  std::vector<Scalar> global_values;
   if (rank == 0) {
     global_row_offsets.resize(total_n_rows + 1); // +1 because we need the last offset for the end of the last row
     global_col_indices.resize(total_nnz);
@@ -315,7 +317,8 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
       MPI_Gatherv(col_indices.data(), static_cast<int>(col_indices.size()), size_t_type, global_col_indices.data(), col_values_counts.data(), col_values_displacements.data(), size_t_type, 0, comm));
   MPI_CHECK(MPI_Gatherv(row_offsets.data(), static_cast<int>(row_offsets.size() - 1), size_t_type, global_row_offsets.data(), row_offsets_counts.data(), row_offsets_displacements.data(), size_t_type,
                         0, comm));
-  MPI_CHECK(MPI_Gatherv(values.data(), static_cast<int>(values.size()), MPI_DOUBLE, global_values.data(), col_values_counts.data(), col_values_displacements.data(), MPI_DOUBLE, 0, comm));
+  MPI_CHECK(MPI_Gatherv(values.data(), static_cast<int>(values.size()), Dune::MPITraits<Scalar>::getType(), global_values.data(), col_values_counts.data(), col_values_displacements.data(),
+                        Dune::MPITraits<Scalar>::getType(), 0, comm));
 
   if (rank == 0) {
     if (total_n_rows == 0) DUNE_THROW(Dune::Exception, "No rank contributed a row to build the matrix from");
@@ -359,9 +362,10 @@ inline Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>> gatherMatrixFromRowsFla
 
     On @p root the matrix is left untouched, elsewhere its previous content is replaced.
 */
-inline void broadcastMatrix(Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>& A, MPI_Comm comm, int root = 0)
+template <class Scalar = double>
+inline void broadcastMatrix(Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>& A, MPI_Comm comm, int root = 0)
 {
-  using Mat = Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>;
+  using Mat = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>;
 
   int rank = 0;
   MPI_CHECK(MPI_Comm_rank(comm, &rank));
@@ -381,7 +385,7 @@ inline void broadcastMatrix(Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>& A
   // CSR, same layout gatherMatrixFromRowsFlat() assembles from
   std::vector<std::size_t> row_offsets(n_rows + 1, 0);
   std::vector<std::size_t> col_indices(nnz);
-  std::vector<double> values(nnz);
+  std::vector<Scalar> values(nnz);
 
   if (rank == root) {
     std::size_t pos = 0;
@@ -397,7 +401,7 @@ inline void broadcastMatrix(Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>& A
 
   MPI_CHECK(MPI_Bcast(row_offsets.data(), static_cast<int>(n_rows + 1), size_t_type, root, comm));
   MPI_CHECK(MPI_Bcast(col_indices.data(), static_cast<int>(nnz), size_t_type, root, comm));
-  MPI_CHECK(MPI_Bcast(values.data(), static_cast<int>(nnz), MPI_DOUBLE, root, comm));
+  MPI_CHECK(MPI_Bcast(values.data(), static_cast<int>(nnz), Dune::MPITraits<Scalar>::getType(), root, comm));
 
   if (rank == root) return;
 

@@ -249,7 +249,7 @@ void check_backend_primitives(TestHelper& h, Dune::TestSuite& t)
     t.check(back_host == src_host, "scatter-gather round trip recovers the source");
   }
 
-  // Duplicate indices: scatter keeps the last writer, scatter_reduce accumulates
+  // Duplicate indices: scatter writes one of the duplicated values, scatter_reduce accumulates
   {
     const std::vector<int> dup = {2, 0, 2, 1}; // index 2 appears twice
     const auto dup_buf = Backend::make_buffer_from_host(ctx, dup);
@@ -264,7 +264,10 @@ void check_backend_primitives(TestHelper& h, Dune::TestSuite& t)
       const auto got = h.to_host_vector(dst);
       t.check(got[0] == 20, "scatter writes index 0 once");
       t.check(got[1] == 40, "scatter writes index 1 once");
-      t.check(got[2] == 30, "scatter keeps the last writer for duplicate indices");
+      // Which writer wins at a duplicated index is unspecified: the work-items for indices 0
+      // and 2 write dst[2] concurrently, so the result is either writer's value. Asserting the
+      // last writer would assert a write order the parallel scatter does not have.
+      t.check(got[2] == 10 or got[2] == 30, "scatter writes one of the duplicated values at index 2") << "got " << got[2];
       t.check(got[3] == -1, "scatter leaves untouched entries alone");
     }
 

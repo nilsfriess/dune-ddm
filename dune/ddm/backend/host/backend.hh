@@ -76,10 +76,55 @@ struct HostBackend {
     else static_assert(false);
   }
 
+  /// Column-wise gather from a column-major multivector: dst[i + c*len] = src[indices[i] + c*rows]
+  /// for i in [0, len) and c in [0, cols), where len = indices.size().
+  template <class T>
+  static void gather_columns([[maybe_unused]] context_type ctx, const T* src, const buffer_type<int>& indices, std::size_t rows, std::size_t cols, T* dst)
+  {
+    const std::size_t len = indices.size();
+    for (std::size_t c = 0; c < cols; ++c)
+      for (std::size_t i = 0; i < len; ++i) dst[i + c * len] = src[indices.data()[i] + c * rows];
+  }
+
+  /// Column-wise scatter into a column-major multivector, the inverse of gather_columns():
+  /// dst[indices[i] + c*rows] = src[i + c*len] for i in [0, len) and c in [0, cols).
+  template <class T>
+  static void scatter_columns([[maybe_unused]] context_type ctx, const T* src, const buffer_type<int>& indices, std::size_t rows, std::size_t cols, T* dst)
+  {
+    const std::size_t len = indices.size();
+    for (std::size_t c = 0; c < cols; ++c)
+      for (std::size_t i = 0; i < len; ++i) dst[indices.data()[i] + c * rows] = src[i + c * len];
+  }
+
   template <class V>
   static void copy_n(const V& src, std::size_t n, V& dst)
   {
     std::copy_n(src.data(), n, dst.data());
+  }
+
+  /// Pointer-level overload of copy_n() above, for destinations that are not backend vectors
+  /// (e.g. a column inside a MultiVector). Synchronous.
+  template <class T>
+  static void copy_n([[maybe_unused]] context_type ctx, const T* src, std::size_t n, T* dst)
+  {
+    std::copy_n(src, n, dst);
+  }
+
+  // The host backend's "device" memory is host memory, so the two copies below are plain
+  // std::copy_n; they exist so that generic code can name the direction it means.
+
+  /// Copies \p n entries from host memory into backend memory. Synchronous.
+  template <class T>
+  static void copy_from_host([[maybe_unused]] context_type ctx, const T* src, T* dst, std::size_t n)
+  {
+    std::copy_n(src, n, dst);
+  }
+
+  /// Copies \p n entries from backend memory into host memory. Synchronous.
+  template <class T>
+  static void copy_to_host([[maybe_unused]] context_type ctx, const T* src, T* dst, std::size_t n)
+  {
+    std::copy_n(src, n, dst);
   }
 
   template <class V>
@@ -96,6 +141,38 @@ struct HostBackend {
     auto tmp = x;
     pointwise_mult(mask, tmp);
     return tmp.dot(y);
+  }
+
+  template <class T>
+  static void zero([[maybe_unused]] context_type ctx, T* dst, std::size_t n)
+  {
+    std::fill_n(dst, n, T{});
+  }
+
+  /// Computes out[k] = col_k(R) . v for every column k of \p R; out must have room for R.cols() entries.
+  /// Synchronous, i.e. out (host memory) is valid on return.
+  template <class Scalar, class Index>
+  static void batched_dot([[maybe_unused]] context_type ctx, const MultiVector<Scalar, HostBackend, Index>& R, const Scalar* v, Scalar* out)
+  {
+    for (Index k = 0; k < R.cols(); ++k) {
+      const Scalar* col = R.col(k);
+      Scalar sum{};
+      for (Index i = 0; i < R.rows(); ++i) sum += col[i] * v[i];
+      out[k] = sum;
+    }
+  }
+
+  /// x += sum_k c[k] * col_k(R); c has R.cols() entries, x has R.rows() entries, all pointers on the
+  /// backend (host memory here).
+  template <class Scalar, class Index>
+  static void gemv_t([[maybe_unused]] context_type ctx, const MultiVector<Scalar, HostBackend, Index>& R, const Scalar* c, Scalar* x)
+  {
+    // Column-major friendly loop order: each column is read sequentially
+    for (Index k = 0; k < R.cols(); ++k) {
+      const Scalar* col = R.col(k);
+      const Scalar ck = c[k];
+      for (Index i = 0; i < R.rows(); ++i) x[i] += ck * col[i];
+    }
   }
 
   template <class Matrix, class Scalar, class Index>
@@ -132,6 +209,16 @@ struct backend_traits<std::vector<B, A>> {
 
 template <class B, class A>
 struct backend_traits<Dune::BlockVector<B, A>> {
+  using type = HostBackend;
+};
+
+template <class B, class A>
+struct backend_traits<Dune::BCRSMatrix<B, A>> {
+  using type = HostBackend;
+};
+
+template <class S, class I>
+struct backend_traits<ddm::MultiVector<S, HostBackend, I>> {
   using type = HostBackend;
 };
 } // namespace ddm::backend

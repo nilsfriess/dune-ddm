@@ -44,15 +44,6 @@ dune_add_test(SOURCES test_distribute_matrix.cc
   LABELS ddm
 )
 
-# GalerkinPreconditioner: the assembled coarse matrix must equal R A R^T and apply() must evaluate
-# R^T (R A R^T)^-1 R, both compared against a dense reference built from the global matrix.
-dune_add_test(SOURCES test_galerkin_coarse_matrix.cc
-  LINK_LIBRARIES duneddm
-  MPI_RANKS 1 2 4 16
-  TIMEOUT 300
-  LABELS ddm
-)
-
 # Assembles a simple problem on a parallel structured grid and solves
 # the resulting system with MsGFEM and GenEO
 dune_add_test(SOURCES structured_grid_test.cc
@@ -85,6 +76,23 @@ dune_add_test(SOURCES test_sycl_comm.cc
   LABELS ddm
 )
 add_sycl_to_target(TARGET test_sycl_comm SOURCES test_sycl_comm.cc)
+
+dune_add_test(SOURCES test_galerkin_product.cc
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 1 2 4
+  TIMEOUT 300
+  LABELS ddm
+)
+add_sycl_to_target(TARGET test_galerkin_product SOURCES test_galerkin_product.cc)
+
+dune_add_test(SOURCES test_galerkin_apply.cc
+  LINK_LIBRARIES duneddm
+  MPI_RANKS 1 2 4 16
+  TIMEOUT 300
+  LABELS ddm
+)
+add_sycl_to_target(TARGET test_galerkin_apply SOURCES test_galerkin_apply.cc)
+
 dune_add_test(SOURCES test_multivector.cc
   LINK_LIBRARIES duneddm
   MPI_RANKS 1
