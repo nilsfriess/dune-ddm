@@ -1,11 +1,13 @@
 #pragma once
 
+#include "check.hh"
 #include "logger.hh"
 
 #include <algorithm>
 #include <cstddef>
 #include <dune/common/parallel/mpitraits.hh>
 #include <dune/common/parametertree.hh>
+#include <dune/common/typetraits.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/matrixredistribute.hh>
 #include <dune/istl/owneroverlapcopy.hh>
@@ -15,37 +17,8 @@
 #include <memory>
 #include <mpi.h>
 #include <utility>
+#include <type_traits>
 #include <vector>
-
-inline void todo_impl(const char* file, int line, const char* message)
-{
-  std::cerr << file << ":" << line << ": TODO: " << message << std::endl;
-  std::abort();
-}
-
-#define TODO(message) todo_impl(__FILE__, __LINE__, message)
-
-template <class... Args>
-inline void assert_impl(const char* file, int line, bool condition, std::format_string<Args...> fmt, Args&&... args)
-{
-  if (!condition) [[unlikely]] {
-    std::cerr << file << ":" << line << ": CHECK failed: " << std::format(fmt, std::forward<Args>(args)...) << std::endl;
-    std::abort();
-  }
-}
-
-// DDM_ASSERT is for assertions that reveal a bug if they fire. It calls std::abort() if the assertion fails
-#define DDM_ASSERT(cond, ...) assert_impl(__FILE__, __LINE__, (cond), __VA_ARGS__)
-
-template <class... Args>
-inline void check_impl(const char* file, int line, bool condition, std::format_string<Args...> fmt, Args&&... args)
-{
-  if (!condition) [[unlikely]]
-    DUNE_THROW(Dune::InvalidStateException, "\n") << file << ":" << line << ": CHECK failed: " << std::format(fmt, std::forward<Args>(args)...);
-}
-
-// DDM_CHECK is for throws and exception instead
-#define DDM_CHECK(cond, ...) check_impl(__FILE__, __LINE__, (cond), __VA_ARGS__)
 
 #define MPI_CHECK(call)                                                                                                                                                                                \
   do {                                                                                                                                                                                                 \
@@ -199,13 +172,6 @@ Dune::BCRSMatrix<Scalar> gatherMatrixFromRows(const std::vector<Vec>& rows, MPI_
   return A0;
 }
 
-/** @brief Overload for special case of one vector per rank */
-template <class Scalar = double, class Vec>
-Dune::BCRSMatrix<Scalar> gatherMatrixFromRows(const Vec& row, MPI_Comm comm, Scalar clip_tolerance = 0)
-{
-  return gatherMatrixFromRows<Scalar>(std::vector<Vec>{row}, comm, clip_tolerance);
-}
-
 /** @brief Variant of gatherMatrixFromRows where the rows are passed in a column major 1d array.
 
     The parameter \p n_cols is the length of the individual rows, the number of rows is inferred from the \p rows array.
@@ -213,7 +179,7 @@ Dune::BCRSMatrix<Scalar> gatherMatrixFromRows(const Vec& row, MPI_Comm comm, Sca
     contributes one.
 */
 template <class Scalar = double>
-Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>> gatherMatrixFromRowsFlat(const std::vector<Scalar>& rows, std::size_t n_cols, MPI_Comm comm, Scalar clip_tolerance = 0)
+Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>> gatherMatrixFromRowsFlat(const std::vector<Scalar>& rows, std::size_t n_cols, MPI_Comm comm, std::type_identity_t<Scalar> clip_tolerance = 0)
 {
   using Mat = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>;
 
