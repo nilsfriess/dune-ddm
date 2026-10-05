@@ -604,17 +604,23 @@ DistributedMatrixResult<Matrix, GlobalIndex> distributeMatrixFrom0(const Matrix&
 template <class Mat>
 std::vector<bool> detect_dirichlet_dofs(const Mat& A)
 {
+  // Entries are either scalars or 1x1 blocks (e.g. Dune::FieldMatrix<double, 1, 1>)
+  const auto value = [](const auto& e) {
+    if constexpr (Dune::IsNumber<std::decay_t<decltype(e)>>::value) return e;
+    else return e[0][0];
+  };
+
   std::vector<bool> dirichlet(A.N(), false);
   std::size_t cnt = 0;
   for (auto ri = A.begin(); ri != A.end(); ++ri) {
     // A row without a stored diagonal cannot be an identity row. Check the pattern first, because
     // operator[] on an entry outside it throws instead of returning zero.
     const auto diag = ri->find(ri.index());
-    if (diag == ri->end() or *diag != 1.) continue;
+    if (diag == ri->end() or value(*diag) != 1.) continue;
 
     bool is_identity_row = true;
     for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
-      if (ri.index() != ci.index() && *ci != 0.) {
+      if (ri.index() != ci.index() && value(*ci) != 0.) {
         is_identity_row = false;
         break;
       }

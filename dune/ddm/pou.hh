@@ -100,8 +100,8 @@ public:
 
         // Create final partition by taking reciprocal (1/count) for interior DOFs
         for (std::size_t i = 0; i < pou_vector_.N(); ++i)
-          if (!boundary_mask[i]) pou_vector_[i] = 1. / pou_vector_[i]; // Inverse of subdomain count
-          else pou_vector_[i] = 0.0;                                   // Boundary DOFs remain zero
+          if (!boundary_mask[i]) pou_vector_[i][0] = 1. / pou_vector_[i][0]; // Inverse of subdomain count
+          else pou_vector_[i][0] = 0.0;                                      // Boundary DOFs remain zero
       } break;
 
       case PartitionOfUnityType::Distance: {
@@ -256,7 +256,7 @@ private:
 
     for (std::size_t i = 0; i < pou_vector_.N(); ++i)
       if (boundary_mask[i]) pou_vector_[i] = 0.0; // Boundary DOFs remain zero
-      else if (pou_sum[i][0] != 0.0) pou_vector_[i] /= pou_sum[i];
+      else if (pou_sum[i][0] != 0.0) pou_vector_[i][0] /= pou_sum[i][0];
       else pou_vector_[i] = 1.0 / count[i][0];
   }
 
