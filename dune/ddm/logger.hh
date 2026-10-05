@@ -53,20 +53,25 @@ static int mpi_rank = 0;
 static bool initialized = false;
 static std::mutex log_mutex;
 
+inline void read_level_from_env()
+{
+  const char* env_level = std::getenv("LOG_LEVEL");
+  if (env_level) {
+    std::string level_str(env_level);
+    if (level_str == "trace") current_level = Level::trace;
+    else if (level_str == "debug") current_level = Level::debug;
+    else if (level_str == "info") current_level = Level::info;
+    else if (level_str == "warn") current_level = Level::warn;
+    else if (level_str == "error") current_level = Level::error;
+    else if (level_str == "off") current_level = Level::off;
+  }
+}
+
 inline void ensure_initialized()
 {
   if (!initialized) {
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-    const char* env_level = std::getenv("LOG_LEVEL");
-    if (env_level) {
-      std::string level_str(env_level);
-      if (level_str == "trace") current_level = Level::trace;
-      else if (level_str == "debug") current_level = Level::debug;
-      else if (level_str == "info") current_level = Level::info;
-      else if (level_str == "warn") current_level = Level::warn;
-      else if (level_str == "error") current_level = Level::error;
-      else if (level_str == "off") current_level = Level::off;
-    }
+    read_level_from_env();
     initialized = true;
   }
 }
@@ -137,6 +142,7 @@ inline Level get_level()
 inline void init(int rank)
 {
   detail::mpi_rank = rank;
+  detail::read_level_from_env();
   detail::initialized = true;
 }
 
