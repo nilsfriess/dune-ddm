@@ -23,7 +23,6 @@
 #include <dune/geometry/quadraturerules.hh>
 #include <dune/grid/io/file/vtk/vtkwriter.hh>
 #include <dune/grid/yaspgrid.hh>
-#include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/bvector.hh>
 #include <dune/istl/schwarz.hh>
 #include <dune/istl/solverfactory.hh>
@@ -185,7 +184,7 @@ int main(int argc, char** argv)
     setup_loggers(helper.rank(), argc, argv);
 
     const int dim = 2;
-    const int gridsize = 64;
+    const int gridsize = 512;
     const int overlap = 4;
 
     using Grid = Dune::YaspGrid<dim>;
@@ -222,7 +221,8 @@ int main(int argc, char** argv)
       solve_two_level_schwarz(helper, vec_comm, p.A, p.b, x, pou, dirichlet);
     }
 
-    // Run with SYCL backend
+// Run with SYCL backend
+#if 0
     {
       using SyclVec = ddm::Sycl::Vec<double>;
       using SyclMat = ddm::Sycl::Mat<double>;
@@ -236,6 +236,7 @@ int main(int argc, char** argv)
       solve_single_level_schwarz(helper, vec_comm, A, b, x, pou);
       solve_two_level_schwarz(helper, vec_comm, A, b, x, pou, dirichlet);
     }
+#endif
 
     Logger::get().report(MPI_COMM_WORLD);
   }
