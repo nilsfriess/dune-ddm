@@ -55,12 +55,12 @@ endif()
 # Spectra - header-only eigenvalue solver library
 # Add include directories directly to duneddm to avoid export issues
 if(TARGET Eigen3::Eigen)
-  target_include_directories(duneddm INTERFACE
+  target_include_directories(duneddm PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/spectra/include>
     $<INSTALL_INTERFACE:extern/spectra/include>
   )
-  target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_SPECTRA=1)
-  target_link_libraries(duneddm INTERFACE Eigen3::Eigen)
+  target_compile_definitions(duneddm PUBLIC DUNE_DDM_HAVE_SPECTRA=1)
+  target_link_libraries(duneddm PUBLIC Eigen3::Eigen)
 
   # Install the header tree so the $<INSTALL_INTERFACE:...> path above actually
   # exists in the install tree (otherwise consumers of the exported Dune::DDM
@@ -73,11 +73,11 @@ endif()
 
 # TRL - header-only randomized linear algebra library
 # Requires Eigen3 and OpenMP (already found in root CMakeLists.txt)
-target_include_directories(duneddm INTERFACE
+target_include_directories(duneddm PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/trl/include>
   $<INSTALL_INTERFACE:extern/trl/include>
 )
-target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_TRL=1)
+target_compile_definitions(duneddm PUBLIC DUNE_DDM_HAVE_TRL=1)
 
 # Install the header tree to match the $<INSTALL_INTERFACE:...> path above.
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/trl/include/

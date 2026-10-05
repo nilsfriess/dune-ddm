@@ -11,10 +11,10 @@
 #include <lua.hpp>
 #endif
 
-template <typename GV>
-class LinearElasticityParameters : public Dune::PDELab::LinearElasticityParameterInterface<Dune::PDELab::LinearElasticityParameterTraits<GV, double>, LinearElasticityParameters<GV>> {
+template <typename GV, class RF>
+class LinearElasticityParameters : public Dune::PDELab::LinearElasticityParameterInterface<Dune::PDELab::LinearElasticityParameterTraits<GV, RF>, LinearElasticityParameters<GV, RF>> {
 public:
-  using Traits = Dune::PDELab::LinearElasticityParameterTraits<GV, double>;
+  using Traits = Dune::PDELab::LinearElasticityParameterTraits<GV, RF>;
 
   void f(auto&, auto&, auto& y) const { y = G_; }
 
@@ -40,9 +40,9 @@ private:
 };
 
 #ifdef DUNE_DDM_HAVE_LUA
-template <typename GridView>
+template <typename GridView, class RF>
 class LinearElasticityParametersLua
-    : public Dune::PDELab::LinearElasticityParameterInterface<Dune::PDELab::LinearElasticityParameterTraits<GridView, double>, LinearElasticityParametersLua<GridView>> {
+    : public Dune::PDELab::LinearElasticityParameterInterface<Dune::PDELab::LinearElasticityParameterTraits<GridView, RF>, LinearElasticityParametersLua<GridView, RF>> {
 public:
   template <class T, class U>
   LinearElasticityParametersLua(const T&, const U&)
@@ -135,7 +135,7 @@ private:
 };
 #endif
 
-template <class GridView>
+template <class GridView, class RF>
 class LinearElasticityProblem {
 public:
   static constexpr auto dim = GridView::dimension;
@@ -144,13 +144,13 @@ public:
 
   // Setup types for entity set, finite element map and problem parameters
   using ES = Dune::PDELab::AllEntitySet<GridView>;
-  using FEM = Dune::PDELab::PkLocalFiniteElementMap<ES, DF, double, 1>;
+  using FEM = Dune::PDELab::PkLocalFiniteElementMap<ES, DF, RF, 1>;
 
   template <typename T>
 #ifdef DUNE_DDM_HAVE_LUA
-  using Parameters = LinearElasticityParametersLua<T>;
+  using Parameters = LinearElasticityParametersLua<T, RF>;
 #else
-  using Parameters = LinearElasticityParameters<T>;
+  using Parameters = LinearElasticityParameters<T, RF>;
 #endif
   using ModelProblem = Parameters<ES>;
 
@@ -159,15 +159,15 @@ public:
   using Mapper = Dune::PDELab::DefaultLeafOrderingTag;
   using OrderingTag = Dune::PDELab::LexicographicOrderingTag;
   using GFS = Dune::PDELab::VectorGridFunctionSpace<ES, FEM, dim, Dune::PDELab::ISTL::VectorBackend<>, ComponentVectorBackend, Constraints, OrderingTag, Mapper>;
-  using CC = typename GFS::template ConstraintsContainer<double>::Type;
+  using CC = typename GFS::template ConstraintsContainer<RF>::Type;
 
   // Local and global operator
   using MBE = Dune::PDELab::ISTL::BCRSMatrixBackend<>;
   using LOP = Dune::PDELab::LinearElasticity<ModelProblem>;
-  using GOP = Dune::PDELab::GridOperator<GFS, GFS, AssembleWrapper<LOP>, MBE, double, double, double, CC, CC>;
+  using GOP = Dune::PDELab::GridOperator<GFS, GFS, AssembleWrapper<LOP, RF>, MBE, RF, RF, RF, CC, CC>;
 
   // Matrix and vector types
-  using Vec = Dune::PDELab::Backend::Vector<GFS, double>;
+  using Vec = Dune::PDELab::Backend::Vector<GFS, RF>;
   using Mat = typename GOP::Jacobian;
   using NativeMat = Dune::PDELab::Backend::Native<Mat>;
   using NativeVec = Dune::PDELab::Backend::Native<Vec>;
@@ -239,7 +239,7 @@ private:
   CC cc_;
 
   LOP lop_;
-  AssembleWrapper<LOP> asw_;
+  AssembleWrapper<LOP, RF> asw_;
 
   std::unique_ptr<GOP> gop_;
   std::unique_ptr<Mat> A_;

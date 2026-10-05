@@ -62,7 +62,7 @@ int main(int argc, char** argv)
       PartitionOfUnityType type;
       const char* name;
     };
-    const std::array<Case, 4> cases = {{
+    const std::array<Case, 3> cases = {{
         {PartitionOfUnityType::Trivial, "trivial"},
         {PartitionOfUnityType::Standard, "standard"},
         {PartitionOfUnityType::Distance, "distance"},

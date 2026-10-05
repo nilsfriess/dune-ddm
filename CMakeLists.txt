@@ -120,9 +120,9 @@ dune_project()
 dune_enable_all_packages()
 
 if (dune-common_VERSION VERSION_GREATER_EQUAL 2.10)
-  dune_add_library(duneddm INTERFACE EXPORT_NAME DDM)
+  dune_add_library(duneddm SOURCES src/initialize.cc EXPORT_NAME DDM)
 else()
-  dune_add_library(duneddm INTERFACE EXPORT_NAME Dune::DDM)
+  dune_add_library(duneddm SOURCES src/initialize.cc EXPORT_NAME Dune::DDM)
 endif()
 
 find_package(BLAS REQUIRED)
@@ -136,10 +136,10 @@ if (cudss_FOUND)
   message(STATUS "Found cudss ${cudss_VERSION}, trying to find CUBLAS and CUSOLVER")
   find_package(CUDAToolkit REQUIRED) 
 
-  target_compile_definitions(duneddm INTERFACE DUNE_DDM_HAVE_CUDSS=1)
-  target_include_directories(duneddm INTERFACE ${cudss_INCLUDE_DIR} ${CUBLAS_INC_PATH} ${CUSOLVER_INC_PATH})
-  target_link_directories(duneddm INTERFACE ${cudss_LIBRARY_DIR} ${CUBLAS_LIB_PATH} ${CUSOLVER_LIB_PATH})
-  target_link_libraries(duneddm INTERFACE cudss CUDA::cublas CUDA::cusolver)
+  target_compile_definitions(duneddm PUBLIC DUNE_DDM_HAVE_CUDSS=1)
+  target_include_directories(duneddm PUBLIC ${cudss_INCLUDE_DIR} ${CUBLAS_INC_PATH} ${CUSOLVER_INC_PATH})
+  target_link_directories(duneddm PUBLIC ${cudss_LIBRARY_DIR} ${CUBLAS_LIB_PATH} ${CUSOLVER_LIB_PATH})
+  target_link_libraries(duneddm PUBLIC cudss CUDA::cublas CUDA::cusolver)
 else()
   message(STATUS "cudss not found")
 endif()
@@ -150,7 +150,20 @@ endif()
 # of the installed Dune::DDM target (Dune auto-includes that file). Here we only
 # attach the imported target to the exported interface, so its include dirs and
 # libraries propagate to anything linking Dune::DDM.
-target_link_libraries(duneddm INTERFACE SuiteSparse::SuiteSparse)
+target_link_libraries(duneddm PUBLIC SuiteSparse::SuiteSparse)
+
+# duneddm compiles the implementations in src/, which include dune-ddm (dune/ddm/
+# and include/ddm/) and dune-istl headers.
+# include/ddm/impl/ holds the backend implementations. They are installed so that
+# users can extend a backend, but public headers never include them.
+target_include_directories(duneddm PUBLIC
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/ddm
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.hh")
+target_link_libraries(duneddm PUBLIC Dune::ISTL)
 
 # optionally find STRUMPACK
 find_package(STRUMPACK CONFIG)
@@ -210,8 +223,11 @@ if(DUNE_DDM_ENABLE_WARNINGS)
 
   # One add_compile_options() call per flag: wrapping the whole list in a single
   # generator expression would make CMake reinterpret the ';' separators.
+  # add_compile_options() only affects targets created after this point, so the
+  # library target, which is created further up, gets the flags explicitly.
   foreach(w IN LISTS ddm_warnings)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${w}>")
+    target_compile_options(duneddm PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${w}>")
   endforeach()
 
   if(ddm_warnings)
@@ -220,6 +236,7 @@ if(DUNE_DDM_ENABLE_WARNINGS)
 endif()
 
 add_subdirectory(examples)
+add_subdirectory(benchmarks)
 add_subdirectory(dune)
 add_subdirectory(doc)
 

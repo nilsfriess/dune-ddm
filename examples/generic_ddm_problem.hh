@@ -72,7 +72,7 @@ public:
   using GFS = typename Traits::GFS;
   using CC = typename GFS::template ConstraintsContainer<RF>::Type;
   using GO = Dune::PDELab::GridOperator<GFS, GFS, LocalOperator, MBE, RF, RF, RF, CC, CC>;
-  using SymmetricGO = Dune::PDELab::GridOperator<GFS, GFS, AssembleWrapper<SymmetricLocalOperator>, MBE, RF, RF, RF, CC, CC>;
+  using SymmetricGO = Dune::PDELab::GridOperator<GFS, GFS, AssembleWrapper<SymmetricLocalOperator, RF>, MBE, RF, RF, RF, CC, CC>;
 
   // Vector and matrix types
   using Vec = Dune::PDELab::Backend::Vector<GFS, RF>;
@@ -383,9 +383,9 @@ private:
   std::shared_ptr<GFS> gfs;
   std::unique_ptr<LocalOperator> lop; // Pointer because it does not have a default constructor
   SymmetricLocalOperator symm_lop;
-  AssembleWrapper<SymmetricLocalOperator> wrapper; // Some explanations are in order here: The wrapper object only exists for the SymmetricLocalOperator.
-                                                   // This is because we only ever need to assemble the Neumann matrix for the elliptic part of the PDE,
-                                                   // and for PDEs that are already elliptic, we know that SymmetricLocalOperator == LocalOperator.
+  AssembleWrapper<SymmetricLocalOperator, RF> wrapper; // Some explanations are in order here: The wrapper object only exists for the SymmetricLocalOperator.
+                                                       // This is because we only ever need to assemble the Neumann matrix for the elliptic part of the PDE,
+                                                       // and for PDEs that are already elliptic, we know that SymmetricLocalOperator == LocalOperator.
 
   std::unique_ptr<GO> go;
   std::unique_ptr<SymmetricGO> symm_go;

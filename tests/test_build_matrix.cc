@@ -97,7 +97,7 @@ int main(int argc, char** argv)
     Dune::BlockVector<double> v(10);
     std::iota(v.begin(), v.end(), rank);
 
-    auto A = gatherMatrixFromRows(v, MPI_COMM_WORLD, -1);
+    auto A = gatherMatrixFromRows(std::vector{v}, MPI_COMM_WORLD, -1);
 
     if (rank == 0)
       checkDense(

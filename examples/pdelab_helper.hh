@@ -120,6 +120,7 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   using Dune::PDELab::Backend::native;
   using Dune::PDELab::Backend::Native;
   using Mat = Native<PDELabMat>;
+  using Scalar = typename Mat::field_type;
   logger::info("Assembling overlapping Dirichlet and Neumann matrices");
 
   int ownrank = comm.communicator().rank();
@@ -238,13 +239,13 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
   // subdomain boundary. Let's exchange this info with our neighbours.
   constexpr int nitems = 4;
   std::array<int, nitems> blocklengths = {1, 1, 1, 1};
-  std::array<MPI_Datatype, nitems> types = {MPI_INT, MPI_UNSIGNED_LONG, MPI_UNSIGNED_LONG, MPI_DOUBLE};
+  std::array<MPI_Datatype, nitems> types = {MPI_INT, MPI_UNSIGNED_LONG, MPI_UNSIGNED_LONG, Dune::MPITraits<Scalar>::getType()};
   MPI_Datatype triple_type = MPI_DATATYPE_NULL;
   std::array<MPI_Aint, nitems> offsets{0};
-  offsets[0] = offsetof(TripleWithRank, rank);
-  offsets[1] = offsetof(TripleWithRank, row);
-  offsets[2] = offsetof(TripleWithRank, col);
-  offsets[3] = offsetof(TripleWithRank, val);
+  offsets[0] = offsetof(TripleWithRank<Scalar>, rank);
+  offsets[1] = offsetof(TripleWithRank<Scalar>, row);
+  offsets[2] = offsetof(TripleWithRank<Scalar>, col);
+  offsets[3] = offsetof(TripleWithRank<Scalar>, val);
   MPI_Type_create_struct(nitems, blocklengths.data(), offsets.data(), types.data(), &triple_type);
   MPI_Type_commit(&triple_type);
 
@@ -259,7 +260,7 @@ assemble_overlapping_matrices(PDELabMat& As, PDELabVec& x, const GO& go, const V
     MPI_Isend(triples.data(), triples.size(), triple_type, rank, 0, comm.communicator(), &requests.emplace_back());
   }
 
-  std::map<int, std::vector<TripleWithRank>> remote_triples;
+  std::map<int, std::vector<TripleWithRank<Scalar>>> remote_triples;
   for (const auto& [rank, triples] : triples_for_rank) {
     if (rank < 0) {
       // rank < 0 corresponds to corrections that we have to apply locally, so we can skip them here

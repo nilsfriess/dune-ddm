@@ -106,7 +106,7 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
 
       // Unconditional: with the zeroing this spreads the debug rank's vector over its overlapping
       // subdomain, without it it sums the contributions of all subdomains.
-      prec->getOverlappingCommunication()->addOwnerCopyToAll(vec_vis, vec_vis);
+      prec->getOverlappingCommunication()->addOwnerCopyToOwnerCopy(vec_vis, vec_vis);
 
       auto vec_small = std::make_shared<typename Prec::NativeVec>(problem->getX().N());
       for (std::size_t i = 0; i < vec_small->N(); ++i) (*vec_small)[i] = vec_vis[i];
@@ -120,6 +120,9 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
       gf_storage.push_back(gf);
       dgf_storage.push_back(dgf);
     };
+
+    // Size of the overlapping index set, which all vectors passed to write_overlapping_vector must have
+    const auto n_ovlp = prec->get_pou()->size();
 
     // Write solution
     Dune::PDELab::addSolutionToVTKWriter(writer, *problem->getGFS(), problem->getXVec());
@@ -150,7 +153,7 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
 
     // Write ring region (for ring coarse spaces)
     if (problem->get_neumann_region_to_subdomain().size() > 0) {
-      typename Prec::NativeVec neumann_region(prec->getOverlappingCommunication()->indexSet().size());
+      typename Prec::NativeVec neumann_region(n_ovlp);
       neumann_region = 0;
       for (const auto& idx : problem->get_neumann_region_to_subdomain()) neumann_region[idx] = 1;
 
@@ -163,7 +166,7 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
       auto i_padded = std::string(4 - std::min(4UL, istr.length()), '0') + istr;
       auto name = "Basis " + i_padded;
 
-      typename Prec::NativeVec basis(prec->getOverlappingCommunication()->indexSet().size());
+      typename Prec::NativeVec basis(n_ovlp);
       if (helper.rank() == ptree.get("debug_rank", 0)) basis = prec->get_basis()[i];
       else basis = 0;
       write_overlapping_vector(basis, name);
@@ -179,7 +182,7 @@ void driver(GridView gv, const Dune::MPIHelper& helper, const Dune::ParameterTre
     ones = 1;
     rowsums = 0;
     A_neu->mv(ones, rowsums);
-    typename Prec::NativeVec v1(prec->getOverlappingCommunication()->indexSet().size());
+    typename Prec::NativeVec v1(n_ovlp);
     v1 = 0;
     const auto& neumann_map = problem->get_neumann_region_to_subdomain();
     if (neumann_map.size() > 0)
@@ -343,7 +346,7 @@ int main(int argc, char* argv[])
       grid->globalRefine(ptree.get("refine", 0));
       using GridView = decltype(gv);
 
-      using ProblemParams = LinearElasticityParametersLua<GridView>;
+      using ProblemParams = LinearElasticityParametersLua<GridView, double>;
       using Traits = LinearElasticityTraits<GridView, ProblemParams>;
       using Problem = GenericDDMProblem<GridView, Traits>;
 

@@ -24,7 +24,7 @@
  * correctly reflects the Neumann boundary conditions on the artificial interface in an
  * overlapping Schwarz method.
  */
-template <class LocalOperator>
+template <class LocalOperator, class Scalar>
 class AssembleWrapper {
 public:
   enum { doSkipEntity = LocalOperator::doSkipEntity };
@@ -489,9 +489,9 @@ public:
    *         Rank -1 contains corrections for the local process.
    */
   template <class GLIS>
-  std::unordered_map<int, std::vector<TripleWithRank>> get_correction_triples(const GLIS& glis) const
+  std::unordered_map<int, std::vector<TripleWithRank<Scalar>>> get_correction_triples(const GLIS& glis) const
   {
-    std::unordered_map<int, std::vector<TripleWithRank>> triples_for_rank;
+    std::unordered_map<int, std::vector<TripleWithRank<Scalar>>> triples_for_rank;
 
     for (const auto& [rank, An] : neumann_correction_matrices) {
       triples_for_rank[rank].reserve(An.nonzeroes());
@@ -532,7 +532,7 @@ private:
   const std::vector<bool>* on_boundary_mask{nullptr}; // Masks for the "inner" corrections
   const std::vector<bool>* outside_boundary_mask{nullptr};
 
-  mutable std::unordered_map<int, Dune::BCRSMatrix<double>> neumann_correction_matrices;
+  mutable std::unordered_map<int, Dune::BCRSMatrix<Scalar>> neumann_correction_matrices;
 
   LocalOperator* lop;
 };
