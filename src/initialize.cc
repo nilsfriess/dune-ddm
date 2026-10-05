@@ -1,3 +1,4 @@
+#include "ddm/communication.hh"
 #include "ddm/impl/mat/istlmat.hh"
 #include "ddm/impl/prec/ilu_istl.hh"
 #include "ddm/impl/prec/jacobiprec.hh"
@@ -19,7 +20,7 @@ void register_all()
   register_vec<T>("istl", [](const Dune::ParameterTree&, Index n) { return std::make_unique<IstlVec<T>>(n); });
 
   // Register matrices
-  register_mat<T>("istl", [](const Dune::ParameterTree&, const Pattern& pattern) { return std::make_shared<IstlMat<T>>(pattern); });
+  register_local_mat<T>("istl", [](const Dune::ParameterTree&, const Pattern& pattern) { return std::make_shared<IstlMat<T>>(pattern); });
 
   // Register preconditioners
   register_prec<T>("none", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<NonePrec<T>>(config, std::move(A)); });

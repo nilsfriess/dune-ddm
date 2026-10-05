@@ -21,7 +21,7 @@ class IstlILUPrec final : public Prec<T> {
 public:
   IstlILUPrec(const Dune::ParameterTree& /*config*/, std::shared_ptr<const Mat<T>> A)
       : Prec<T>(std::move(A))
-      , ilu(as_istl(*this->mat()).native(), 0, 1., false)
+      , ilu(as_istl(this->mat()->local()).native(), 0, 1., false)
   {
   }
 

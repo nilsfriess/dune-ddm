@@ -3,6 +3,7 @@
 #include "ddm/mat/mat.hh"
 #include "ddm/prec/prec.hh"
 #include "ddm/solver/solver.hh"
+#include "scalar_product.hh"
 
 #include <dune/common/parametertree.hh>
 #include <dune/istl/solvers.hh>
@@ -18,12 +19,15 @@ public:
   GMResSolver(const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, std::shared_ptr<Prec<T>> P)
       : Solver<T>(std::move(A), std::move(P))
   {
-    auto sp = std::make_shared<Dune::ScalarProduct<Vec<T>>>();
+    std::shared_ptr<Dune::ScalarProduct<Vec<T>>> sp;
+    if (this->mat()->sequential()) sp = std::make_shared<Dune::ScalarProduct<Vec<T>>>();
+    else sp = std::make_shared<ConsistentScalarProduct<T>>(this->mat()->communication());
 
     auto reduction = this->reduction(config);
     auto restart = config.get("restart", 30);
     auto maxit = this->maxit(config);
     auto verbose = this->verbosity(config);
+    if (not this->mat()->sequential() and this->mat()->communication()->rank() != 0) verbose = 0;
     solver = std::make_unique<DuneSolver>(this->mat(), sp, this->prec(), reduction, restart, maxit, verbose);
   }
 

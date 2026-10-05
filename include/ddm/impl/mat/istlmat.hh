@@ -4,7 +4,7 @@
 #include "ddm/check.hh"
 #include "ddm/impl/vec/istlvec.hh"
 #include "ddm/index.hh"
-#include "ddm/mat/mat.hh"
+#include "ddm/mat/local_mat.hh"
 #include "ddm/mat/pattern.hh"
 
 #include <cstddef>
@@ -19,19 +19,19 @@ template <class T>
 class IstlMat;
 
 template <class T>
-IstlMat<T>& as_istl(Mat<T>& A)
+IstlMat<T>& as_istl(LocalMat<T>& A)
 {
   return static_cast<IstlMat<T>&>(A);
 }
 
 template <class T>
-const IstlMat<T>& as_istl(const Mat<T>& A)
+const IstlMat<T>& as_istl(const LocalMat<T>& A)
 {
   return static_cast<const IstlMat<T>&>(A);
 }
 
 template <class T>
-class IstlMat final : public Mat<T> {
+class IstlMat final : public LocalMat<T> {
 public:
   using Native = Dune::IBCRSMatrix<T, std::make_unsigned_t<Index>>;
 
@@ -76,8 +76,8 @@ private:
     }
   }
 
-  void do_apply(const Vec<T>& x, Vec<T>& y) const override { A_.mv(as_istl(x).native(), as_istl(y).native()); }
-  void do_applyscaleadd(T alpha, const Vec<T>& x, Vec<T>& y) const override { A_.usmv(alpha, as_istl(x).native(), as_istl(y).native()); }
+  void do_mv(const Vec<T>& x, Vec<T>& y) const override { A_.mv(as_istl(x).native(), as_istl(y).native()); }
+  void do_usmv(T alpha, const Vec<T>& x, Vec<T>& y) const override { A_.usmv(alpha, as_istl(x).native(), as_istl(y).native()); }
 
   void do_get_diag(Vec<T>& diag) const override
   {

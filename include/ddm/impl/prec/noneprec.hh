@@ -1,7 +1,5 @@
 #pragma once
 
-#include "ddm/backend_id.hh"
-#include "ddm/check.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/prec/prec.hh"
 
@@ -16,6 +14,12 @@ public:
   NonePrec(const Dune::ParameterTree& /*config*/, std::shared_ptr<const Mat<T>> A)
       : Prec<T>(std::move(A))
   {
+  }
+
+  Dune::SolverCategory::Category category() const override
+  {
+    // This works in sequential and in parallel, so category is whatever the matrix reports
+    return this->mat()->category();
   }
 
 private:

@@ -242,5 +242,6 @@ add_subdirectory(doc)
 
 enable_testing()
 add_subdirectory(tests)
+add_subdirectory(test)
 
 finalize_dune_project(GENERATE_CONFIG_H_CMAKE)

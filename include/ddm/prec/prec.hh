@@ -30,7 +30,7 @@ public:
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::sequential; }
 
   // z = P^{-1} r
-  void apply(Vec<T>& z, const Vec<T>& r) final override
+  void apply(Vec<T>& z, const Vec<T>& r) final
   {
     DDM_CHECK(&r != &z, "prec: apply() requires distinct vectors r and z");
     DDM_CHECK(r.size() == A_->rows() && z.size() == A_->rows(), "prec: apply() size mismatch, matrix is {}x{}, but r has size {} and z has size {}", A_->rows(), A_->cols(), r.size(), z.size());

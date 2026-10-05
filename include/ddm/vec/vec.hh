@@ -4,6 +4,7 @@
 #include "ddm/check.hh"
 #include "ddm/index.hh"
 #include "ddm/registry.hh"
+#include "ddm/vec/exchange_plan.hh"
 #include "ddm/vec/host_view.hh"
 
 #include <cstddef>
@@ -54,6 +55,13 @@ public:
   // Ends the access started by acquire_host(). For Access::write and Access::read_write, the data written to the span
   // must be part of the vector afterwards.
   virtual void release_host(Access mode) = 0;
+
+  // Creates the buffers to exchange the entries at the indices in idxs with other ranks. The default works through
+  // acquire_host() and release_host(), backends that keep their data elsewhere can override this to avoid the copies.
+  virtual std::unique_ptr<ExchangePlan<T>> make_exchange_plan(const CommunicationPattern::IndexMap& idxs) const
+  {
+    return std::make_unique<HostExchangePlan<T>>(idxs);
+  }
 
 protected:
   VecImpl() = default;
