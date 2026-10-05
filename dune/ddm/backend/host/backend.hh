@@ -9,6 +9,7 @@
 #include <dune/common/exceptions.hh>
 #include <dune/common/fmatrix.hh>
 #include <dune/istl/bvector.hh>
+#include <dune/istl/ibcrsmatrix.hh>
 #include <variant>
 #include <vector>
 
@@ -215,6 +216,11 @@ struct backend_traits<Dune::BlockVector<B, A>> {
 
 template <class B, class A>
 struct backend_traits<Dune::BCRSMatrix<B, A>> {
+  using type = HostBackend;
+};
+
+template <class B, class A>
+struct backend_traits<Dune::IBCRSMatrix<B, A>> {
   using type = HostBackend;
 };
 

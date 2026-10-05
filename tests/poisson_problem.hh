@@ -1,5 +1,6 @@
 #pragma once
 
+#include <dune/istl/ibcrsmatrix.hh>
 #include <dune/common/fmatrix.hh>
 #include <dune/geometry/quadraturerules.hh>
 #include <dune/istl/bcrsmatrix.hh>
@@ -35,7 +36,7 @@ struct PoissonProblem {
    *  @param f             source term, evaluated at global coordinates
    */
   template <class GridView, class IsDirichlet, class Coefficient, class Source>
-  PoissonProblem(const GridView& gv, IsDirichlet is_dirichlet, Coefficient a, Source f)
+  PoissonProblem(const GridView& gv, IsDirichlet is_dirichlet, Coefficient a, Source f, bool ignore_patch = false)
   {
     using DF = typename GridView::ctype;
     constexpr int dim = GridView::dimension;
@@ -51,17 +52,20 @@ struct PoissonProblem {
     // the outermost layer of the view are excluded, so every patch vertex has its complete element
     // stencil inside the view; assembling over the whole view and truncating columns outside the
     // patch afterwards therefore yields R A R^T.
-    patch.assign(n, false);
-    for (const auto& e : elements(gv)) {
-      bool complete = true;
-      for (const auto& is : intersections(gv, e)) {
-        if (not is.neighbor()) {
-          complete = false;
-          break;
+    if (ignore_patch) patch.assign(n, true);
+    else {
+      patch.assign(n, false);
+      for (const auto& e : elements(gv)) {
+        bool complete = true;
+        for (const auto& is : intersections(gv, e)) {
+          if (not is.neighbor()) {
+            complete = false;
+            break;
+          }
         }
+        if (not complete) continue;
+        for (unsigned int i = 0; i < e.subEntities(dim); ++i) patch[indexset.subIndex(e, i, dim)] = true;
       }
-      if (not complete) continue;
-      for (unsigned int i = 0; i < e.subEntities(dim); ++i) patch[indexset.subIndex(e, i, dim)] = true;
     }
 
     // Contiguous local renumbering of the patch vertices, in ascending grid view index order. This

@@ -29,6 +29,15 @@ namespace ddm {
 /// FieldVector blocks of matching field type and size.
 // TODO: also use the allocator of the parent matrix for the vector
 template <class F, class Allocator>
+auto create_vector_for_matrix(const Dune::IBCRSMatrix<F, Allocator>& A)
+{
+  return Dune::BlockVector<Dune::FieldVector<typename F::field_type, F::rows>>(A.N());
+}
+
+/// Host pairing: BCRSMatrix with FieldMatrix blocks -> BlockVector with
+/// FieldVector blocks of matching field type and size.
+// TODO: also use the allocator of the parent matrix for the vector
+template <class F, class Allocator>
 auto create_vector_for_matrix(const Dune::BCRSMatrix<F, Allocator>& A)
 {
   return Dune::BlockVector<Dune::FieldVector<typename F::field_type, F::rows>>(A.N());
@@ -73,7 +82,8 @@ auto create_zero_vector_like(const V& v)
     V w(v.queue(), v.size());
     w = 0;
     return w;
-  } else {
+  }
+  else {
     V w(v.size());
     w = 0;
     return w;
