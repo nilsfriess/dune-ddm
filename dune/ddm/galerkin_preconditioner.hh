@@ -23,6 +23,7 @@
 #include <memory>
 #include <mpi.h>
 #include <numeric>
+#include <set>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -48,7 +49,6 @@ Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>> galerkin_product(const Matrix&
 {
   using Backend = backend::backend_of_t<Matrix>;
   using MultiVector = MultiVector<Scalar, Backend, MultiVectorIndex>;
-  using CoarseMatrix = Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>>;
 
   auto ctx = Backend::context(A);
   const MultiVectorIndex n = A.N();
@@ -72,8 +72,11 @@ Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 1, 1>> galerkin_product(const Matrix&
 
   // 2. Get the zero-extended template vectors of our neighbours. Their columns are concatenated
   //    into one multivector, one block per neighbour in the (sorted) order of
-  //    pattern.neighbours(); every column outside a neighbour's block is zero.
-  const auto& neighbours = pattern.neighbours();
+  //    ranks; every column outside a neighbour's block is zero. "Neighbour" means every rank we
+  //    share an index with, i.e. the peers of the reduction plan. This is more than
+  //    pattern.neighbours(), which misses two ranks that both copy an index owned by a third one.
+  std::set<int> neighbours;
+  for (const auto& [p, idxs] : pattern.reduction_indices()) neighbours.insert(p);
   std::map<int, MultiVectorIndex> block_offsets;
   MultiVectorIndex recv_cols = 0;
   for (const auto p : neighbours) {
