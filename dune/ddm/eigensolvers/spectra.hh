@@ -231,6 +231,8 @@ public:
           for (Eigen::Index i = 0; i < nconv; ++i)
             for (Eigen::Index j = 0; j < evecs.rows(); ++j) eigenvectors_[i][j] = static_cast<Scalar>(evecs(j, i));
 
+          geigs.info();
+          logger::trace_all("Spectra converged, retry iterations {}, Spectra iterations {}, operator applications {} ", it++, geigs.num_iterations(), operator_applications);
           return {.converged = true, .iterations = iterations, .operator_applications = operator_applications};
         }
         if (!done) {
