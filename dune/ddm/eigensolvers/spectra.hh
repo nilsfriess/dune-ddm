@@ -57,6 +57,7 @@ public:
       if (solver_subtree.get("type", std::string{"umfpack"}) == "umfpack") {
         auto umfpack = std::make_shared<DefaultSolver>();
         umfpack->setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
+        umfpack->setOption(UMFPACK_IRSTEP, 0);
         umfpack->setMatrix(*A_shifted);
         solver = umfpack;
       }
