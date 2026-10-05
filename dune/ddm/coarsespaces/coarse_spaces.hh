@@ -10,7 +10,7 @@
       [coarsespace]
       domain = full              # full | ring
       constraint = none          # none | harmonic
-      constraint_evp = lagrange_multiplier  # lagrange_multiplier | alternating (only for constraint = harmonic)
+      constraint_evp = lagrange_multiplier  # lagrange_multiplier | alternating | randsvd (only for constraint = harmonic; randsvd only for domain = full)
       ring_extension = from_ring            # from_ring | from_boundary (only for domain = ring)
 
     The four resulting combinations are implemented by:
@@ -18,6 +18,9 @@
       - build_geneo_ring_coarse_space()      (domain = ring,  constraint = none)
       - build_msgfem_coarse_space()          (domain = full,  constraint = harmonic)
       - build_msgfem_ring_coarse_space()     (domain = ring,  constraint = harmonic)
+
+    With constraint_evp = randsvd, build_msgfem_randsvd_coarse_space() replaces
+    build_msgfem_coarse_space() by a randomised SVD of the harmonic extension operator.
  */
 
 #include "../eigensolvers/eigensolvers.hh"
@@ -25,7 +28,10 @@
 #include "../pou.hh"
 #include "energy_minimal_extension.hh"
 
+#include <algorithm>
+#include <cmath>
 #include <dune/common/exceptions.hh>
+#include <dune/common/fvector.hh>
 #include <dune/common/parallel/indexset.hh>
 #include <dune/common/parallel/interface.hh>
 #include <dune/common/parametertree.hh>
@@ -35,7 +41,12 @@
 #include <dune/istl/matrixmarket.hh>
 #include <dune/istl/solver.hh>
 #include <dune/istl/umfpack.hh>
+#include <format>
+#include <Eigen/SVD>
+#include <limits>
 #include <mpi.h>
+#include <random>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -378,7 +389,7 @@ std::vector<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>> extend_ring_eigenve
   for (std::size_t k = 0; k < ring_eigenvectors.size(); ++k) {
     const auto& evec = ring_eigenvectors[k];
 
-    std::size_t cnt = 0;
+    cnt = 0;
     for (auto idx : ring_info.behind_inner_boundary) dirichlet_data[cnt++] = evec[ring_info.subdomain_to_ring.at(idx)];
 
     auto interior_vec = extension.extend(dirichlet_data);
@@ -796,6 +807,106 @@ build_msgfem_ring_coarse_space(const Dune::BCRSMatrix<Dune::FieldMatrix<Scalar, 
 
   detail::finalize_eigenvectors(basis, pou);
   return {.basis = std::move(basis), .eigenvalues = std::move(eigenvalues), .info = info};
+}
+
+/**
+ * @brief Build an MsGFEM coarse space (domain = full, constraint = harmonic) using a randomised SVD.
+ *
+ * Instead of solving the constrained eigenproblem, the range of the operator
+ * $P = D \circ H$ (harmonic extension of boundary data followed by partition of unity scaling)
+ * is sampled with @p ncv random (standard normal) boundary data vectors. The coarse basis consists
+ * of the leading @p nev left singular vectors of the thin SVD of the resulting sample matrix
+ * $Y = [P\omega_1, \dots, P\omega_\text{ncv}]$.
+ *
+ * Parameters are read from `ptree.sub(ptree_prefix).sub("eigensolver")`:
+ * - `nev` (default 10): Number of basis vectors to return.
+ * - `ncv` (default 2 * nev): Number of random samples (must be >= nev; a few more than nev improves accuracy).
+ * - `seed` (default 0): Seed for the random number generator.
+ *
+ * Singular vectors whose singular value is negligible relative to the largest one are dropped,
+ * so the returned basis can contain fewer than @p nev vectors.
+ *
+ * @param pou Partition of unity vector (diagonal of D matrix).
+ * @param subdomain_boundary_mask Boolean mask for subdomain boundary DOFs (excluding global Dirichlet DOFs).
+ * @param ptree ParameterTree containing the parameters.
+ * @param ptree_prefix Prefix for parameter subtree (default "coarse_space").
+ * @param A_sub_inv Inverse of the subdomain matrix with the subdomain boundary DOFs eliminated (used for the harmonic extension).
+ * @return CoarseSpaceResult holding the basis and the associated singular values (stored in `eigenvalues`).
+ */
+template <class Scalar = double>
+[[nodiscard]] CoarseSpaceResult<Scalar> build_msgfem_randsvd_coarse_space(const PartitionOfUnity& pou, const std::vector<bool>& subdomain_boundary_mask, const Dune::ParameterTree& ptree,
+                                                                          const std::string& ptree_prefix = "coarse_space",
+                                                                          Dune::InverseOperator<Dune::BlockVector<Dune::FieldVector<Scalar, 1>>, Dune::BlockVector<Dune::FieldVector<Scalar, 1>>>* A_sub_inv = nullptr)
+{
+  using Vector = Dune::BlockVector<Dune::FieldVector<Scalar, 1>>;
+  using DenseMatrix = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
+
+  Logger::ScopedLog setup_sl{Logger::get().registerOrGetEvent("Coarse space", "setup")};
+
+  if (!A_sub_inv) DUNE_THROW(Dune::Exception, "build_msgfem_randsvd_coarse_space requires A_sub_inv to be provided");
+  if (subdomain_boundary_mask.size() != pou.size()) DUNE_THROW(Dune::Exception, "The boundary mask and the partition of unity must have the same size");
+
+  const auto& subtree = ptree_prefix.empty() ? ptree : ptree.sub(ptree_prefix);
+  const auto& eig_ptree = subtree.sub("eigensolver");
+
+  const int nev = eig_ptree.get("nev", 10);
+  const int ncv = eig_ptree.get("ncv", 2 * nev);
+  if (nev <= 0 or ncv < nev) DUNE_THROW(Dune::Exception, "build_msgfem_randsvd_coarse_space requires 0 < nev <= ncv, got nev = " + std::to_string(nev) + ", ncv = " + std::to_string(ncv));
+
+  std::mt19937 rng(eig_ptree.get("seed", 0U));
+  std::normal_distribution<Scalar> dist;
+
+  const auto n = pou.size();
+
+  // Harmonically extend random boundary data
+  std::vector<Vector> Y(ncv, Vector(n));
+  Vector b(n);
+  Y[0] = 1;
+  for (int i = 1; i < ncv; ++i) {
+    b = 0;
+    for (std::size_t j = 0; j < n; ++j)
+      if (subdomain_boundary_mask[j]) b[j] = dist(rng);
+
+    Y[i] = 0;
+    Dune::InverseOperatorResult res;
+    A_sub_inv->apply(Y[i], b, res);
+  }
+
+  // Apply POU to all of Y
+  detail::finalize_eigenvectors(Y, pou);
+
+  // Compute thin SVD of Y
+  DenseMatrix Ymat(n, ncv);
+  for (int i = 0; i < ncv; ++i)
+    for (std::size_t j = 0; j < n; ++j) Ymat(j, i) = Y[i][j];
+
+  Eigen::BDCSVD<DenseMatrix> svd(Ymat, Eigen::ComputeThinU);
+  const auto& U = svd.matrixU();
+  const auto& sigma = svd.singularValues();
+
+  // Keep the leading nev left singular vectors, dropping numerically zero singular values
+  const Scalar tol = std::numeric_limits<Scalar>::epsilon() * ncv * (sigma.size() > 0 ? sigma(0) : Scalar{0});
+  std::vector<Vector> basis;
+  std::vector<Scalar> singular_values;
+  for (int k = 0; k < nev and k < sigma.size() and sigma(k) > tol; ++k) {
+    Vector v(n);
+    for (std::size_t j = 0; j < n; ++j) v[j] = U(j, k);
+    basis.push_back(std::move(v));
+    singular_values.push_back(sigma(k));
+  }
+
+  std::string sigma_str;
+  for (Eigen::Index k = 0; k < sigma.size(); ++k) sigma_str += std::format("{}{:.4e}", k == 0 ? "" : ", ", sigma(k));
+  logger::debug_all("build_msgfem_randsvd_coarse_space: Singular values of the {} samples: [{}]", ncv, sigma_str);
+  if (!basis.empty())
+    logger::debug_all("build_msgfem_randsvd_coarse_space: Keeping {} basis vectors, sigma_max = {:.4e}, sigma_kept_min = {:.4e}, sigma_kept_min / sigma_max = {:.4e}, sigma_next / sigma_max = {:.4e}",
+                      basis.size(), sigma(0), singular_values.back(), singular_values.back() / sigma(0),
+                      basis.size() < static_cast<std::size_t>(sigma.size()) ? sigma(static_cast<Eigen::Index>(basis.size())) / sigma(0) : Scalar{0});
+
+  if (static_cast<int>(basis.size()) < nev)
+    logger::warn_all("build_msgfem_randsvd_coarse_space: Sample matrix is rank deficient, returning {} instead of {} basis vectors", basis.size(), nev);
+
+  return {.basis = std::move(basis), .eigenvalues = std::move(singular_values), .info = {.converged = true, .operator_applications = static_cast<unsigned int>(ncv)}};
 }
 
 // ============================================================================

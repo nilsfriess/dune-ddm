@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dune/ddm/communication.hh"
 #include "generic_ddm_problem.hh"
 #include "pdelab_helper.hh"
 
@@ -10,8 +11,8 @@
 #include <dune/ddm/algebraic_neumann.hh>
 #include <dune/ddm/coarsespaces/coarse_spaces.hh>
 #include <dune/ddm/combined_preconditioner.hh>
-#include <dune/ddm/galerkin_preconditioner.hh>
 #include <dune/ddm/deferred_solver.hh>
+#include <dune/ddm/galerkin_preconditioner.hh>
 #include <dune/ddm/logger.hh>
 #include <dune/ddm/overlap_extension.hh>
 #include <dune/ddm/pdelab_helper.hh>
@@ -28,8 +29,8 @@ public:
   using NativeVec = X;
   using NativeMat = Dune::BCRSMatrix<Dune::FieldMatrix<double, 1, 1>>;
   using Communication = Dune::OwnerOverlapCopyCommunication<std::size_t, int>;
-  using FineLevel = SchwarzPreconditioner<NativeMat, NativeVec>;
-  using CoarseLevel = GalerkinPreconditioner<NativeVec, Communication>;
+  using FineLevel = ddm::SchwarzPreconditioner<NativeMat, NativeVec>;
+  using CoarseLevel = ddm::GalerkinPreconditioner<NativeVec, ddm::Communication>;
 
   template <class GridView, class Traits>
   TwoLevelSchwarzPreconditioner(GenericDDMProblem<GridView, Traits>& problem, const Dune::ParameterTree& ptree, const Dune::MPIHelper& helper)
@@ -49,7 +50,7 @@ public:
     // Create overlapping communication
     logger::debug("Creating overlapping communication with overlap={}", overlap);
     auto [ovlp_comm, boundary_mask] = make_overlapping_communication(*novlp_comm_, native(problem.getA()), overlap);
-    this->ovlp_comm_ = ovlp_comm;
+    this->ovlp_comm_ = std::make_shared<ddm::Communication>(ddm::make_communication_from_dune(*ovlp_comm));
 
     // Determine coarse space type and assemble appropriate matrices
     const auto& coarsespace_subtree = ptree.sub("coarsespace");
@@ -78,16 +79,16 @@ public:
 
     if (algebraic_neumann) {
       // No element-level Neumann assembly: the assembled subdomain matrix is all we need.
-      problem.assemble_dirichlet_matrix_only(*ovlp_comm_, novlp_comm_.get());
+      problem.assemble_dirichlet_matrix_only(*ovlp_comm, novlp_comm_.get());
       A_sub = problem.get_subdomain_matrix();
     }
     else {
       // Determine which Neumann regions to assemble based on domain x constraint
-      if (domain == "full" and constraint == "none") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::Overlap, overlap, true, novlp_comm_.get());
-      else if (domain == "full" and constraint == "harmonic") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::All, NeumannRegion::All, overlap, true, novlp_comm_.get());
+      if (domain == "full" and constraint == "none") problem.assemble_overlapping_matrices(*ovlp_comm, NeumannRegion::All, NeumannRegion::Overlap, overlap, true, novlp_comm_.get());
+      else if (domain == "full" and constraint == "harmonic") problem.assemble_overlapping_matrices(*ovlp_comm, NeumannRegion::All, NeumannRegion::All, overlap, true, novlp_comm_.get());
       else if (domain == "ring" and constraint == "none")
-        problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, overlap, false, novlp_comm_.get());
-      else if (domain == "ring" and constraint == "harmonic") problem.assemble_overlapping_matrices(*ovlp_comm_, NeumannRegion::Overlap, NeumannRegion::Overlap, overlap, false, novlp_comm_.get());
+        problem.assemble_overlapping_matrices(*ovlp_comm, NeumannRegion::ExtendedOverlap, NeumannRegion::ExtendedOverlap, overlap, false, novlp_comm_.get());
+      else if (domain == "ring" and constraint == "harmonic") problem.assemble_overlapping_matrices(*ovlp_comm, NeumannRegion::Overlap, NeumannRegion::Overlap, overlap, false, novlp_comm_.get());
       else DUNE_THROW(Dune::NotImplemented, "Unknown coarse space configuration: domain=" + domain + ", constraint=" + constraint);
 
       // Get assembled matrices
@@ -106,7 +107,7 @@ public:
     // being approximated and how good the approximation is.
     if (algebraic_neumann) {
       logger::info("Approximating the Neumann matrix algebraically (no element-wise Neumann assembly)");
-      auto A_alg = std::make_shared<NativeMat>(make_algebraic_neumann(*ovlp_comm_, *A_sub, boundary_mask));
+      auto A_alg = std::make_shared<NativeMat>(make_algebraic_neumann(*ovlp_comm, *A_sub, boundary_mask));
 
       // The algebraic path only ever sees the assembled subdomain matrix of the full operator, so for
       // a non-symmetric problem the result is non-symmetric and the symmetric eigensolvers would
@@ -133,7 +134,7 @@ public:
 
     // Create partition of unity
     logger::debug("Creating partition of unity");
-    pou_ = std::make_shared<PartitionOfUnity>(*A_sub, *ovlp_comm_, ptree, overlap);
+    pou_ = std::make_shared<PartitionOfUnity>(*A_sub, *ovlp_comm, ptree, overlap);
 
     // Create coarse space
     CoarseSpaceResult<double> coarse_space;
@@ -168,6 +169,9 @@ public:
       coarse_space =
           build_geneo_ring_coarse_space(*A_neu, *B_neu, problem.get_neumann_region_to_subdomain(), *pou_, *A_sub, ptree, coarse_space_ptree_prefix, harmonic_extension_solver.get(), boundary_mask);
     }
+    else if (domain == "full" and constraint == "harmonic" and coarsespace_subtree.get("constraint_evp", "lagrange_multiplier") == "randsvd") {
+      coarse_space = build_msgfem_randsvd_coarse_space(*pou_, boundary_mask, ptree, coarse_space_ptree_prefix, harmonic_extension_solver.get());
+    }
     else if (domain == "full" and constraint == "harmonic") {
       coarse_space = build_msgfem_coarse_space(*A_neu, *pou_, boundary_mask, ptree, coarse_space_ptree_prefix, A_sub.get(), dirichlet_mask, harmonic_extension_solver.get());
     }
@@ -183,7 +187,13 @@ public:
     if (!coarse_space.basis.empty()) {
       basis_ = std::move(coarse_space.basis);
       std::ranges::for_each(basis_, zero_at_dirichlet);
-      coarse = std::make_shared<CoarseLevel>(*A_sub, basis_, ovlp_comm_, ptree, "coarse_solver");
+
+      // The Galerkin preconditioner takes the template vectors as the columns of a multivector.
+      // basis_ itself is kept around for visualisation.
+      using Backend = ddm::backend::backend_of_t<NativeVec>;
+      ddm::MultiVector<double, Backend> R(Backend::context(*A_sub), A_sub->N(), basis_.size());
+      for (std::uint_least32_t k = 0; k < basis_.size(); ++k) ddm::copy_into_column(basis_[k], R, k);
+      coarse = std::make_shared<CoarseLevel>(*A_sub, std::move(R), ovlp_comm_, ptree, "coarse_solver");
     }
 
     helper.getCommunication().barrier();
@@ -197,7 +207,7 @@ public:
     logger::debug("Setting up combined preconditioner");
     combined_prec_ = std::make_shared<CombinedPreconditioner<NativeVec>>(ptree);
     combined_prec_->set_op(novlp_op_);
-    combined_prec_->add(std::make_shared<FineLevel>(A_sub, *ovlp_comm_, pou_, ptree));
+    combined_prec_->add(std::make_shared<FineLevel>(A_sub, ovlp_comm_, *pou_, ptree));
     if (coarse) combined_prec_->add(coarse);
 
     logger::debug("TwoLevelSchwarzPreconditioner setup complete");
@@ -212,7 +222,7 @@ public:
   void post(X& x) override { combined_prec_->post(x); }
 
   std::shared_ptr<Communication> getNonOverlappingCommunication() const { return novlp_comm_; }
-  std::shared_ptr<Communication> getOverlappingCommunication() const { return ovlp_comm_; }
+  std::shared_ptr<ddm::Communication> getOverlappingCommunication() const { return ovlp_comm_; }
 
   using AdditiveOp = AdditiveParallelMatrixOperator<NativeMat, NativeVec, NativeVec, Communication>;
   std::shared_ptr<AdditiveOp> getAdditiveParallelMatrixOperator() const { return novlp_op_; }
@@ -227,7 +237,7 @@ public:
 private:
   std::shared_ptr<NativeMat> A_neu_;
   std::shared_ptr<Communication> novlp_comm_;
-  std::shared_ptr<Communication> ovlp_comm_;
+  std::shared_ptr<ddm::Communication> ovlp_comm_;
   std::shared_ptr<PartitionOfUnity> pou_;
   std::shared_ptr<CombinedPreconditioner<NativeVec>> combined_prec_;
   std::shared_ptr<AdditiveOp> novlp_op_;
