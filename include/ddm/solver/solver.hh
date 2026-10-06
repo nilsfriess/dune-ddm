@@ -61,17 +61,17 @@ public:
         do_info();
         logger::decrease_indent();
       }
-      logger::info("System matrix info");
-      {
-        logger::increase_indent();
-        this->mat()->info();
-        logger::decrease_indent();
-      }
       logger::info("Preconditioner info");
       {
         logger::increase_indent();
         if (this->prec()) this->prec()->info();
         else logger::info("no preconditioner used");
+        logger::decrease_indent();
+      }
+      logger::info("System matrix info");
+      {
+        logger::increase_indent();
+        this->mat()->info();
         logger::decrease_indent();
       }
       logger::decrease_indent();
