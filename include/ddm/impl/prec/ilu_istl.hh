@@ -6,6 +6,7 @@
 #include "ddm/mat/mat.hh"
 #include "ddm/prec/prec.hh"
 #include "ddm/vec/vec.hh"
+#include "dune/ddm/logger.hh"
 
 #include <dune/common/parametertree.hh>
 #include <dune/istl/preconditioners.hh>
@@ -34,6 +35,8 @@ private:
   }
 
   void do_update() override { TODO("IstlILUPrec::do_update"); }
+
+  void do_info() const override { logger::info("ILU preconditioner (using DUNE ISTL's SeqILU)"); }
 
   Dune::SeqILU<NativeMat, NativeVec, NativeVec> ilu;
 };

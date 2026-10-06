@@ -47,6 +47,9 @@ public:
   // y[i] = *this[i] * x[i]
   virtual void pointwise_mult(const VecImpl& x, VecImpl& y) const = 0;
 
+  // *this[i] = src[i] for i < n. src may have a different size than *this, n is at most the smaller one
+  virtual void copy_n_from(const VecImpl& src, Index n) = 0;
+
   // Returns the data in host memory. For Access::write, the contents of the returned memory may be arbitrary. Vec<T>
   // guarantees that at most one access is active at a time and that every acquire_host() is followed by a
   // release_host() with the same mode.
@@ -169,6 +172,16 @@ public:
     check_compatible(x, "pointwise_mult");
     check_compatible(y, "pointwise_mult");
     return impl().pointwise_mult(x.impl(), y.impl());
+  }
+
+  // *this[i] = src[i] for i < n, e.g. to copy between a vector and one on a larger index set that starts with the
+  // same indices. src may have a different size than *this
+  void copy_n_from(const Vec& src, Index n)
+  {
+    DDM_CHECK(&src != this, "vec: copy_n_from() requires distinct vectors");
+    DDM_CHECK(0 <= n && n <= size() && n <= src.size(), "vec: copy_n_from() copies {} entries, but the vectors have sizes {} and {}", n, size(), src.size());
+    DDM_CHECK(backend() == src.backend(), "vec: copy_n_from() backend mismatch, got {} and {}", to_string(backend()), to_string(src.backend()));
+    impl().copy_n_from(src.impl(), n);
   }
 
   // Access to the implementation, e.g. for a Mat implementation to reach the native vector of its backend. All

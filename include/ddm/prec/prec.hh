@@ -48,6 +48,9 @@ public:
 
   const std::shared_ptr<const Mat<T>>& mat() const { return A_; }
 
+  // Print info about the preconditioner
+  void info() const { do_info(); }
+
 protected:
   explicit Prec(std::shared_ptr<const Mat<T>> A)
       : A_(std::move(A))
@@ -59,6 +62,7 @@ protected:
 private:
   virtual void do_apply(Vec<T>& z, const Vec<T>& r) = 0;
   virtual void do_update() = 0;
+  virtual void do_info() const = 0;
 
   std::shared_ptr<const Mat<T>> A_;
 };

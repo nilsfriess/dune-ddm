@@ -7,6 +7,7 @@
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/pattern.hh"
 #include "ddm/vec/vec.hh"
+#include "dune/ddm/logger.hh"
 
 #include <cstddef>
 #include <dune/common/parametertree.hh>
@@ -125,6 +126,22 @@ public:
 
   // Returns true if this is a sequential matrix (i.e. comm is nullptr)
   bool sequential() const { return comm_ == nullptr; }
+
+  // Print info about the matrix
+  void info() const
+  {
+    if (sequential()) logger::info("Matrix is sequential");
+    else {
+      logger::info("Matrix is parallel on {} ranks", communication()->size());
+      logger::info("Unique `owner` nodes {}", communication()->count_owners());
+    }
+    logger::info("Local matrix info on rank 0");
+    {
+      logger::increase_indent();
+      local().info();
+      logger::decrease_indent();
+    }
+  }
 
 private:
   // The number of ranks holding each local index

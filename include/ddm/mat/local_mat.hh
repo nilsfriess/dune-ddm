@@ -13,8 +13,18 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace ddm {
+// The entries of a matrix in CSR form in host memory: the entries of row i are at positions
+// [row_ptr[i], row_ptr[i + 1]) of cols and values.
+template <class T>
+struct HostCsr {
+  std::vector<Index> row_ptr;
+  std::vector<Index> cols;
+  std::vector<T> values;
+};
+
 // Interface implemented by the matrix backends: a sequential matrix in local numbering, without any knowledge of
 // other ranks. Users of the library work with Mat<T>, which holds a LocalMat<T> and adds the parallel semantics.
 //
@@ -32,6 +42,9 @@ public:
   virtual Index rows() const = 0;
   virtual Index cols() const = 0;
   virtual BackendId backend() const = 0;
+
+  // The pattern the matrix was created with
+  const Pattern& pattern() const { return pattern_; }
 
   // Adds the dense block `vals` (row-major, rows.size() x cols.size()) at the given indices.
   // Every (rows[r], cols[c]) must be part of the pattern.
@@ -94,8 +107,21 @@ public:
     do_get_diag(diag);
   }
 
+  // Returns the entries of the matrix. Backends that do not support this throw
+  HostCsr<T> host_csr() const
+  {
+    DDM_CHECK(assembled_, "mat: host_csr() called before assemble()");
+    return do_host_csr();
+  }
+
+  // Print info about this matrix
+  void info() const { do_info(); }
+
 protected:
-  LocalMat() = default;
+  explicit LocalMat(const Pattern& pattern)
+      : pattern_(pattern)
+  {
+  }
 
 private:
   void check_mv_args(const Vec<T>& x, const Vec<T>& y, std::string_view op) const
@@ -113,7 +139,15 @@ private:
   virtual void do_mv(const Vec<T>& x, Vec<T>& y) const = 0;
   virtual void do_usmv(T alpha, const Vec<T>& x, Vec<T>& y) const = 0;
   virtual void do_get_diag(Vec<T>& diag) const = 0;
+  virtual void do_info() const = 0;
 
+  virtual HostCsr<T> do_host_csr() const
+  {
+    DDM_CHECK(false, "mat: host_csr() is not supported by backend {}", to_string(backend()));
+    return {};
+  }
+
+  Pattern pattern_;
   bool assembled_ = false;
 };
 

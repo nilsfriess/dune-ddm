@@ -36,7 +36,8 @@ public:
   using Native = Dune::IBCRSMatrix<T, std::make_unsigned_t<Index>>;
 
   explicit IstlMat(const Pattern& pattern)
-      : A_(pattern.ranges())
+      : LocalMat<T>(pattern)
+      , A_(pattern.ranges())
   {
   }
 
@@ -88,6 +89,31 @@ private:
       auto it = row.find(r);
       if (it != row.end()) istl_diag[r] = *it;
     }
+  }
+
+  HostCsr<T> do_host_csr() const override
+  {
+    HostCsr<T> csr;
+    csr.row_ptr.reserve(A_.N() + 1);
+    csr.row_ptr.push_back(0);
+    for (std::size_t r = 0; r < A_.N(); ++r) {
+      // The values of a row are stored in the order of the column indices in the pattern
+      const auto row = A_[r];
+      auto value = row.begin();
+      for (auto c : this->pattern().row(static_cast<Index>(r))) {
+        csr.cols.push_back(static_cast<Index>(c));
+        csr.values.push_back(*value);
+        ++value;
+      }
+      csr.row_ptr.push_back(static_cast<Index>(csr.cols.size()));
+    }
+    return csr;
+  }
+
+  void do_info() const override
+  {
+    logger::info("ISTL matrix of size {}x{}", rows(), cols());
+    logger::info("Nonzero entries {}", A_.nonzeroes());
   }
 
   Native A_;

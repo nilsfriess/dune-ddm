@@ -29,6 +29,8 @@ private:
     for (auto& d : diag_view) d = (d == 0) ? T(1) : T(1) / d;
   }
 
+  void do_info() const override { logger::info("Jacobi preconditioner"); }
+
   Vec<T> diag;
 };
 } // namespace ddm

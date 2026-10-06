@@ -77,6 +77,12 @@ public:
     for (Index i = 0; i < size(); ++i) y_istl[i] = v_[i] * x_istl[i];
   }
 
+  void copy_n_from(const VecImpl<T>& src, Index n) override
+  {
+    const auto& src_istl = as_istl(src).v_;
+    for (Index i = 0; i < n; ++i) v_[i] = src_istl[i];
+  }
+
   // The data is in host memory already, so there is nothing to copy
   std::span<T> acquire_host(Access /*mode*/) override { return {v_.data(), v_.size()}; }
   void release_host(Access /*mode*/) override {}

@@ -29,5 +29,7 @@ private:
   {
     // Update is a no-op here
   }
+
+  void do_info() const override { logger::info("NonePrec preconditioner (only copies the input into the output)"); }
 };
 } // namespace ddm
