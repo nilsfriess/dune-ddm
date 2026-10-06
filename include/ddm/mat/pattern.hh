@@ -13,6 +13,9 @@ namespace ddm {
 // Sparsity pattern in CSR form, built by inserting (row, col) pairs in any order (duplicates are ignored), followed
 // by finalize(). Thin wrapper around ISTL's UnsequencedSparseIndexRangeBuilder / SparseIndexRanges, so that the rest
 // of dune-ddm does not depend on that API directly.
+//
+// A pattern is also used as a graph on the indices, e.g. for the overlap extension. A finalized pattern can be copied,
+// the copies share the CSR data.
 class Pattern {
 public:
   // ISTL only supports unsigned index types
@@ -34,6 +37,25 @@ public:
     builder_->addIndex(static_cast<std::size_t>(i), static_cast<std::size_t>(j));
   }
 
+  Pattern(const Pattern& other)
+      : rows_(other.rows_)
+      , cols_(other.cols_)
+      , ranges_(other.ranges())
+  {
+  }
+
+  Pattern& operator=(const Pattern& other)
+  {
+    rows_ = other.rows_;
+    cols_ = other.cols_;
+    builder_.reset();
+    ranges_ = other.ranges();
+    return *this;
+  }
+
+  Pattern(Pattern&&) = default;
+  Pattern& operator=(Pattern&&) = default;
+
   void finalize()
   {
     DDM_CHECK(builder_ != nullptr, "pattern: finalize() called twice");
@@ -46,6 +68,13 @@ public:
   Index rows() const { return rows_; }
   Index cols() const { return cols_; }
   Index nnz() const { return static_cast<Index>(ranges()->count()); }
+
+  // The column indices of row i, in ascending order. Iterating it yields the indices as unsigned integers
+  auto row(Index i) const
+  {
+    DDM_ASSERT(0 <= i && i < rows_, "pattern: row {} out of range for {} rows", i, rows_);
+    return (*ranges())[static_cast<std::size_t>(i)];
+  }
 
   // ISTL representation of the finalized pattern, e.g. for IstlMat to share it without copying
   const std::shared_ptr<const ranges_type>& ranges() const
