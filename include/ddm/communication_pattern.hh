@@ -30,9 +30,11 @@ public:
   using IndexMap = std::unordered_map<int, PeerIndices>;
 
   CommunicationPattern(MPI_Comm comm_, const std::vector<CommunicationNodes>& roots)
-      : neighbours_(detail::identify_neighbours(comm_, roots))
   {
+    // Duplicate first: identify_neighbours() receives from any source, so it must not run on the caller's
+    // communicator, where it could pick up unrelated messages
     MPI_Comm_dup(comm_, &comm);
+    neighbours_ = detail::identify_neighbours(comm, roots);
     logger::trace_all("CommunicationPattern() neighbours: {}", logger::join(neighbours_));
 
     // Global ids are unique across all ranks, so the id alone identifies an entry of our roots
