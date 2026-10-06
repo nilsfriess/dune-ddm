@@ -282,6 +282,7 @@ private:
 class Communication {
   struct Communicator {
     Communicator(MPI_Comm comm)
+        : comm_(comm)
     {
       MPI_Comm_size(comm, &size_);
       MPI_Comm_rank(comm, &rank_);
@@ -290,6 +291,7 @@ class Communication {
     int size() const { return size_; }
     int rank() const { return rank_; }
 
+    MPI_Comm comm_;
     int size_{};
     int rank_{};
   };
@@ -297,6 +299,7 @@ class Communication {
 public:
   Communication(MPI_Comm comm, const std::vector<CommunicationNodes>& roots)
       : pattern(std::make_shared<const CommunicationPattern>(comm, roots))
+      , roots_(roots)
       , c(comm)
       , owner_mask(roots.size())
       , dot_local_event{Logger::get().registerOrGetEvent("Communication", "dot (local)")}
@@ -315,8 +318,6 @@ public:
     Logger::get().registerOrGetEvent("Communication", "broadcast wait");
     Logger::get().registerOrGetEvent("Communication", "reduce begin");
     Logger::get().registerOrGetEvent("Communication", "reduce wait");
-    Logger::get().registerOrGetEvent("Communication", "all-holders begin");
-    Logger::get().registerOrGetEvent("Communication", "all-holders wait");
   }
 
   Communication(const Communication&) = delete;
@@ -396,8 +397,18 @@ public:
 
   const CommunicationPattern& communication_pattern() const { return *pattern; }
 
+  /// The owner rank and global id of every local index, as passed to the constructor
+  const std::vector<CommunicationNodes>& roots() const { return roots_; }
+
   /// The pattern, to build a second Communication on the same topology without redoing the setup.
   std::shared_ptr<const CommunicationPattern> shared_pattern() const { return pattern; }
+
+  std::size_t count_owners() const
+  {
+    std::size_t owners = std::ranges::count_if(owner_mask, [&](auto&& e) { return e != 0; });
+    MPI_Allreduce(MPI_IN_PLACE, &owners, 1, Dune::MPITraits<std::size_t>::getType(), MPI_SUM, c.comm_);
+    return owners;
+  }
 
 private:
   template <class T>
@@ -420,6 +431,7 @@ private:
   }
 
   std::shared_ptr<const CommunicationPattern> pattern; // Holds the broadcast and reduce plan
+  std::vector<CommunicationNodes> roots_;
 
   using ExchangerKey = std::pair<BackendId, std::type_index>;
   mutable std::map<ExchangerKey, std::shared_ptr<detail::ExchangerBase>> exchangers;
