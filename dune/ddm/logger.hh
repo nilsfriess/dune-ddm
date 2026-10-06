@@ -19,6 +19,7 @@
  * @{
  */
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <deque>
@@ -51,6 +52,7 @@ namespace detail {
 static Level current_level = Level::info;
 static int mpi_rank = 0;
 static bool initialized = false;
+static int indentation = 0;
 static std::mutex log_mutex;
 
 inline void read_level_from_env()
@@ -99,7 +101,8 @@ inline bool enabled(Level level, bool all_ranks)
 inline void emit(Level level, std::string_view message)
 {
   std::lock_guard<std::mutex> lock(log_mutex);
-  std::cout << "[" << level_name(level) << ":" << mpi_rank << "] " << message << std::endl;
+  std::string indent_string(indentation, ' ');
+  std::cout << "[" << level_name(level) << ":" << mpi_rank << "] " << indent_string << message << std::endl;
 }
 
 template <typename... Args>
@@ -144,6 +147,21 @@ inline void init(int rank)
   detail::mpi_rank = rank;
   detail::read_level_from_env();
   detail::initialized = true;
+}
+
+// Increase the indentation of the logger (by two spaces)
+inline void increase_indent()
+{
+  std::lock_guard<std::mutex> lock(detail::log_mutex);
+  detail::indentation += 2;
+}
+
+// Increase the indentation of the logger (by two spaces)
+inline void decrease_indent()
+{
+  std::lock_guard<std::mutex> lock(detail::log_mutex);
+  detail::indentation -= 2;
+  detail::indentation = std::max(detail::indentation, 0);
 }
 
 // Logging functions for rank 0 only.
