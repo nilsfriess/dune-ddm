@@ -4,6 +4,7 @@
 #include "ddm/impl/prec/jacobiprec.hh"
 #include "ddm/impl/prec/noneprec.hh"
 #include "ddm/impl/prec/schwarz.hh"
+#include "ddm/impl/solver/direct.hh"
 #include "ddm/impl/solver/gmres.hh"
 #include "ddm/impl/vec/istlvec.hh"
 #include "ddm/registry.hh"
@@ -32,6 +33,8 @@ void register_all()
   // Register solvers
   register_solver<T>(
       "gmres", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, std::shared_ptr<Prec<T>> P) { return std::make_shared<GMResSolver<T>>(config, std::move(A), std::move(P)); });
+  register_solver<T>(
+      "direct", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, std::shared_ptr<Prec<T>> P) { return std::make_shared<DirectSolver<T>>(config, std::move(A), std::move(P)); });
 }
 } // namespace
 
