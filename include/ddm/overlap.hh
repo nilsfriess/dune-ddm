@@ -29,6 +29,7 @@ namespace ddm {
 struct Overlap {
   std::shared_ptr<Communication> comm; ///< communication on the overlapping index set
   std::vector<int> layer;              ///< for every overlapping index: 0 for the original ones, k for the ones added in round k
+  int layers = 0;                      ///< the number of layers the index set was extended by (the largest possible value of layer)
   Index n_original = 0;                ///< the original indices are the first n_original ones, in their original order
 };
 
@@ -274,7 +275,7 @@ inline Overlap extend_overlap(const Communication& comm, const Pattern& graph, i
     }
   }
 
-  return {std::make_shared<Communication>(mpi_comm, ext_roots), std::move(layer), n};
+  return {std::make_shared<Communication>(mpi_comm, ext_roots), std::move(layer), layers, n};
 }
 
 /** Returns the restriction of the global matrix A to the overlapping index set, i.e. the rows of the global matrix
@@ -288,7 +289,7 @@ std::shared_ptr<LocalMat<T>> overlapping_matrix(const Dune::ParameterTree& confi
 {
   Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Overlap", "matrix")};
 
-  DDM_CHECK(!A.sequential(), "overlapping_matrix: the matrix is sequential");
+  DDM_CHECK(A.communication() != nullptr, "overlapping_matrix: the matrix has no communication");
   DDM_CHECK(A.rows() == ovlp.n_original, "overlapping_matrix: matrix has {} rows, but the overlap was created for {} indices", A.rows(), ovlp.n_original);
 
   const auto csr = A.local().host_csr();

@@ -2,11 +2,13 @@
 
 #include "ddm/backend_id.hh"
 #include "ddm/check.hh"
+#include "ddm/impl/multivec/istlmultivec.hh"
 #include "ddm/impl/vec/istlvec.hh"
 #include "ddm/index.hh"
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/pattern.hh"
 
+#include <algorithm>
 #include <cstddef>
 #include <dune/istl/ibcrsmatrix.hh>
 #include <memory>
@@ -80,6 +82,20 @@ private:
   void do_mv(const Vec<T>& x, Vec<T>& y) const override { A_.mv(as_istl(x).native(), as_istl(y).native()); }
   void do_usmv(T alpha, const Vec<T>& x, Vec<T>& y) const override { A_.usmv(alpha, as_istl(x).native(), as_istl(y).native()); }
 
+  void do_spmm(const MultiVec<T>& X, MultiVec<T>& Y) const override
+  {
+    const auto x = as_istl(X).data();
+    auto y = as_istl(Y).data();
+    const std::size_t x_rows = X.rows();
+    const std::size_t y_rows = Y.rows();
+    const std::size_t m = X.cols();
+
+    std::fill(y.begin(), y.end(), T{0});
+    for (auto ri = A_.begin(); ri != A_.end(); ++ri)
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci)
+        for (std::size_t j = 0; j < m; ++j) y[j * y_rows + ri.index()] += *ci * x[j * x_rows + ci.index()];
+  }
+
   void do_get_diag(Vec<T>& diag) const override
   {
     auto& istl_diag = as_istl(diag).native();
@@ -91,19 +107,18 @@ private:
     }
   }
 
+  std::unique_ptr<MultiVec<T>> do_create_domain_multivector(Index m) const override { return std::make_unique<IstlMultiVec<T>>(this->cols(), m); }
+  std::unique_ptr<MultiVec<T>> do_create_range_multivector(Index m) const override { return std::make_unique<IstlMultiVec<T>>(this->rows(), m); }
+
   HostCsr<T> do_host_csr() const override
   {
     HostCsr<T> csr;
     csr.row_ptr.reserve(A_.N() + 1);
     csr.row_ptr.push_back(0);
-    for (std::size_t r = 0; r < A_.N(); ++r) {
-      // The values of a row are stored in the order of the column indices in the pattern
-      const auto row = A_[r];
-      auto value = row.begin();
-      for (auto c : this->pattern().row(static_cast<Index>(r))) {
-        csr.cols.push_back(static_cast<Index>(c));
-        csr.values.push_back(*value);
-        ++value;
+    for (auto ri = A_.begin(); ri != A_.end(); ++ri) {
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci) {
+        csr.cols.push_back(static_cast<Index>(ci.index()));
+        csr.values.push_back(*ci);
       }
       csr.row_ptr.push_back(static_cast<Index>(csr.cols.size()));
     }

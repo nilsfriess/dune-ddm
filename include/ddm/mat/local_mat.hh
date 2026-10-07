@@ -4,6 +4,7 @@
 #include "ddm/check.hh"
 #include "ddm/index.hh"
 #include "ddm/mat/pattern.hh"
+#include "ddm/multivec/multivec.hh"
 #include "ddm/registry.hh"
 #include "ddm/vec/vec.hh"
 
@@ -91,11 +92,37 @@ public:
     do_usmv(alpha, x, y);
   }
 
+  // Y = A X, column by column
+  void spmm(const MultiVec<T>& X, MultiVec<T>& Y) const
+  {
+    DDM_CHECK(assembled_, "mat: spmm() called before assemble()");
+    DDM_CHECK(&X != &Y, "mat: spmm() requires distinct multivectors X and Y");
+    DDM_CHECK(X.rows() == cols() && Y.rows() == rows() && X.cols() == Y.cols(), "mat: spmm() size mismatch, matrix is {}x{}, but X is {}x{} and Y is {}x{}", rows(), cols(), X.rows(), X.cols(),
+              Y.rows(), Y.cols());
+    DDM_CHECK(X.backend() == backend() && Y.backend() == backend(), "mat: spmm() backend mismatch, matrix is {}, X is {}, Y is {}", to_string(backend()), to_string(X.backend()),
+              to_string(Y.backend()));
+    do_spmm(X, Y);
+  }
+
   // Returns a zero-initialized vector x from the domain of the matrix, i.e. one that can be used in mv(x, y)
   virtual Vec<T> create_domain_vector() const = 0;
 
   // Returns a zero-initialized vector y from the range of the matrix, i.e. one that can be used in mv(x, y)
   virtual Vec<T> create_range_vector() const = 0;
+
+  // Returns a zero-initialized multivector with m columns from the domain of the matrix
+  std::unique_ptr<MultiVec<T>> create_domain_multivector(Index m) const
+  {
+    DDM_CHECK(m >= 0, "mat: create_domain_multivector() with negative number of columns {}", m);
+    return do_create_domain_multivector(m);
+  }
+
+  // Returns a zero-initialized multivector with m columns from the range of the matrix
+  std::unique_ptr<MultiVec<T>> create_range_multivector(Index m) const
+  {
+    DDM_CHECK(m >= 0, "mat: create_range_multivector() with negative number of columns {}", m);
+    return do_create_range_multivector(m);
+  }
 
   // Fill the given vector with the matrix's diagonal. Throws if the matrix is not square
   void get_diag(Vec<T>& diag) const
@@ -138,7 +165,10 @@ private:
   virtual void do_zero_rows(std::span<const Index> rows, T diag) = 0;
   virtual void do_mv(const Vec<T>& x, Vec<T>& y) const = 0;
   virtual void do_usmv(T alpha, const Vec<T>& x, Vec<T>& y) const = 0;
+  virtual void do_spmm(const MultiVec<T>& X, MultiVec<T>& Y) const = 0;
   virtual void do_get_diag(Vec<T>& diag) const = 0;
+  virtual std::unique_ptr<MultiVec<T>> do_create_domain_multivector(Index m) const = 0;
+  virtual std::unique_ptr<MultiVec<T>> do_create_range_multivector(Index m) const = 0;
   virtual void do_info() const = 0;
 
   virtual HostCsr<T> do_host_csr() const

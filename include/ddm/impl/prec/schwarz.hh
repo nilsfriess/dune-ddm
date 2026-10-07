@@ -7,6 +7,7 @@
 #include "ddm/solver/solver.hh"
 #include "ddm/vec/vec.hh"
 #include "dune/ddm/logger.hh"
+#include "galerkin.hh"
 
 #include <dune/common/parametertree.hh>
 #include <dune/istl/solvercategory.hh>
@@ -35,18 +36,25 @@ public:
       : Prec<T>(std::move(A))
       , config_(config)
       , layers_(config.get("overlap", 1))
-      , ovlp_(extend_overlap(*this->mat()->communication(), this->mat()->local().pattern(), layers_))
+      , ovlp_(extend_overlap(communication(), this->mat()->local().pattern(), layers_))
       , apply_event_(Logger::get().registerOrGetEvent("Schwarz", "apply"))
       , solve_event_(Logger::get().registerOrGetEvent("Schwarz", "subdomain solve"))
   {
-    DDM_CHECK(!this->mat()->sequential(), "schwarz: the matrix is sequential");
     Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Schwarz", "setup")};
     do_update();
   }
 
-  Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::overlapping; }
+  // On a single rank, the matrix is sequential, and so is the preconditioner
+  Dune::SolverCategory::Category category() const override { return this->mat()->category(); }
 
 private:
+  // Called while the members are initialized, so the check has to happen here and not in the constructor body
+  const Communication& communication() const
+  {
+    DDM_CHECK(this->mat()->communication() != nullptr, "schwarz: the matrix has no communication");
+    return *this->mat()->communication();
+  }
+
   // Collective
   void do_apply(Vec<T>& z, const Vec<T>& r) override
   {
