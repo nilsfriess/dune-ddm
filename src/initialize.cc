@@ -4,6 +4,7 @@
 #include "ddm/impl/prec/jacobiprec.hh"
 #include "ddm/impl/prec/noneprec.hh"
 #include "ddm/impl/prec/schwarz.hh"
+#include "ddm/impl/prec/umfpack.hh"
 #include "ddm/impl/solver/direct.hh"
 #include "ddm/impl/solver/gmres.hh"
 #include "ddm/impl/vec/istlvec.hh"
@@ -28,6 +29,7 @@ void register_all()
   register_prec<T>("none", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<NonePrec<T>>(config, std::move(A)); });
   register_prec<T>("jacobi", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<JacobiPrec<T>>(config, std::move(A)); });
   register_prec<T>("ilu", BackendId::istl, [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<IstlILUPrec<T>>(config, std::move(A)); });
+  register_prec<T>("umfpack", BackendId::istl, [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<UMFPACKPrec<T>>(config, std::move(A)); });
   register_prec<T>("schwarz", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<SchwarzPrec<T>>(config, std::move(A)); });
 
   // Register solvers
