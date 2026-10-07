@@ -10,7 +10,7 @@
 namespace ddm {
 // A solver that applies one step of a preconditioner. Usually that preconditioner is a direct solver
 template <class T>
-class DirectSolver : public Solver<T> {
+class DirectSolver final : public Solver<T> {
 public:
   DirectSolver(const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, std::shared_ptr<Prec<T>> P)
       : Solver<T>(config, std::move(A), std::move(P))
