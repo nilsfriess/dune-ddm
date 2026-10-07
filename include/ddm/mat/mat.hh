@@ -53,7 +53,7 @@ public:
   Index cols() const { return local_->cols(); }
   BackendId backend() const { return local_->backend(); }
 
-  Dune::SolverCategory::Category category() const override { return comm_ ? Dune::SolverCategory::overlapping : Dune::SolverCategory::sequential; }
+  Dune::SolverCategory::Category category() const override { return sequential() ? Dune::SolverCategory::sequential : Dune::SolverCategory::overlapping; }
 
   // See LocalMat::add_values(), the indices are local
   void add_values(std::span<const Index> rows, std::span<const Index> cols, std::span<const T> vals) { local_->add_values(rows, cols, vals); }
@@ -125,7 +125,7 @@ public:
   const std::shared_ptr<Communication>& communication() const { return comm_; }
 
   // Returns true if this is a sequential matrix (i.e. comm is nullptr)
-  bool sequential() const { return comm_ == nullptr; }
+  bool sequential() const { return comm_ == nullptr or comm_->size() == 1; }
 
   // Print info about the matrix
   void info() const
