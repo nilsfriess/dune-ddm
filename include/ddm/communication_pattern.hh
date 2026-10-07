@@ -46,6 +46,12 @@ public:
 
     build_broadcast_plan(roots, gid_to_local); // this must go first because the reduction plan uses the broadcast plan
     build_reduction_plan(roots, gid_to_local);
+
+    // The identify_neighbours function above only identifies neighbours that have a copy <-> owner
+    // relation. The reduction plan also identifies those having a copy <-> copy relation and we should
+    // report those as our "actual" neighbours.
+    neighbours_.clear();
+    for (const auto& [p, idxs] : reduction_indices()) neighbours_.push_back(p);
   }
 
   CommunicationPattern(const CommunicationPattern&) = delete;
