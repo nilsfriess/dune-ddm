@@ -141,4 +141,21 @@ std::shared_ptr<Solver<T>> create_solver(const Dune::ParameterTree& config, std:
   const auto backend = A->backend(); // before A is moved into the argument list
   return SolverRegistry<T>::instance().create_for_backend("solver", config, "gmres", backend, std::move(A), std::move(P));
 }
+
+/** Creates the solver for a subproblem, e.g. a subdomain or coarse problem, from the config of the solver and of its
+ *  preconditioner. Unlike create_solver(), the default is an exact solve with the LU decomposition of A's backend: the
+ *  solver type defaults to "direct" and, if the solver is "direct", the preconditioner type to "lu".
+ */
+template <class T>
+std::shared_ptr<Solver<T>> create_subproblem_solver(const Dune::ParameterTree& solver_config, const Dune::ParameterTree& prec_config, std::shared_ptr<const Mat<T>> A)
+{
+  auto solver = solver_config;
+  if (!solver.hasKey("type")) solver["type"] = "direct";
+
+  auto prec = prec_config;
+  if (!prec.hasKey("type") && solver["type"] == "direct") prec["type"] = "lu";
+
+  auto P = create_prec<T>(prec, A);
+  return create_solver<T>(solver, std::move(A), std::move(P));
+}
 } // namespace ddm

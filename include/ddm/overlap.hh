@@ -280,7 +280,7 @@ inline Overlap extend_overlap(const Communication& comm, const Pattern& graph, i
 
 /** Returns the restriction of the global matrix A to the overlapping index set, i.e. the rows of the global matrix
  *  for the indices in the set, without the columns outside the set. The local matrix is created with config (see
- *  create_local_mat()). Collective.
+ *  create_local_mat_like(): without a type, it has the type of A's local matrix). Collective.
  *
  *  ovlp must have been created from A's communication. The local matrix of A must support host_csr().
  */
@@ -333,7 +333,7 @@ std::shared_ptr<LocalMat<T>> overlapping_matrix(const Dune::ParameterTree& confi
     for (const auto& [j, _] : rows[i]) ovlp_pattern.add(i, j);
   ovlp_pattern.finalize();
 
-  auto A_ovlp = create_local_mat<T>(config, ovlp_pattern);
+  auto A_ovlp = create_local_mat_like<T>(config, ovlp_pattern, A.local());
   std::vector<Index> cols;
   std::vector<T> values;
   for (Index i = 0; i < n_ext; ++i) {
