@@ -14,7 +14,6 @@
 #include <memory>
 #include <span>
 #include <type_traits>
-#include <utility>
 
 namespace ddm {
 template <class T>
@@ -37,8 +36,8 @@ class IstlMat final : public LocalMat<T> {
 public:
   using Native = Dune::IBCRSMatrix<T, std::make_unsigned_t<Index>>;
 
-  explicit IstlMat(const Pattern& pattern)
-      : LocalMat<T>(pattern)
+  explicit IstlMat(const Dune::ParameterTree& config, const Pattern& pattern)
+      : LocalMat<T>(config, pattern)
       , A_(pattern.ranges())
   {
   }
@@ -109,7 +108,7 @@ private:
 
   std::unique_ptr<MultiVec<T>> do_create_domain_multivector(Index m) const override { return std::make_unique<IstlMultiVec<T>>(this->cols(), m); }
   std::unique_ptr<MultiVec<T>> do_create_range_multivector(Index m) const override { return std::make_unique<IstlMultiVec<T>>(this->rows(), m); }
-  std::shared_ptr<LocalMat<T>> do_create_like(const Pattern& pattern) const override { return std::make_shared<IstlMat<T>>(pattern); }
+  std::shared_ptr<LocalMat<T>> do_create_like(const Dune::ParameterTree& config, const Pattern& pattern) const override { return std::make_shared<IstlMat<T>>(config, pattern); }
 
   HostCsr<T> do_host_csr() const override
   {

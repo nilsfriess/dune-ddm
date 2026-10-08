@@ -341,7 +341,7 @@ private:
     }
     A0_local->assemble();
 
-    auto A0 = std::make_shared<const Mat<T>>(A0_local, nullptr);
+    auto A0 = std::make_shared<const Mat<T>>(config.sub("mat"), A0_local, nullptr);
     solver_ = create_subproblem_solver<T>(config.sub("solver"), config.sub("prec"), A0);
     d0_.emplace(A0->create_range_vector());
     x0_.emplace(A0->create_domain_vector());

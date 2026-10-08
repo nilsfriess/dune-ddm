@@ -23,7 +23,7 @@ void register_all()
   register_vec<T>("istl", [](const Dune::ParameterTree&, Index n) { return std::make_unique<IstlVec<T>>(n); });
 
   // Register matrices
-  register_local_mat<T>("istl", [](const Dune::ParameterTree&, const Pattern& pattern) { return std::make_shared<IstlMat<T>>(pattern); });
+  register_local_mat<T>("istl", [](const Dune::ParameterTree& config, const Pattern& pattern) { return std::make_shared<IstlMat<T>>(config, pattern); });
 
   // Register preconditioners
   register_prec<T>("none", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<NonePrec<T>>(config, std::move(A)); });

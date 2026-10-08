@@ -121,7 +121,7 @@ public:
   std::shared_ptr<LocalMat<T>> create_like(const Pattern& pattern) const
   {
     DDM_CHECK(pattern.is_finalized(), "mat: create_like() requires a finalized pattern");
-    return do_create_like(pattern);
+    return do_create_like(config_, pattern);
   }
 
   // Returns a zero-initialized multivector with m columns from the range of the matrix
@@ -152,8 +152,9 @@ public:
   void info() const { do_info(); }
 
 protected:
-  explicit LocalMat(const Pattern& pattern)
-      : pattern_(pattern)
+  explicit LocalMat(const Dune::ParameterTree& config, const Pattern& pattern)
+      : config_(config)
+      , pattern_(pattern)
   {
   }
 
@@ -176,7 +177,7 @@ private:
   virtual void do_get_diag(Vec<T>& diag) const = 0;
   virtual std::unique_ptr<MultiVec<T>> do_create_domain_multivector(Index m) const = 0;
   virtual std::unique_ptr<MultiVec<T>> do_create_range_multivector(Index m) const = 0;
-  virtual std::shared_ptr<LocalMat<T>> do_create_like(const Pattern& pattern) const = 0;
+  virtual std::shared_ptr<LocalMat<T>> do_create_like(const Dune::ParameterTree& config, const Pattern& pattern) const = 0;
   virtual void do_info() const = 0;
 
   virtual HostCsr<T> do_host_csr() const
@@ -185,6 +186,7 @@ private:
     return {};
   }
 
+  Dune::ParameterTree config_;
   Pattern pattern_;
   bool assembled_ = false;
 };

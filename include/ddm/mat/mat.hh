@@ -4,11 +4,13 @@
 #include "ddm/check.hh"
 #include "ddm/communication.hh"
 #include "ddm/index.hh"
+#include "ddm/mat/assembly.hh"
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/pattern.hh"
 #include "ddm/vec/vec.hh"
 #include "dune/ddm/logger.hh"
 
+#include <algorithm>
 #include <cstddef>
 #include <dune/common/parametertree.hh>
 #include <dune/istl/operators.hh>
@@ -34,7 +36,7 @@ public:
   using field_type = T;
 
   // Collective if comm is not nullptr
-  Mat(std::shared_ptr<LocalMat<T>> local, std::shared_ptr<Communication> comm)
+  Mat(const Dune::ParameterTree& config, std::shared_ptr<LocalMat<T>> local, std::shared_ptr<Communication> comm)
       : local_(std::move(local))
       , comm_(std::move(comm))
   {
@@ -43,6 +45,7 @@ public:
       DDM_CHECK(local_->rows() == local_->cols(), "mat: a parallel matrix must be square, but the local matrix is {}x{}", local_->rows(), local_->cols());
       compute_multiplicity();
     }
+    set_record_values(config.get("record_values", false));
   }
 
   Mat(const Mat&) = delete;
@@ -56,7 +59,40 @@ public:
   Dune::SolverCategory::Category category() const override { return sequential() ? Dune::SolverCategory::sequential : Dune::SolverCategory::overlapping; }
 
   // See LocalMat::add_values(), the indices are local
-  void add_values(std::span<const Index> rows, std::span<const Index> cols, std::span<const T> vals) { local_->add_values(rows, cols, vals); }
+  void add_values(std::span<const Index> rows, std::span<const Index> cols, std::span<const T> vals)
+  {
+    // TODO: This interface in principle allows device-resident data. But the element_blocks_ recording only works for host-data.
+    if (record_values_) {
+      DDM_ASSERT(std::ranges::equal(rows, cols), "mat: recording add_values() requires rows == cols (one element matrix per call)");
+      DDM_ASSERT(vals.size() == rows.size() * rows.size(), "mat: recording add_values() got {} values for a {}x{} block", vals.size(), rows.size(), rows.size());
+      element_blocks_->add(rows, vals);
+    }
+    local_->add_values(rows, cols, vals);
+  }
+
+  /** @brief Enable storing the element stiffness matrices passed to add_values during assembly
+   *         of a finite-element problem.
+   *
+   *  If \p flag is true, then element stiffness matrices passed to add_values() will be stored
+   *  and can later be queried. The parameters \p n_elements and \p n_dofs_per_element are performance
+   *  hints to allocate the necessary space beforehand.
+   *
+   *  This only makes sense if add_values() is called one element-stiffness matrix at a time. This is not
+   *  (and cannot) be checked at runtime, so the user is responsible to structure the assembly correctly.
+   *
+   *  This function should be called (or the corresponding flag -record_values be passed), e.g., if this
+   *  matrix should be preconditioned with a two-level Schwarz method with a spectral coarse space (e.g.
+   *  the GenEO coarse space).
+   */
+  void set_record_values(bool flag, Index n_elements = 0, Index n_dofs_per_element = 0)
+  {
+    DDM_CHECK((n_elements == 0 and n_dofs_per_element == 0) or (n_elements > 0 and n_dofs_per_element > 0),
+              "Mat: set_record_values() argument mismatch, `n_elements` is {} and `n_dofs_per_element` is {}, they either need to be both zero or both non-zero", n_elements, n_dofs_per_element);
+    record_values_ = flag;
+    if (!flag) return; // keeps the blocks recorded so far
+    if (!element_blocks_) element_blocks_.emplace();
+    if (n_elements > 0 and n_dofs_per_element > 0) element_blocks_->reserve(n_elements, n_dofs_per_element);
+  }
 
   // Must be called after the last add_values() and before the matrix is used
   void assemble() { local_->assemble(); }
@@ -135,6 +171,7 @@ public:
       logger::info("Matrix is parallel on {} ranks", communication()->size());
       logger::info("Unique `owner` nodes {}", communication()->count_owners());
     }
+    logger::info("Recording values added in add_values is {}", record_values_ ? "enabled" : "disabled");
     logger::info("Local matrix info on rank 0");
     {
       logger::increase_indent();
@@ -144,6 +181,8 @@ public:
   }
 
 private:
+  friend class LocalMat<T>;
+
   // The number of ranks holding each local index
   void compute_multiplicity()
   {
@@ -160,6 +199,9 @@ private:
 
   std::vector<T> multiplicity_;
   mutable std::optional<Vec<T>> tmp_; ///< temporary for applyscaleadd()
+
+  bool record_values_ = false;
+  std::optional<ElementBlocks<T>> element_blocks_;
 };
 
 // Creates a matrix whose local matrix has the type given by config["type"]. The pattern must be finalized. comm may
@@ -167,6 +209,6 @@ private:
 template <class T>
 std::shared_ptr<Mat<T>> create_mat(const Dune::ParameterTree& config, const Pattern& pattern, std::shared_ptr<Communication> comm = nullptr)
 {
-  return std::make_shared<Mat<T>>(create_local_mat<T>(config, pattern), std::move(comm));
+  return std::make_shared<Mat<T>>(config, create_local_mat<T>(config, pattern), std::move(comm));
 }
 } // namespace ddm

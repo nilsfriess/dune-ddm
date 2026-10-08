@@ -119,7 +119,7 @@ private:
 
   void setup_subdomain()
   {
-    A_sub_ = std::make_shared<const Mat<T>>(overlapping_matrix(config_.sub("subdomain_mat"), *this->mat(), *ovlp_), nullptr);
+    A_sub_ = std::make_shared<const Mat<T>>(config_.sub("subdomain_mat"), overlapping_matrix(config_.sub("subdomain_mat"), *this->mat(), *ovlp_), nullptr);
     solver_ = create_subproblem_solver<T>(config_.sub("subdomain_solver"), config_.sub("subdomain_prec"), A_sub_);
     d_.emplace(A_sub_->create_range_vector());
     x_.emplace(A_sub_->create_domain_vector());
@@ -134,8 +134,8 @@ private:
   std::shared_ptr<const Mat<T>> A_sub_;
   std::shared_ptr<Solver<T>> solver_;
   std::shared_ptr<const Vec<T>> pou_; ///< partition of unity on the overlapping index set
-  std::optional<Vec<T>> d_; ///< defect on the overlapping subdomain
-  std::optional<Vec<T>> x_; ///< correction on the overlapping subdomain
+  std::optional<Vec<T>> d_;           ///< defect on the overlapping subdomain
+  std::optional<Vec<T>> x_;           ///< correction on the overlapping subdomain
 
   Logger::Event* apply_event_{nullptr};
   Logger::Event* solve_event_{nullptr};
