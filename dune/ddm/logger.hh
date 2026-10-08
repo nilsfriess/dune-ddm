@@ -49,11 +49,11 @@ enum class Level { trace = 0, debug = 1, info = 2, warn = 3, error = 4, off = 5 
 
 namespace detail {
 // Global logging state
-static Level current_level = Level::info;
-static int mpi_rank = 0;
-static bool initialized = false;
-static int indentation = 0;
-static std::mutex log_mutex;
+inline Level current_level = Level::info;
+inline int mpi_rank = 0;
+inline bool initialized = false;
+inline int indentation = 0;
+inline std::mutex log_mutex;
 
 inline void read_level_from_env()
 {
