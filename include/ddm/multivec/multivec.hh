@@ -141,8 +141,8 @@ public:
   void dot(const MultiVec& Y, MultiVec& C) const
   {
     DDM_CHECK(&C != this && &C != &Y, "multivector: dot() requires C to be distinct from X and Y");
-    DDM_CHECK(rows() == Y.rows() && C.rows() == cols() && C.cols() == Y.cols(), "multivector: dot() size mismatch, X is {}x{}, Y is {}x{}, C is {}x{}", rows(), cols(), Y.rows(), Y.cols(),
-              C.rows(), C.cols());
+    DDM_CHECK(rows() == Y.rows() && C.rows() == cols() && C.cols() == Y.cols(), "multivector: dot() size mismatch, X is {}x{}, Y is {}x{}, C is {}x{}", rows(), cols(), Y.rows(), Y.cols(), C.rows(),
+              C.cols());
     DDM_CHECK(Y.backend() == backend() && C.backend() == backend(), "multivector: dot() backend mismatch, X is {}, Y is {}, C is {}", to_string(backend()), to_string(Y.backend()),
               to_string(C.backend()));
     do_dot(Y, C);
@@ -152,8 +152,8 @@ public:
   void pack_rows(std::span<const Index> idx, MultiVec& buffer) const
   {
     DDM_CHECK(&buffer != this, "multivector: pack_rows() requires a distinct buffer");
-    DDM_CHECK(buffer.rows() == static_cast<Index>(idx.size()) && buffer.cols() == cols(), "multivector: pack_rows() of {} rows of a {}x{} multivector into a {}x{} buffer", idx.size(),
-              rows(), cols(), buffer.rows(), buffer.cols());
+    DDM_CHECK(buffer.rows() == static_cast<Index>(idx.size()) && buffer.cols() == cols(), "multivector: pack_rows() of {} rows of a {}x{} multivector into a {}x{} buffer", idx.size(), rows(), cols(),
+              buffer.rows(), buffer.cols());
     DDM_CHECK(buffer.backend() == backend(), "multivector: pack_rows() backend mismatch, multivector is {}, buffer is {}", to_string(backend()), to_string(buffer.backend()));
     for (auto i : idx) DDM_CHECK(0 <= i && i < rows(), "multivector: pack_rows() row {} out of range for {} rows", i, rows());
     do_pack_rows(idx, buffer);
@@ -169,6 +169,14 @@ public:
     DDM_CHECK(buffer.backend() == backend(), "multivector: unpack_rows() backend mismatch, multivector is {}, buffer is {}", to_string(backend()), to_string(buffer.backend()));
     for (auto i : idx) DDM_CHECK(0 <= i && i < rows(), "multivector: unpack_rows() row {} out of range for {} rows", i, rows());
     do_unpack_rows(buffer, idx, first_col);
+  }
+
+  void copy_into_column(Index column, const Vec<T>& v)
+  {
+    DDM_CHECK(backend() == v.backend(), "multivector: copy_into_column() backend mismatch, multivector is {}, vector is {}", to_string(backend()), to_string(v.backend()));
+    DDM_CHECK(rows() == v.size(), "multivector: copy_into_column() size mismatch, multivector has {} rows, vector has {} entries", rows(), v.size());
+    DDM_CHECK(column >= 0 and column < cols(), "multivector: copy_into_column() column {} out of range for {} columns", column, cols());
+    do_copy_into_column(column, v);
   }
 
   MultiVecHostView<T> host_view(write_t) { return MultiVecHostView<T>(this, open_view(Access::write), Access::write); }
@@ -193,6 +201,7 @@ private:
   virtual void do_mv(const Vec<T>& c, Vec<T>& y) const = 0;
   virtual void do_pack_rows(std::span<const Index> idx, MultiVec& buffer) const = 0;
   virtual void do_unpack_rows(const MultiVec& buffer, std::span<const Index> idx, Index first_col) = 0;
+  virtual void do_copy_into_column(Index column, const Vec<T>& v) = 0;
 
   // Returns the data in host memory, column by column. For Access::write, the contents may be arbitrary. Every
   // acquire_host() is followed by a release_host() with the same mode, and at most one access is active at a time.
@@ -207,8 +216,7 @@ private:
   {
     DDM_CHECK(!view_open_, "multivector: host_view() called while another host view is open");
     auto data = const_cast<MultiVec*>(this)->acquire_host(mode);
-    DDM_CHECK(data.size() == static_cast<std::size_t>(rows_) * static_cast<std::size_t>(cols_), "multivector: acquire_host() returned {} entries for a {}x{} multivector", data.size(), rows_,
-              cols_);
+    DDM_CHECK(data.size() == static_cast<std::size_t>(rows_) * static_cast<std::size_t>(cols_), "multivector: acquire_host() returned {} entries for a {}x{} multivector", data.size(), rows_, cols_);
     view_open_ = true;
     return data;
   }

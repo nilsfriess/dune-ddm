@@ -115,6 +115,14 @@ private:
       for (std::size_t k = 0; k < k_max; ++k) data_[(first + c) * n + idx[k]] = b[c * k_max + k];
   }
 
+  void do_copy_into_column(Index column, const Vec<T>& v) override
+  {
+    const auto& v_istl = as_istl(v).native();
+    const std::size_t n = this->rows();
+    const std::size_t first = column;
+    for (std::size_t i = 0; i < n; ++i) data_[first * n + i] = v_istl[i];
+  }
+
   // The data is in host memory already, so there is nothing to copy
   std::span<T> acquire_host(Access /*mode*/) override { return data_; }
   void release_host(Access /*mode*/) override {}
