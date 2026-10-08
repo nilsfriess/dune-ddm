@@ -197,15 +197,15 @@ CoarseRows<T> coarse_matrix_rows(const LocalMat<T>& A_ovlp, const CoarseSpace<T>
  *  registered: the coarse space has to be built by someone else (e.g. a two-level preconditioner).
  *
  *  Config:
- *  - mat:    config of the coarse matrix (see create_local_mat())
- *  - solver: config of the solver for the coarse problem (see create_solver())
- *  - prec:   config of the preconditioner of that solver (see create_prec())
+ *  - mat:    config of the coarse matrix (see create_local_mat_like(), default: the type of A's local matrix)
+ *  - solver: config of the solver for the coarse problem (see create_subproblem_solver(), default: exact solve)
+ *  - prec:   config of the preconditioner of that solver (see create_subproblem_solver())
  */
 template <class T>
 class CoarseCorrection final : public Prec<T> {
 public:
   // A_ovlp is the restriction of A to the overlapping index set of the coarse space. Collective
-  CoarseCorrection(const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, std::shared_ptr<const LocalMat<T>> A_ovlp, std::shared_ptr<const CoarseSpace<T>> cs)
+  CoarseCorrection(const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, const LocalMat<T>& A_ovlp, std::shared_ptr<const CoarseSpace<T>> cs)
       : Prec<T>(std::move(A))
       , cs_(std::move(cs))
   {
@@ -217,7 +217,7 @@ public:
     x_.emplace(V.create_vector(V.rows()));
     c_.emplace(V.create_vector(V.cols()));
 
-    setup_coarse_problem(config, detail::coarse_matrix_rows(*A_ovlp, *cs_));
+    setup_coarse_problem(config, detail::coarse_matrix_rows(A_ovlp, *cs_));
   }
 
   Dune::SolverCategory::Category category() const override { return this->mat()->category(); }
@@ -326,7 +326,7 @@ private:
 
     // Every rank's values are one dense block, but stored column by column, while add_values() expects it row by row.
     // So transpose each block once and add it with a single call.
-    auto A0_local = create_local_mat<T>(config.sub("mat"), pattern);
+    auto A0_local = create_local_mat_like<T>(config.sub("mat"), pattern, this->mat()->local());
     std::vector<Index> block_rows;
     std::vector<T> block_values;
     for (int p = 0; p < size; ++p) {
@@ -342,7 +342,7 @@ private:
     A0_local->assemble();
 
     auto A0 = std::make_shared<const Mat<T>>(A0_local, nullptr);
-    solver_ = create_solver<T>(config.sub("solver"), A0, create_prec<T>(config.sub("prec"), A0));
+    solver_ = create_subproblem_solver<T>(config.sub("solver"), config.sub("prec"), A0);
     d0_.emplace(A0->create_range_vector());
     x0_.emplace(A0->create_domain_vector());
   }
