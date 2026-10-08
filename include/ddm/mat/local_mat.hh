@@ -117,6 +117,13 @@ public:
     return do_create_domain_multivector(m);
   }
 
+  // Returns a zero matrix of the same type (and thus backend) as *this with the given pattern, which must be finalized
+  std::shared_ptr<LocalMat<T>> create_like(const Pattern& pattern) const
+  {
+    DDM_CHECK(pattern.is_finalized(), "mat: create_like() requires a finalized pattern");
+    return do_create_like(pattern);
+  }
+
   // Returns a zero-initialized multivector with m columns from the range of the matrix
   std::unique_ptr<MultiVec<T>> create_range_multivector(Index m) const
   {
@@ -169,6 +176,7 @@ private:
   virtual void do_get_diag(Vec<T>& diag) const = 0;
   virtual std::unique_ptr<MultiVec<T>> do_create_domain_multivector(Index m) const = 0;
   virtual std::unique_ptr<MultiVec<T>> do_create_range_multivector(Index m) const = 0;
+  virtual std::shared_ptr<LocalMat<T>> do_create_like(const Pattern& pattern) const = 0;
   virtual void do_info() const = 0;
 
   virtual HostCsr<T> do_host_csr() const
@@ -197,5 +205,14 @@ std::shared_ptr<LocalMat<T>> create_local_mat(const Dune::ParameterTree& config,
   DDM_CHECK(pattern.is_finalized(), "mat: create_local_mat() requires a finalized pattern");
   initialize();
   return LocalMatRegistry<T>::instance().create("mat", config, "istl", pattern);
+}
+
+// Creates a local matrix for a matrix derived from `like` (e.g. a subdomain matrix): of the type given by
+// config["type"] if it is set, otherwise of the same type as `like`, so that it has the same backend
+template <class T>
+std::shared_ptr<LocalMat<T>> create_local_mat_like(const Dune::ParameterTree& config, const Pattern& pattern, const LocalMat<T>& like)
+{
+  if (config.hasKey("type")) return create_local_mat<T>(config, pattern);
+  return like.create_like(pattern);
 }
 } // namespace ddm

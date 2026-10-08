@@ -109,6 +109,7 @@ private:
 
   std::unique_ptr<MultiVec<T>> do_create_domain_multivector(Index m) const override { return std::make_unique<IstlMultiVec<T>>(this->cols(), m); }
   std::unique_ptr<MultiVec<T>> do_create_range_multivector(Index m) const override { return std::make_unique<IstlMultiVec<T>>(this->rows(), m); }
+  std::shared_ptr<LocalMat<T>> do_create_like(const Pattern& pattern) const override { return std::make_shared<IstlMat<T>>(pattern); }
 
   HostCsr<T> do_host_csr() const override
   {
