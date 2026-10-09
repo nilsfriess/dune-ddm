@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace ddm {
 /** Additive Schwarz preconditioner: z = sum_i R_i^T A_i^{-1} R_i r, where R_i restricts to the overlapping subdomain
@@ -25,14 +26,19 @@ namespace ddm {
  *  The overlapping subdomains are built from the index set of the matrix's communication, extended along the pattern
  *  of the local matrix. A_i^{-1} is applied by a sequential solver, so it is inexact unless that solver is exact.
  *
+ *  With eliminate_boundary, the subdomain problems have homogeneous Dirichlet conditions on the outermost layer of the
+ *  overlapping index set: A_i gets identity rows there (only the rows, so A_i can also be used for harmonic extensions)
+ *  and the defect is set to zero there, so the subdomain correction vanishes on that layer.
+ *
  *  Config:
- *  - variant:          additive | restricted (default additive)
- *  - overlap:          number of layers added to the index set of the matrix (default 1, restricted needs at least 1)
- *  - pou:              config of the partition of unity (see partition_of_unity()), only used with overlap >= 1
- *  - subdomain_mat:    config of the subdomain matrix A_i (see create_local_mat_like(), default: the type of A's local
- *                      matrix)
- *  - subdomain_solver: config of the solver for A_i (see create_subproblem_solver(), default: exact solve)
- *  - subdomain_prec:   config of the preconditioner of that solver (see create_subproblem_solver())
+ *  - variant:            additive | restricted (default additive)
+ *  - overlap:            number of layers added to the index set of the matrix (default 1, restricted needs at least 1)
+ *  - eliminate_boundary: eliminate the outermost layer, see above (default true, only used with overlap >= 1)
+ *  - pou:                config of the partition of unity (see partition_of_unity()), only used with overlap >= 1
+ *  - subdomain_mat:      config of the subdomain matrix A_i (see create_local_mat_like(), default: the type of A's local
+ *                        matrix)
+ *  - subdomain_solver:   config of the solver for A_i (see create_subproblem_solver(), default: exact solve)
+ *  - subdomain_prec:     config of the preconditioner of that solver (see create_subproblem_solver())
  */
 template <class T>
 class SchwarzPrec final : public Prec<T> {
@@ -43,6 +49,7 @@ public:
       , config_(config)
       , restricted_(parse_variant(config.get("variant", "additive")))
       , layers_(config.get("overlap", 1))
+      , eliminate_boundary_(config.get("eliminate_boundary", true) && layers_ >= 1)
       , ovlp_(std::make_shared<const Overlap>(extend_overlap(communication(), this->mat()->local().pattern(), layers_)))
       , apply_event_(Logger::get().registerOrGetEvent("Schwarz", "apply"))
       , solve_event_(Logger::get().registerOrGetEvent("Schwarz", "subdomain solve"))
@@ -63,6 +70,13 @@ public:
 
   // Get the partition of unity on the overlapping index set (nullptr with overlap 0)
   std::shared_ptr<const Vec<T>> get_pou() const { return pou_; }
+
+  // Get the subdomain solver object
+  std::shared_ptr<Solver<T>> get_subdomain_solver() { return solver_; }
+
+  // True if the outermost layer is eliminated (see eliminate_boundary), i.e. the subdomain solver also computes harmonic
+  // extensions from that layer
+  bool eliminates_boundary() const { return eliminate_boundary_; }
 
 private:
   static bool parse_variant(const std::string& variant)
@@ -86,6 +100,7 @@ private:
     // r is consistent, so the owners of the overlap indices have the right values
     d_->copy_n_from(r, ovlp_->n_original);
     ovlp_->comm->broadcast(*d_);
+    if (eliminate_boundary_) boundary_mask_->pointwise_mult(*d_, *d_);
 
     Logger::get().startEvent(solve_event_);
     x_->zero();
@@ -106,6 +121,7 @@ private:
   {
     logger::info("Overlapping Schwarz preconditioner ({})", restricted_ ? "restricted" : "additive");
     logger::info("Overlap: {}", layers_);
+    logger::info("Eliminate boundary: {}", eliminate_boundary_);
     {
       logger::increase_indent();
       logger::info("Subdomain solver info");
@@ -120,7 +136,22 @@ private:
 
   void setup_subdomain()
   {
-    A_sub_ = std::make_shared<const Mat<T>>(config_.sub("subdomain_mat"), overlapping_matrix(config_.sub("subdomain_mat"), *this->mat(), *ovlp_), nullptr);
+    auto A_ovlp = overlapping_matrix(config_.sub("subdomain_mat"), *this->mat(), *ovlp_);
+    if (eliminate_boundary_) {
+      std::vector<Index> boundary;
+      for (Index i = 0; i < std::ssize(ovlp_->layer); ++i)
+        if (ovlp_->layer[i] == ovlp_->layers) boundary.push_back(i);
+      A_ovlp->zero_rows(boundary);
+
+      // 1 everywhere, 0 on the eliminated layer, to zero the defect there in apply()
+      boundary_mask_.emplace(A_ovlp->create_range_vector());
+      *boundary_mask_ = T{1};
+      {
+        auto view = boundary_mask_->host_view(read_write);
+        for (auto i : boundary) view[i] = T{0};
+      }
+    }
+    A_sub_ = std::make_shared<const Mat<T>>(config_.sub("subdomain_mat"), std::move(A_ovlp), nullptr);
     solver_ = create_subproblem_solver<T>(config_.sub("subdomain_solver"), config_.sub("subdomain_prec"), A_sub_);
     d_.emplace(A_sub_->create_range_vector());
     x_.emplace(A_sub_->create_domain_vector());
@@ -142,6 +173,7 @@ private:
   Dune::ParameterTree config_;
   bool restricted_;
   int layers_;
+  bool eliminate_boundary_;
   std::shared_ptr<const Overlap> ovlp_;
 
   std::shared_ptr<const Mat<T>> A_sub_;
@@ -149,6 +181,7 @@ private:
   std::shared_ptr<const Vec<T>> pou_; ///< partition of unity on the overlapping index set
   std::optional<Vec<T>> d_;           ///< defect on the overlapping subdomain
   std::optional<Vec<T>> x_;           ///< correction on the overlapping subdomain
+  std::optional<Vec<T>> boundary_mask_; ///< 0 on the eliminated layer, 1 elsewhere (only with eliminate_boundary)
 
   Logger::Event* apply_event_{nullptr};
   Logger::Event* solve_event_{nullptr};

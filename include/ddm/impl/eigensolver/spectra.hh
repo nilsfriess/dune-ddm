@@ -17,6 +17,7 @@
 #pragma GCC diagnostic ignored "-Wextra-semi"
 #include <Spectra/SymGEigsShiftSolver.h>
 #include <Spectra/Util/CompInfo.h>
+#include <Spectra/Util/SimpleRandom.h>
 #pragma GCC diagnostic pop
 
 #include <algorithm>
@@ -28,24 +29,27 @@
 
 namespace ddm {
 namespace detail::spectra {
-// The shift-invert operator (A - sigma B)^{-1}, the OpType of Spectra's generalised shift-invert solver. Spectra
-// calls set_shift() once before the iteration, which assembles A - sigma B and sets up the solver for it.
+// The shift-invert operator (A - sigma B)^{-1}, the OpType of Spectra's generalised shift-invert solver, followed by the
+// projection if one is set (see Eigensolver::set_projection()). Spectra calls set_shift() once before the iteration,
+// which assembles A - sigma B and sets up the solver for it.
 template <class T>
 class ShiftInvertOp {
 public:
   using Scalar = T;
 
-  ShiftInvertOp(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B)
+  ShiftInvertOp(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, typename Eigensolver<T>::Projection projection)
       : config_(config)
       , A_(std::move(A))
       , B_(std::move(B))
+      , projection_(std::move(projection))
       , b_(A_->create_range_vector())
       , x_(A_->create_domain_vector())
+      , p_(A_->create_domain_vector())
   {
   }
 
-  Eigen::Index rows() const { return static_cast<Eigen::Index>(A_->rows()); }
-  Eigen::Index cols() const { return static_cast<Eigen::Index>(A_->cols()); }
+  Eigen::Index rows() const { return A_->rows(); }
+  Eigen::Index cols() const { return A_->cols(); }
 
   void set_shift(T sigma)
   {
@@ -53,7 +57,7 @@ public:
     solver_ = create_subproblem_solver<T>(config_.sub("solver"), config_.sub("prec"), std::move(shifted));
   }
 
-  // y = (A - sigma B)^{-1} x
+  // y = P (A - sigma B)^{-1} x, or y = (A - sigma B)^{-1} x without a projection P
   void perform_op(const T* x_in, T* y_out) const
   {
     {
@@ -62,8 +66,10 @@ public:
     }
     x_.zero();
     solver_->solve(b_, x_);
-    const auto x = std::as_const(x_).host_view(read);
-    std::copy_n(x.data(), x.size(), y_out);
+    if (projection_) projection_(x_, p_);
+
+    const auto y = std::as_const(projection_ ? p_ : x_).host_view(read);
+    std::copy_n(y.data(), y.size(), y_out);
   }
 
 private:
@@ -71,9 +77,11 @@ private:
   std::shared_ptr<const LocalMat<T>> A_;
   std::shared_ptr<const LocalMat<T>> B_;
   std::shared_ptr<Solver<T>> solver_;
+  typename Eigensolver<T>::Projection projection_;
 
   mutable Vec<T> b_;
   mutable Vec<T> x_;
+  mutable Vec<T> p_; ///< the projection of x_
 };
 
 // The product y = B x, the BOpType of Spectra's generalised solver
@@ -135,15 +143,29 @@ public:
 
   void solve() override
   {
-    const auto n = static_cast<int>(this->A()->rows());
+    const int n = this->A()->rows();
     const auto nev = this->nev();
     const auto ncv = std::min(this->ncv(), n); // Spectra requires ncv <= n
     DDM_CHECK(nev < n, "spectra eigensolver: nev must be smaller than the size of the problem, got nev = {} for size {}", nev, n);
 
-    detail::spectra::ShiftInvertOp<T> op(config_, this->A(), this->B());
+    detail::spectra::ShiftInvertOp<T> op(config_, this->A(), this->B(), this->projection());
     detail::spectra::MatOp<T> Bop(this->B());
     Spectra::SymGEigsShiftSolver<detail::spectra::ShiftInvertOp<T>, detail::spectra::MatOp<T>, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, ncv, this->shift());
-    geigs.init();
+    if (this->projection()) {
+      // The starting vector must lie in the range of the projection as well, otherwise so does the Krylov space. This
+      // is the random vector of Spectra's init(), projected.
+      auto v0 = this->A()->create_domain_vector();
+      auto p0 = this->A()->create_domain_vector();
+      {
+        const auto random = Spectra::SimpleRandom<T>(0).random_vec(n);
+        auto view = v0.host_view(write);
+        std::copy_n(random.data(), n, view.data());
+      }
+      this->projection()(v0, p0);
+      const auto view = std::as_const(p0).host_view(read);
+      geigs.init(view.data());
+    }
+    else geigs.init();
 
     // The largest eigenvalues of the shift-invert operator are the ones of the original problem closest to the shift,
     // sorted from small to large
@@ -157,7 +179,7 @@ public:
 
     // Eigen matrices are column-major, like the data of a multivector
     const auto evecs = geigs.eigenvectors();
-    vectors_ = this->A()->create_domain_multivector(static_cast<Index>(evecs.cols()));
+    vectors_ = this->A()->create_domain_multivector(evecs.cols());
     auto view = vectors_->host_view(write);
     std::copy_n(evecs.data(), evecs.size(), view.data());
   }

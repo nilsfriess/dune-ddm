@@ -3,7 +3,7 @@
 #include "ddm/check.hh"
 #include "ddm/coarse_space.hh"
 #include "ddm/impl/prec/coarse_spaces/geneo.hh"
-#include "ddm/impl/prec/coarse_spaces/geneo_ring.hh"
+#include "ddm/impl/prec/coarse_spaces/msgfem.hh"
 #include "ddm/impl/prec/coarse_spaces/nicolaides.hh"
 #include "ddm/impl/prec/galerkin.hh"
 #include "ddm/impl/prec/schwarz.hh"
@@ -26,6 +26,7 @@ namespace ddm {
  *
  *  Config:
  *  - coarse_mode:  additive | deflated (default additive)
+ *  - coarse_space: nicolaides | geneo | msgfem
  *  - overlap:      overlap of the fine level, takes precedence over fine.overlap
  *  - pou:          partition of unity of both levels, takes precedence over fine.pou
  *  - fine:         config of the fine level (see SchwarzPrec)
@@ -40,11 +41,19 @@ public:
       : Prec<T>(std::move(A))
       , deflated_(parse_coarse_mode(config.get("coarse_mode", "additive")))
       , schwarz_(fine_config(config), this->mat())
-      , coarse_space_(geneo_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat()->local()))
-      , coarse_correction_(config.sub("coarse"), this->mat(), schwarz_.get_overlapping_mat()->local(), coarse_space_)
       , tmp_(this->mat()->create_domain_vector())
       , res_(this->mat()->create_range_vector())
   {
+    const auto coarse_space_type = config.get("coarse_space_type", "nicolaides");
+    if (coarse_space_type == "nicolaides") coarse_space_ = nicolaides_coarse_space<T>(schwarz_.get_overlap(), *schwarz_.get_pou(), schwarz_.get_overlapping_mat()->local());
+    else if (coarse_space_type == "geneo")
+      coarse_space_ = geneo_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat()->local());
+    else if (coarse_space_type == "msgfem")
+      coarse_space_ = msgfem_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat(),
+                                             schwarz_.eliminates_boundary() ? schwarz_.get_subdomain_solver() : nullptr);
+    else DDM_CHECK(false, "TwoLevelSchwarzPrec: unknown coarse space type {}", coarse_space_type);
+
+    coarse_correction_ = std::make_unique<CoarseCorrection<T>>(config.sub("coarse"), this->mat(), schwarz_.get_overlapping_mat()->local(), coarse_space_);
   }
 
   // On a single rank, the matrix is sequential, and so is the preconditioner
@@ -81,9 +90,9 @@ private:
       // res = r - A z, consistent
       res_ = r;
       this->mat()->applyscaleadd(T{-1}, z, res_);
-      coarse_correction_.apply(tmp_, res_);
+      coarse_correction_->apply(tmp_, res_);
     }
-    else coarse_correction_.apply(tmp_, r);
+    else coarse_correction_->apply(tmp_, r);
     z += tmp_;
   }
 
@@ -107,7 +116,7 @@ private:
       logger::info("Coarse-level preconditioner");
       {
         logger::increase_indent();
-        coarse_correction_.info();
+        coarse_correction_->info();
         logger::decrease_indent();
       }
       logger::decrease_indent();
@@ -119,7 +128,7 @@ private:
   bool deflated_;
   SchwarzPrec<T> schwarz_;
   std::shared_ptr<CoarseSpace<T>> coarse_space_;
-  CoarseCorrection<T> coarse_correction_;
+  std::unique_ptr<CoarseCorrection<T>> coarse_correction_;
 
   Vec<T> tmp_; ///< the coarse correction in apply()
   Vec<T> res_; ///< the residual of the fine-level correction in apply() (deflated only)

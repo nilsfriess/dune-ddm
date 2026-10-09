@@ -50,3 +50,10 @@ Checks: "*,
 "
 HeaderFilterRegex: ''
 FormatStyle:     none
+CheckOptions:
+  # Integer narrowing (e.g. std::size_t -> Index) is only a problem for sizes beyond the range of Index, and then
+  # DDM_INDEX_64 is the fix. Narrowing to and from floating point is still reported.
+  - key:   cppcoreguidelines-narrowing-conversions.WarnOnIntegerNarrowingConversion
+    value: false
+  - key:   bugprone-narrowing-conversions.WarnOnIntegerNarrowingConversion
+    value: false

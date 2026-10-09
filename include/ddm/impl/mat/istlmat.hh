@@ -81,15 +81,15 @@ private:
   void do_zero_rows_and_cols(std::span<const Index> idx, T diag) override
   {
     std::vector<bool> zero(A_.N(), false);
-    for (auto i : idx) zero[static_cast<std::size_t>(i)] = true;
+    for (auto i : idx) zero[i] = true;
 
     for (auto ri = A_.begin(); ri != A_.end(); ++ri)
       for (auto ci = ri->begin(); ci != ri->end(); ++ci)
         if (zero[ri.index()] || zero[ci.index()]) *ci = T{0};
 
     for (auto i : idx) {
-      auto row = A_[static_cast<std::size_t>(i)];
-      auto diag_it = row.find(static_cast<std::size_t>(i));
+      auto row = A_[i];
+      auto diag_it = row.find(i);
       DDM_CHECK(diag_it != row.end(), "istl mat: zero_rows_and_cols() diagonal entry ({}, {}) not in pattern", i, i);
       *diag_it = diag;
     }

@@ -95,7 +95,7 @@ public:
         // We're only interested in those that we handled during assembly, which can
         // be checked by comparing them with n_original, because indices that were added
         // later (during overlap extension) will have larger local index.
-        if (idx.send_idx[k] < n_original) pos[idx.send_idx[k]] = static_cast<Index>(k);
+        if (idx.send_idx[k] < n_original) pos[idx.send_idx[k]] = k;
       }
 
       // Now loop over the element blocks and check if all dofs d satisfy pos[d] >= 0. In that case
@@ -133,7 +133,7 @@ public:
       o.counts.assign(idx.send_idx.size(), 0);
       o.data.reserve(triples.size());
       for (const auto& t : triples) {
-        ++o.counts[static_cast<std::size_t>(t.row)];
+        ++o.counts[t.row];
         o.data.push_back({t.col, t.value});
       }
     }
@@ -143,7 +143,7 @@ public:
       const auto& recv_idx = shared.at(peer).recv_idx;
       auto it = in.data.begin();
       for (std::size_t k = 0; k < in.counts.size(); ++k)
-        for (int c = 0; c < in.counts[k]; ++c, ++it) received_.push_back({recv_idx[k], recv_idx[static_cast<std::size_t>(it->col)], it->value});
+        for (int c = 0; c < in.counts[k]; ++c, ++it) received_.push_back({recv_idx[k], recv_idx[it->col], it->value});
     }
 
     // Several peers can contribute to the same entry
@@ -171,7 +171,7 @@ public:
     // All our blocks are inside our overlapping subdomain (they only contain original indices), and received_
     // contains exactly the neighbours' blocks inside of it, so their sum is the Neumann matrix.
     const auto* blocks = A_->element_blocks();
-    const auto n = static_cast<Index>(ovlp_->layer.size());
+    const Index n = std::ssize(ovlp_->layer);
 
     Pattern pattern(n, n);
     for (std::size_t b = 0; b < blocks->size(); ++b) {

@@ -6,6 +6,7 @@
 #include "ddm/registry.hh"
 
 #include <dune/common/parametertree.hh>
+#include <functional>
 namespace ddm {
 /** Solver for the generalised eigenproblem A x = lambda B x, computing the eigenpairs with the smallest eigenvalues.
  *
@@ -36,6 +37,11 @@ public:
 
   virtual ~Eigensolver() = default;
 
+  // Restricts the iteration to the range of P, which must be a projection (P P = P). P is applied after every
+  // shift-invert solve and to the starting vector.
+  using Projection = std::function<void(const Vec<T>& x, Vec<T>& y)>;
+  void set_projection(Projection P) { projection_ = std::move(P); }
+
   virtual void solve() = 0;
   virtual const std::vector<T>& values() const = 0;
   virtual std::shared_ptr<MultiVec<T>> vectors() const = 0;
@@ -48,6 +54,9 @@ public:
   T tolerance() const { return tolerance_; }
   T shift() const { return shift_; }
 
+protected:
+  const Projection& projection() const { return projection_; } // empty if not set
+
 private:
   std::shared_ptr<const LocalMat<T>> A_;
   std::shared_ptr<const LocalMat<T>> B_;
@@ -57,6 +66,8 @@ private:
   int maxit_;
   T tolerance_;
   T shift_;
+
+  Projection projection_;
 };
 
 template <class T>
