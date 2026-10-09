@@ -309,12 +309,12 @@ public:
     std::size_t times_called = 0;
     std::chrono::steady_clock::time_point last_start;
     Duration total_time{0};
-    bool is_running = false;
+    int depth = 0; ///< number of starts without a matching end; only the outermost start and end are timed
   };
 
   struct Family {
     std::string name;
-    std::vector<Event> events;
+    std::deque<Event> events; // deque: registering an event must not invalidate pointers to the existing ones
   };
 
   /**
@@ -359,7 +359,6 @@ public:
   Family* registerFamily(const std::string& name)
   {
     auto& new_family = families.emplace_back();
-    new_family.events.reserve(100);
     new_family.name = name;
     return &new_family;
   }
@@ -416,25 +415,23 @@ public:
     else return registerEvent(family_name, event_name);
   }
 
+  // Events can be nested (e.g. a solver used inside a preconditioner of the same solver type): a start while the event
+  // is running only increases the nesting depth, and only the outermost start and end are timed and counted.
   void startEvent(Event* event)
   {
-    if (event->is_running) {
-      logger::error("Event '{}' was already started", event->name);
-      MPI_Abort(MPI_COMM_WORLD, 4);
-    }
+    if (event->depth++ > 0) return;
     event->last_start = std::chrono::steady_clock::now();
-    event->is_running = true;
   }
 
   void endEvent(Event* event)
   {
-    if (not event->is_running) {
+    if (event->depth == 0) {
       logger::error("Event '{}' was not started yet", event->name);
       MPI_Abort(MPI_COMM_WORLD, 4);
     }
+    if (--event->depth > 0) return;
     event->total_time += std::chrono::steady_clock::now() - event->last_start;
     event->times_called++;
-    event->is_running = false;
   }
 
   /**
@@ -469,8 +466,19 @@ public:
     }
 
     for (const auto& family : families) {
+      // Events that were not called on any rank are not printed (all events of the library are registered, whether
+      // the corresponding objects exist or not), and neither are families without any called events. The maximum
+      // over all ranks makes this decision the same on all ranks, so they all take part in the same reductions below.
+      std::vector<std::size_t> called;
+      called.reserve(family.events.size());
+      for (const auto& event : family.events) called.push_back(event.times_called);
+      MPI_Allreduce(MPI_IN_PLACE, called.data(), static_cast<int>(called.size()), MPI_UNSIGNED_LONG, MPI_MAX, comm);
+      if (std::ranges::none_of(called, [](auto c) { return c > 0; })) continue;
+
       if (rank == 0) out << std::left << std::setw(22) << family.name << '|' << '\n';
-      for (const auto& event : family.events) {
+      for (std::size_t i = 0; i < family.events.size(); ++i) {
+        if (called[i] == 0) continue;
+        const auto& event = family.events[i];
         const auto [mean, min, max] = meanMinMaxTime(comm, event);
         if (rank == 0) {
           out << "  " << std::left << std::setw(20) << event.name;
