@@ -5,6 +5,7 @@
 #include "ddm/mat/mat.hh"
 #include "ddm/prec/prec.hh"
 #include "ddm/vec/vec.hh"
+#include "dune/ddm/logger.hh"
 
 #include <dune/common/exceptions.hh>
 #include <dune/common/parametertree.hh>
@@ -20,6 +21,8 @@ class UMFPACKPrec final : public Prec<T> {
 public:
   UMFPACKPrec(const Dune::ParameterTree& /*config*/, std::shared_ptr<const Mat<T>> A)
       : Prec<T>(std::move(A))
+      , factorize_event_(Logger::get().registerOrGetEvent("UMFPACK", "factorize"))
+      , solve_event_(Logger::get().registerOrGetEvent("UMFPACK", "solve"))
   {
     // TODO(20261006-192425): It should be possible to mark a preconditioner or solver as "sequential" on a higher level
     DDM_CHECK(this->mat()->sequential(), "UMFPACK is a sequential solver");
@@ -29,6 +32,7 @@ public:
 private:
   void do_apply(Vec<T>& z, const Vec<T>& r) override
   {
+    Logger::ScopedLog sl{solve_event_};
     Dune::InverseOperatorResult res;
 
     auto &x = as_istl(z).native();
@@ -39,6 +43,7 @@ private:
 
   void do_update() override
   {
+    Logger::ScopedLog sl{factorize_event_};
     solver_.setOption(UMFPACK_ORDERING, UMFPACK_ORDERING_METIS);
     solver_.setOption(UMFPACK_IRSTEP, 0);
     solver_.setMatrix(as_istl(this->mat()->local()).native());
@@ -46,6 +51,8 @@ private:
 
   void do_info() const override { logger::info("UMFPACK solver"); }
 
+  Logger::Event* factorize_event_;
+  Logger::Event* solve_event_;
   Dune::UMFPack<Dune::IBCRSMatrix<double>> solver_;
 };
 

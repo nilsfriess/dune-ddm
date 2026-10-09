@@ -3,6 +3,7 @@
 #include "ddm/check.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/overlap.hh"
+#include "dune/ddm/logger.hh"
 
 #include <algorithm>
 #include <dune/common/parametertree.hh>
@@ -72,6 +73,7 @@ public:
       : A_(std::move(A))
       , ovlp_(std::move(ovlp))
   {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Neumann", "exchange")};
     DDM_CHECK(A_ != nullptr, "NeumannAssembler: matrix is nullptr");
     const auto* element_blocks = A_->element_blocks();
     DDM_CHECK(element_blocks != nullptr, "NeumannAssembler: Matrix was not assembled with -record_values enabled but this is required for Neumann matrix assembly");
@@ -165,6 +167,7 @@ public:
    **/
   std::shared_ptr<LocalMat<T>> matrix(const Dune::ParameterTree& config, const Region& r) const
   {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Neumann", "matrix")};
     // TODO: Sub-regions: only own blocks with all dofs in the region, and numbering/size according to the region
     if (!r.is_subdomain()) TODO("NeumannAssembler::matrix: regions other than the whole subdomain");
 

@@ -8,6 +8,7 @@
 #include "ddm/overlap.hh"
 #include "ddm/solver/solver.hh"
 #include "ddm/vec/vec.hh"
+#include "dune/ddm/logger.hh"
 
 #include <dune/common/parametertree.hh>
 #include <memory>
@@ -63,6 +64,7 @@ public:
   // y = harmonic function with the boundary values of x (projection onto H). Requires A_dir
   void project(const Vec<T>& x, Vec<T>& y) const
   {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Harmonic space", "project")};
     DDM_CHECK(can_project(), "HarmonicSpace: project() requires a solver for the matrix, pass A_dir to the constructor");
     if (!rhs_.has_value()) rhs_.emplace(A_->create_range_vector());
 

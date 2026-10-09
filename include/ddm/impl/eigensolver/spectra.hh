@@ -143,6 +143,7 @@ public:
 
   void solve() override
   {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Eigensolver", "solve")};
     const int n = this->A()->rows();
     const auto nev = this->nev();
     const auto ncv = std::min(this->ncv(), n); // Spectra requires ncv <= n

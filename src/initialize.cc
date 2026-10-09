@@ -10,6 +10,7 @@
 #include "ddm/impl/solver/direct.hh"
 #include "ddm/impl/solver/gmres.hh"
 #include "ddm/impl/vec/istlvec.hh"
+#include "dune/ddm/logger.hh"
 #include "ddm/registry.hh"
 
 #include <dune/common/parametertree.hh>
@@ -50,12 +51,30 @@ void register_all()
   });
 #endif
 }
+
+// The logger report needs the same events on all ranks, in the same order. Objects that only exist on some ranks (e.g.
+// the coarse matrix and its solver on rank 0) would register their events only there, so all events of the library
+// are registered here, on every rank. The objects then only look them up.
+void register_events()
+{
+  auto& logger = Logger::get();
+  for (const auto* event : {"apply"}) logger.registerOrGetEvent("Mat", event);
+  for (const auto* event : {"solve"}) logger.registerOrGetEvent("GMRES", event);
+  for (const auto* event : {"factorize", "solve"}) logger.registerOrGetEvent("UMFPACK", event);
+  for (const auto* event : {"apply"}) logger.registerOrGetEvent("ILU", event);
+  for (const auto* event : {"coarse space", "apply"}) logger.registerOrGetEvent("Two-level Schwarz", event);
+  for (const auto* event : {"setup", "apply", "coarse solve"}) logger.registerOrGetEvent("Coarse correction", event);
+  for (const auto* event : {"exchange", "matrix"}) logger.registerOrGetEvent("Neumann", event);
+  for (const auto* event : {"solve"}) logger.registerOrGetEvent("Eigensolver", event);
+  for (const auto* event : {"project"}) logger.registerOrGetEvent("Harmonic space", event);
+}
 } // namespace
 
 void initialize()
 {
   static std::once_flag flag;
   std::call_once(flag, [] {
+    register_events();
     register_all<float>();
     register_all<double>();
   });

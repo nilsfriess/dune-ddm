@@ -43,7 +43,9 @@ public:
       , schwarz_(fine_config(config), this->mat())
       , tmp_(this->mat()->create_domain_vector())
       , res_(this->mat()->create_range_vector())
+      , apply_event_(Logger::get().registerOrGetEvent("Two-level Schwarz", "apply"))
   {
+    Logger::get().startEvent(Logger::get().registerOrGetEvent("Two-level Schwarz", "coarse space"));
     const auto coarse_space_type = config.get("coarse_space_type", "nicolaides");
     if (coarse_space_type == "nicolaides") coarse_space_ = nicolaides_coarse_space<T>(schwarz_.get_overlap(), *schwarz_.get_pou(), schwarz_.get_overlapping_mat()->local());
     else if (coarse_space_type == "geneo")
@@ -52,6 +54,7 @@ public:
       coarse_space_ = msgfem_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat(),
                                              schwarz_.eliminates_boundary() ? schwarz_.get_subdomain_solver() : nullptr);
     else DDM_CHECK(false, "TwoLevelSchwarzPrec: unknown coarse space type {}", coarse_space_type);
+    Logger::get().endEvent(Logger::get().registerOrGetEvent("Two-level Schwarz", "coarse space"));
 
     coarse_correction_ = std::make_unique<CoarseCorrection<T>>(config.sub("coarse"), this->mat(), schwarz_.get_overlapping_mat()->local(), coarse_space_);
   }
@@ -84,6 +87,8 @@ private:
 
   void do_apply(Vec<T>& z, const Vec<T>& r) override
   {
+    Logger::ScopedLog sl{apply_event_};
+
     // Both apply() overwrite their output completely
     schwarz_.apply(z, r);
     if (deflated_) {
@@ -132,5 +137,7 @@ private:
 
   Vec<T> tmp_; ///< the coarse correction in apply()
   Vec<T> res_; ///< the residual of the fine-level correction in apply() (deflated only)
+
+  Logger::Event* apply_event_;
 };
 } // namespace ddm

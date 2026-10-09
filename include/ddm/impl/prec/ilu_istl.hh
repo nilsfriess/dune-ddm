@@ -23,12 +23,14 @@ public:
   IstlILUPrec(const Dune::ParameterTree& /*config*/, std::shared_ptr<const Mat<T>> A)
       : Prec<T>(std::move(A))
       , ilu(as_istl(this->mat()->local()).native(), 0, 1., false)
+      , apply_event_(Logger::get().registerOrGetEvent("ILU", "apply"))
   {
   }
 
 private:
   void do_apply(Vec<T>& z, const Vec<T>& r) override
   {
+    Logger::ScopedLog sl{apply_event_};
     auto& z_istl = as_istl(z).native();
     const auto& r_istl = as_istl(r).native();
     ilu.apply(z_istl, r_istl);
@@ -39,5 +41,6 @@ private:
   void do_info() const override { logger::info("ILU preconditioner (using DUNE ISTL's SeqILU)"); }
 
   Dune::SeqILU<NativeMat, NativeVec, NativeVec> ilu;
+  Logger::Event* apply_event_;
 };
 } // namespace ddm

@@ -208,7 +208,10 @@ public:
   CoarseCorrection(const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, const LocalMat<T>& A_ovlp, std::shared_ptr<const CoarseSpace<T>> cs)
       : Prec<T>(std::move(A))
       , cs_(std::move(cs))
+      , apply_event_(Logger::get().registerOrGetEvent("Coarse correction", "apply"))
+      , coarse_solve_event_(Logger::get().registerOrGetEvent("Coarse correction", "coarse solve"))
   {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Coarse correction", "setup")};
     const auto& V = *cs_->basis;
     DDM_CHECK(cs_->overlap->n_original == this->mat()->rows(), "coarse correction: the coarse space was built for {} indices, but the matrix has {} rows", cs_->overlap->n_original,
               this->mat()->rows());
@@ -226,6 +229,7 @@ private:
   // Collective
   void do_apply(Vec<T>& z, const Vec<T>& r) override
   {
+    Logger::ScopedLog sl{apply_event_};
     const auto& V = *cs_->basis;
     const auto& comm = *cs_->overlap->comm;
     const auto n = cs_->overlap->n_original;
@@ -240,6 +244,7 @@ private:
     // Solve the coarse problem on rank 0 and hand everyone its part of the solution
     gather_coarse_defect();
     if (rank_ == 0) {
+      Logger::ScopedLog sl_solve{coarse_solve_event_};
       *x0_ = T{0};
       solver_->solve(*d0_, *x0_);
     }
@@ -390,5 +395,8 @@ private:
   std::shared_ptr<Solver<T>> solver_; ///< solver for the coarse problem
   std::optional<Vec<T>> d0_;          ///< coarse defect
   std::optional<Vec<T>> x0_;          ///< coarse solution
+
+  Logger::Event* apply_event_;
+  Logger::Event* coarse_solve_event_; ///< only used on rank 0
 };
 } // namespace ddm

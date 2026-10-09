@@ -178,9 +178,9 @@ private:
 
   std::shared_ptr<const Mat<T>> A_sub_;
   std::shared_ptr<Solver<T>> solver_;
-  std::shared_ptr<const Vec<T>> pou_; ///< partition of unity on the overlapping index set
-  std::optional<Vec<T>> d_;           ///< defect on the overlapping subdomain
-  std::optional<Vec<T>> x_;           ///< correction on the overlapping subdomain
+  std::shared_ptr<const Vec<T>> pou_;   ///< partition of unity on the overlapping index set
+  std::optional<Vec<T>> d_;             ///< defect on the overlapping subdomain
+  std::optional<Vec<T>> x_;             ///< correction on the overlapping subdomain
   std::optional<Vec<T>> boundary_mask_; ///< 0 on the eliminated layer, 1 elsewhere (only with eliminate_boundary)
 
   Logger::Event* apply_event_{nullptr};

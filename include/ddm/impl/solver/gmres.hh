@@ -19,6 +19,7 @@ class GMResSolver final : public Solver<T> {
 public:
   GMResSolver(const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, std::shared_ptr<Prec<T>> P)
       : Solver<T>(config, std::move(A), std::move(P))
+      , solve_event_(Logger::get().registerOrGetEvent("GMRES", "solve"))
   {
     std::shared_ptr<Dune::ScalarProduct<Vec<T>>> sp;
     if (this->mat()->sequential()) sp = std::make_shared<Dune::ScalarProduct<Vec<T>>>();
@@ -31,6 +32,7 @@ public:
 private:
   void do_solve(const Vec<T>& b, Vec<T>& x) override
   {
+    Logger::ScopedLog sl{solve_event_};
     Vec<T> bcopy = b; // Dune solvers don't take b as const, so we have to copy here...
     Dune::InverseOperatorResult res;
     solver->apply(x, bcopy, res);
@@ -43,6 +45,7 @@ private:
   }
 
   std::unique_ptr<DuneSolver> solver;
+  Logger::Event* solve_event_;
   int restart_;
 };
 } // namespace ddm

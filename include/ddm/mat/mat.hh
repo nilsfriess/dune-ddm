@@ -39,6 +39,7 @@ public:
   Mat(const Dune::ParameterTree& config, std::shared_ptr<LocalMat<T>> local, std::shared_ptr<Communication> comm)
       : local_(std::move(local))
       , comm_(std::move(comm))
+      , apply_event_(Logger::get().registerOrGetEvent("Mat", "apply"))
   {
     DDM_CHECK(local_ != nullptr, "mat: local matrix is nullptr");
     if (comm_) {
@@ -122,6 +123,7 @@ public:
   // y = A x. Collective
   void apply(const Vec<T>& x, Vec<T>& y) const override
   {
+    Logger::ScopedLog sl{apply_event_};
     local_->mv(x, y);
     if (comm_) comm_->reduce(y);
   }
@@ -129,6 +131,7 @@ public:
   // y = y + alpha * A x. Collective
   void applyscaleadd(T alpha, const Vec<T>& x, Vec<T>& y) const override
   {
+    Logger::ScopedLog sl{apply_event_};
     if (!comm_) {
       local_->usmv(alpha, x, y);
       return;
@@ -209,6 +212,8 @@ private:
 
   bool record_values_ = false;
   std::optional<ElementBlocks<T>> element_blocks_;
+
+  Logger::Event* apply_event_; ///< apply() and applyscaleadd()
 };
 
 // Creates a matrix whose local matrix has the type given by config["type"]. The pattern must be finalized. comm may
