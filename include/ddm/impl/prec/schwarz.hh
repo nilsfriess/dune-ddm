@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ddm/check.hh"
+#include "ddm/debug/vec_sink.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/overlap.hh"
 #include "ddm/pou.hh"
@@ -123,7 +124,19 @@ private:
     solver_ = create_subproblem_solver<T>(config_.sub("subdomain_solver"), config_.sub("subdomain_prec"), A_sub_);
     d_.emplace(A_sub_->create_range_vector());
     x_.emplace(A_sub_->create_domain_vector());
-    if (layers_ >= 1) pou_ = std::make_shared<const Vec<T>>(partition_of_unity(config_.sub("pou"), *ovlp_, A_sub_->local()));
+    if (layers_ >= 1) {
+      pou_ = std::make_shared<const Vec<T>>(partition_of_unity(config_.sub("pou"), *ovlp_, A_sub_->local()));
+
+      // Write the POU vector to the debug sink
+      if (debug::has_vec_sink<T>()) {
+        auto pou_ovlp = A_sub_->create_domain_vector();
+        if (debug::vec_sink_debug_rank<T>() == this->mat()->communication()->rank()) pou_ovlp = *pou_;
+        ovlp_->comm->reduce(pou_ovlp);
+        auto pou_novlp = this->mat()->create_domain_vector();
+        pou_novlp.copy_n_from(pou_ovlp, pou_novlp.size());
+        debug::add_vec_to_sink("pou", pou_novlp);
+      }
+    }
   }
 
   Dune::ParameterTree config_;
