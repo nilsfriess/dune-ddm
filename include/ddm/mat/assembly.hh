@@ -26,10 +26,14 @@ public:
     value_offsets_.push_back(values_.size());
   }
 
+  std::size_t size() const { return dof_offsets_.size() - 1; }
+  std::span<const Index> dofs(std::size_t b) const { return {dofs_.data() + dof_offsets_[b], dofs_.data() + dof_offsets_[b + 1]}; }
+  std::span<const T> values(std::size_t b) const { return {values_.data() + value_offsets_[b], values_.data() + value_offsets_[b + 1]}; }
+
 private:
   std::vector<Index> dof_offsets_{0};   // dofs belonging to block i are at dofs_[dof_offsets_[i], dof_offsets[i+1])
   std::vector<Index> value_offsets_{0}; // same for values_
   std::vector<Index> dofs_;
-  std::vector<T> values_;
+  std::vector<T> values_; // the values for the blocks; stored as a coniguous array (individual blocks are row-major)
 };
 } // namespace ddm

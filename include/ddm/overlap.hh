@@ -39,29 +39,69 @@ inline constexpr int overlap_counts_tag = 100;
 inline constexpr int overlap_data_tag = 101;
 inline constexpr int overlap_request_tag = 102;
 
+/** A sequence of lists, stored flat: list k consists of the counts[k] entries of data following the ones of lists
+ *  0, ..., k-1. */
+template <class U>
+struct FlatLists {
+  std::vector<int> counts; ///< the length of every list
+  std::vector<U> data;     ///< all lists concatenated
+};
+
+/** Sends out[peer] to every peer and receives one list per index in idxs[peer].recv_idx. out[peer] must contain one
+ *  list per index in idxs[peer].send_idx (possibly empty ones), peers without lists to send may be missing in out.
+ *
+ *  Returns for every peer with a non-empty recv_idx the received lists, in the order of idxs[peer].recv_idx. This
+ *  uses the ReductionPlan of the Communication class since this is basically a reduction (with the reduction
+ *  operation being list concatenation instead of addition).
+ */
+template <class U>
+std::unordered_map<int, FlatLists<U>> exchange_flat_lists(MPI_Comm comm, const CommunicationPattern::IndexMap& idxs, const std::unordered_map<int, FlatLists<U>>& out)
+{
+  static_assert(std::is_trivially_copyable_v<U>, "the lists are sent as bytes");
+
+  std::unordered_map<int, FlatLists<U>> in;
+  std::vector<MPI_Request> reqs;
+
+  // First the length of every list ...
+  for (const auto& [peer, indices] : idxs) {
+    if (!indices.recv_idx.empty()) {
+      auto& counts = in[peer].counts;
+      // From the reduction plan we already know how many lists (= how many counts) we will receive
+      counts.resize(indices.recv_idx.size());
+      MPI_Irecv(counts.data(), static_cast<int>(counts.size()), MPI_INT, peer, overlap_counts_tag, comm, &reqs.emplace_back());
+    }
+
+    const auto it = out.find(peer);
+    const auto n_lists = it == out.end() ? std::size_t{0} : it->second.counts.size();
+    DDM_CHECK(n_lists == indices.send_idx.size() || (it == out.end() && indices.send_idx.empty()), "exchange_flat_lists: {} lists for peer {}, but {} indices are sent to it", n_lists, peer,
+              indices.send_idx.size());
+    if (n_lists > 0) MPI_Isend(it->second.counts.data(), static_cast<int>(n_lists), MPI_INT, peer, overlap_counts_tag, comm, &reqs.emplace_back());
+  }
+  MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+  reqs.clear();
+
+  // ... then the lists themselves
+  for (auto& [peer, lists] : in) {
+    lists.data.resize(std::accumulate(lists.counts.begin(), lists.counts.end(), 0));
+    if (!lists.data.empty()) MPI_Irecv(lists.data.data(), static_cast<int>(lists.data.size() * sizeof(U)), MPI_BYTE, peer, overlap_data_tag, comm, &reqs.emplace_back());
+  }
+  for (const auto& [peer, o] : out)
+    if (!o.data.empty()) MPI_Isend(o.data.data(), static_cast<int>(o.data.size() * sizeof(U)), MPI_BYTE, peer, overlap_data_tag, comm, &reqs.emplace_back());
+  MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
+
+  return in;
+}
+
 /** For each index in idxs[peer].send_idx, this function sends a list to every peer and receives one per
  *  index in idxs[peer].recv_idx. The lists are built using the gather function that is passed as an argument
  *  and gather(i, out) must append the list that corresponds to local index i to the std::vector out.
  *
- *  Returns for every peer the received lists, in the order of idxs[peer].recv_idx. This uses the ReductionPlan
- *  of the Communication class since this is basically a reduction (with the reduction operation bein list
- *  concatenation instead of addition).
- *
+ *  Returns for every peer the received lists, in the order of idxs[peer].recv_idx (see exchange_flat_lists()).
  */
 template <class U, class Gather>
 std::unordered_map<int, std::vector<std::vector<U>>> exchange_lists(MPI_Comm comm, const CommunicationPattern::IndexMap& idxs, Gather&& gather)
 {
-  static_assert(std::is_trivially_copyable_v<U>, "the lists are sent as bytes");
-
-  struct Outgoing {
-    std::vector<int> counts; // The lengths of all lists we send to a peer
-    std::vector<U> data;     // The flat list data that we send to a peer
-  };
-  std::unordered_map<int, Outgoing> out;
-  std::unordered_map<int, std::vector<int>> in_counts; // The lengths of the lists we receive
-  std::vector<MPI_Request> reqs;
-
-  // First the length of every list ...
+  std::unordered_map<int, FlatLists<U>> out;
   for (const auto& [peer, indices] : idxs) {
     auto& o = out[peer];
     for (auto i : indices.send_idx) {
@@ -69,35 +109,14 @@ std::unordered_map<int, std::vector<std::vector<U>>> exchange_lists(MPI_Comm com
       gather(i, o.data);
       o.counts.push_back(static_cast<int>(o.data.size() - before));
     }
-
-    if (!indices.recv_idx.empty()) {
-      auto& counts = in_counts[peer];
-      // From the reduction plan we already know how many lists (= how many counts) we will receive
-      counts.resize(indices.recv_idx.size());
-      MPI_Irecv(counts.data(), static_cast<int>(counts.size()), MPI_INT, peer, overlap_counts_tag, comm, &reqs.emplace_back());
-    }
-    if (!o.counts.empty()) MPI_Isend(o.counts.data(), static_cast<int>(o.counts.size()), MPI_INT, peer, overlap_counts_tag, comm, &reqs.emplace_back());
   }
-  MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
-  reqs.clear();
-
-  // ... then the lists themselves
-  std::unordered_map<int, std::vector<U>> in_data;
-  for (const auto& [peer, counts] : in_counts) {
-    auto& data = in_data[peer];
-    data.resize(std::accumulate(counts.begin(), counts.end(), 0));
-    if (!data.empty()) MPI_Irecv(data.data(), static_cast<int>(data.size() * sizeof(U)), MPI_BYTE, peer, overlap_data_tag, comm, &reqs.emplace_back());
-  }
-  for (auto& [peer, o] : out)
-    if (!o.data.empty()) MPI_Isend(o.data.data(), static_cast<int>(o.data.size() * sizeof(U)), MPI_BYTE, peer, overlap_data_tag, comm, &reqs.emplace_back());
-  MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
 
   std::unordered_map<int, std::vector<std::vector<U>>> result;
-  for (const auto& [peer, counts] : in_counts) {
+  for (const auto& [peer, in] : exchange_flat_lists(comm, idxs, out)) {
     auto& lists = result[peer];
-    lists.reserve(counts.size());
-    auto it = in_data[peer].begin();
-    for (auto count : counts) {
+    lists.reserve(in.counts.size());
+    auto it = in.data.begin();
+    for (auto count : in.counts) {
       lists.emplace_back(it, it + count);
       it += count;
     }

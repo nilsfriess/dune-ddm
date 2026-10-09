@@ -37,7 +37,6 @@ public:
   using field_type = T;
 
   virtual ~LocalMat() = default;
-  LocalMat(const LocalMat&) = delete;
   LocalMat& operator=(const LocalMat&) = delete;
 
   virtual Index rows() const = 0;
@@ -107,6 +106,16 @@ public:
   // Returns a zero-initialized vector x from the domain of the matrix, i.e. one that can be used in mv(x, y)
   virtual Vec<T> create_domain_vector() const = 0;
 
+  // Sets all entries in the given rows and columns to zero and the diagonal entries of these rows to diag, e.g. to
+  // impose Dirichlet conditions symmetrically. The diagonal entries must be part of the pattern.
+  void zero_rows_and_cols(std::span<const Index> idx, T diag = T{1})
+  {
+    DDM_CHECK(assembled_, "mat: zero_rows_and_cols() called before assemble()");
+    DDM_CHECK(this->rows() == cols(), "mat: zero_rows_and_cols() requires a square matrix, but matrix is {}x{}", this->rows(), cols());
+    for (auto i : idx) DDM_CHECK(0 <= i && i < this->rows(), "mat: zero_rows_and_cols() index {} out of range for {} rows", i, this->rows());
+    do_zero_rows_and_cols(idx, diag);
+  }
+
   // Returns a zero-initialized vector y from the range of the matrix, i.e. one that can be used in mv(x, y)
   virtual Vec<T> create_range_vector() const = 0;
 
@@ -123,6 +132,9 @@ public:
     DDM_CHECK(pattern.is_finalized(), "mat: create_like() requires a finalized pattern");
     return do_create_like(config_, pattern);
   }
+
+  // Returns a copy of the matrix (same type, pattern and values)
+  std::shared_ptr<LocalMat<T>> clone() const { return do_clone(); }
 
   // Returns a zero-initialized multivector with m columns from the range of the matrix
   std::unique_ptr<MultiVec<T>> create_range_multivector(Index m) const
@@ -151,12 +163,23 @@ public:
   // Print info about this matrix
   void info() const { do_info(); }
 
+  // Scale the matrix rows and columns by the diagonal matrix diag(d)
+  void scale(const Vec<T>& d)
+  {
+    DDM_CHECK(backend() == d.backend(), "mat: scale() backend mismatch, matrix is {}, vector is {}", to_string(backend()), to_string(d.backend()));
+    DDM_CHECK(rows() == d.size() and cols() == d.size(), "mat: scale() size mismatch, matrix is {}x{}, d is {}", rows(), cols(), d.size());
+    do_scale(d);
+  }
+
 protected:
   explicit LocalMat(const Dune::ParameterTree& config, const Pattern& pattern)
       : config_(config)
       , pattern_(pattern)
   {
   }
+
+  // Only for the implementations of do_clone(), from outside matrices are copied with clone()
+  LocalMat(const LocalMat&) = default;
 
 private:
   void check_mv_args(const Vec<T>& x, const Vec<T>& y, std::string_view op) const
@@ -171,6 +194,7 @@ private:
   virtual void do_add_values(std::span<const Index> rows, std::span<const Index> cols, std::span<const T> vals) = 0;
   virtual void do_assemble() = 0;
   virtual void do_zero_rows(std::span<const Index> rows, T diag) = 0;
+  virtual void do_zero_rows_and_cols(std::span<const Index> idx, T diag) = 0;
   virtual void do_mv(const Vec<T>& x, Vec<T>& y) const = 0;
   virtual void do_usmv(T alpha, const Vec<T>& x, Vec<T>& y) const = 0;
   virtual void do_spmm(const MultiVec<T>& X, MultiVec<T>& Y) const = 0;
@@ -178,7 +202,9 @@ private:
   virtual std::unique_ptr<MultiVec<T>> do_create_domain_multivector(Index m) const = 0;
   virtual std::unique_ptr<MultiVec<T>> do_create_range_multivector(Index m) const = 0;
   virtual std::shared_ptr<LocalMat<T>> do_create_like(const Dune::ParameterTree& config, const Pattern& pattern) const = 0;
+  virtual std::shared_ptr<LocalMat<T>> do_clone() const = 0;
   virtual void do_info() const = 0;
+  virtual void do_scale(const Vec<T>& d) = 0;
 
   virtual HostCsr<T> do_host_csr() const
   {
@@ -211,6 +237,35 @@ std::shared_ptr<LocalMat<T>> create_local_mat(const Dune::ParameterTree& config,
 
 // Creates a local matrix for a matrix derived from `like` (e.g. a subdomain matrix): of the type given by
 // config["type"] if it is set, otherwise of the same type as `like`, so that it has the same backend
+// Returns A + alpha * B as a new matrix of the same type as A, on the union of both patterns. Both matrices must be
+// assembled, and their backend must support host_csr()
+template <class T>
+std::shared_ptr<LocalMat<T>> add(const LocalMat<T>& A, T alpha, const LocalMat<T>& B)
+{
+  DDM_CHECK(A.rows() == B.rows() && A.cols() == B.cols(), "mat: add() size mismatch, A is {}x{}, B is {}x{}", A.rows(), A.cols(), B.rows(), B.cols());
+  const auto a = A.host_csr();
+  const auto b = B.host_csr();
+
+  Pattern pattern(A.rows(), A.cols());
+  for (const auto* csr : {&a, &b})
+    for (Index i = 0; i < A.rows(); ++i)
+      for (auto k = csr->row_ptr[i]; k < csr->row_ptr[i + 1]; ++k) pattern.add(i, csr->cols[k]);
+  pattern.finalize();
+
+  auto C = A.create_like(pattern);
+  std::vector<T> scaled;
+  for (Index i = 0; i < A.rows(); ++i) {
+    const auto row = std::span(&i, 1);
+    C->add_values(row, std::span(a.cols).subspan(a.row_ptr[i], a.row_ptr[i + 1] - a.row_ptr[i]), std::span(a.values).subspan(a.row_ptr[i], a.row_ptr[i + 1] - a.row_ptr[i]));
+
+    scaled.assign(b.values.begin() + b.row_ptr[i], b.values.begin() + b.row_ptr[i + 1]);
+    for (auto& v : scaled) v *= alpha;
+    C->add_values(row, std::span(b.cols).subspan(b.row_ptr[i], b.row_ptr[i + 1] - b.row_ptr[i]), scaled);
+  }
+  C->assemble();
+  return C;
+}
+
 template <class T>
 std::shared_ptr<LocalMat<T>> create_local_mat_like(const Dune::ParameterTree& config, const Pattern& pattern, const LocalMat<T>& like)
 {

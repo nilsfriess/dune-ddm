@@ -104,6 +104,7 @@ public:
   // diag and the local matrices stay invertible.
   void zero_rows(std::span<const Index> rows, T diag = T{1})
   {
+    zeroed_rows_.insert(zeroed_rows_.end(), rows.begin(), rows.end());
     if (!comm_) {
       local_->zero_rows(rows, diag);
       return;
@@ -114,6 +115,9 @@ public:
       local_->zero_rows(std::span(&i, 1), diag / multiplicity_[static_cast<std::size_t>(i)]);
     }
   }
+
+  // All rows passed to zero_rows() so far (possibly with duplicates), e.g. the Dirichlet dofs
+  const std::vector<Index>& zeroed_rows() const { return zeroed_rows_; }
 
   // y = A x. Collective
   void apply(const Vec<T>& x, Vec<T>& y) const override
@@ -180,6 +184,8 @@ public:
     }
   }
 
+  const ElementBlocks<T>* element_blocks() const { return element_blocks_.has_value() ? &element_blocks_.value() : nullptr; }
+
 private:
   friend class LocalMat<T>;
 
@@ -198,6 +204,7 @@ private:
   std::shared_ptr<Communication> comm_;
 
   std::vector<T> multiplicity_;
+  std::vector<Index> zeroed_rows_; ///< see zeroed_rows()
   mutable std::optional<Vec<T>> tmp_; ///< temporary for applyscaleadd()
 
   bool record_values_ = false;

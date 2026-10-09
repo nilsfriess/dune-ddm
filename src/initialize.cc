@@ -1,3 +1,5 @@
+#include "ddm/eigensolver/eigensolver.hh"
+#include "ddm/impl/eigensolver/spectra.hh"
 #include "ddm/impl/mat/istlmat.hh"
 #include "ddm/impl/prec/ilu_istl.hh"
 #include "ddm/impl/prec/jacobiprec.hh"
@@ -40,6 +42,13 @@ void register_all()
       "gmres", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, std::shared_ptr<Prec<T>> P) { return std::make_shared<GMResSolver<T>>(config, std::move(A), std::move(P)); });
   register_solver<T>(
       "direct", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, std::shared_ptr<Prec<T>> P) { return std::make_shared<DirectSolver<T>>(config, std::move(A), std::move(P)); });
+
+  // Register eigensolvers
+#ifdef DUNE_DDM_HAVE_SPECTRA
+  register_eigensolver<T>("spectra", [](const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B) {
+    return std::make_shared<SpectraEigensolver<T>>(config, std::move(A), std::move(B));
+  });
+#endif
 }
 } // namespace
 

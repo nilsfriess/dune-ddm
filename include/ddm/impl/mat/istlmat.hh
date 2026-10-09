@@ -78,6 +78,23 @@ private:
     }
   }
 
+  void do_zero_rows_and_cols(std::span<const Index> idx, T diag) override
+  {
+    std::vector<bool> zero(A_.N(), false);
+    for (auto i : idx) zero[static_cast<std::size_t>(i)] = true;
+
+    for (auto ri = A_.begin(); ri != A_.end(); ++ri)
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci)
+        if (zero[ri.index()] || zero[ci.index()]) *ci = T{0};
+
+    for (auto i : idx) {
+      auto row = A_[static_cast<std::size_t>(i)];
+      auto diag_it = row.find(static_cast<std::size_t>(i));
+      DDM_CHECK(diag_it != row.end(), "istl mat: zero_rows_and_cols() diagonal entry ({}, {}) not in pattern", i, i);
+      *diag_it = diag;
+    }
+  }
+
   void do_mv(const Vec<T>& x, Vec<T>& y) const override { A_.mv(as_istl(x).native(), as_istl(y).native()); }
   void do_usmv(T alpha, const Vec<T>& x, Vec<T>& y) const override { A_.usmv(alpha, as_istl(x).native(), as_istl(y).native()); }
 
@@ -109,6 +126,7 @@ private:
   std::unique_ptr<MultiVec<T>> do_create_domain_multivector(Index m) const override { return std::make_unique<IstlMultiVec<T>>(this->cols(), m); }
   std::unique_ptr<MultiVec<T>> do_create_range_multivector(Index m) const override { return std::make_unique<IstlMultiVec<T>>(this->rows(), m); }
   std::shared_ptr<LocalMat<T>> do_create_like(const Dune::ParameterTree& config, const Pattern& pattern) const override { return std::make_shared<IstlMat<T>>(config, pattern); }
+  std::shared_ptr<LocalMat<T>> do_clone() const override { return std::make_shared<IstlMat<T>>(*this); }
 
   HostCsr<T> do_host_csr() const override
   {
@@ -129,6 +147,13 @@ private:
   {
     logger::info("ISTL matrix of size {}x{}", rows(), cols());
     logger::info("Nonzero entries {}", A_.nonzeroes());
+  }
+
+  void do_scale(const Vec<T>& d) override
+  {
+    const auto& d_istl = as_istl(d).native();
+    for (auto ri = A_.begin(); ri != A_.end(); ++ri)
+      for (auto ci = ri->begin(); ci != ri->end(); ++ci) *ci *= d_istl[ri.index()] * d_istl[ci.index()];
   }
 
   Native A_;

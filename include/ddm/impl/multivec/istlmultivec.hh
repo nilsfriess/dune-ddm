@@ -124,6 +124,14 @@ private:
   }
 
   // The data is in host memory already, so there is nothing to copy
+  void do_scale_rows(const Vec<T>& d) override
+  {
+    const auto& d_istl = as_istl(d).native();
+    const auto n = static_cast<std::size_t>(this->rows());
+    for (std::size_t c = 0; c < static_cast<std::size_t>(this->cols()); ++c)
+      for (std::size_t i = 0; i < n; ++i) data_[c * n + i] *= d_istl[i];
+  }
+
   std::span<T> acquire_host(Access /*mode*/) override { return data_; }
   void release_host(Access /*mode*/) override {}
 

@@ -179,6 +179,14 @@ public:
     do_copy_into_column(column, v);
   }
 
+  // Multiplies row i of every column by d[i], i.e. *this = diag(d) * *this
+  void scale_rows(const Vec<T>& d)
+  {
+    DDM_CHECK(backend() == d.backend(), "multivector: scale_rows() backend mismatch, multivector is {}, vector is {}", to_string(backend()), to_string(d.backend()));
+    DDM_CHECK(rows() == d.size(), "multivector: scale_rows() size mismatch, multivector has {} rows, vector has {} entries", rows(), d.size());
+    do_scale_rows(d);
+  }
+
   MultiVecHostView<T> host_view(write_t) { return MultiVecHostView<T>(this, open_view(Access::write), Access::write); }
   MultiVecHostView<T> host_view(read_write_t) { return MultiVecHostView<T>(this, open_view(Access::read_write), Access::read_write); }
 
@@ -202,6 +210,7 @@ private:
   virtual void do_pack_rows(std::span<const Index> idx, MultiVec& buffer) const = 0;
   virtual void do_unpack_rows(const MultiVec& buffer, std::span<const Index> idx, Index first_col) = 0;
   virtual void do_copy_into_column(Index column, const Vec<T>& v) = 0;
+  virtual void do_scale_rows(const Vec<T>& d) = 0;
 
   // Returns the data in host memory, column by column. For Access::write, the contents may be arbitrary. Every
   // acquire_host() is followed by a release_host() with the same mode, and at most one access is active at a time.

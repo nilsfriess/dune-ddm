@@ -2,6 +2,8 @@
 
 #include "ddm/check.hh"
 #include "ddm/coarse_space.hh"
+#include "ddm/impl/prec/coarse_spaces/geneo.hh"
+#include "ddm/impl/prec/coarse_spaces/geneo_ring.hh"
 #include "ddm/impl/prec/coarse_spaces/nicolaides.hh"
 #include "ddm/impl/prec/galerkin.hh"
 #include "ddm/impl/prec/schwarz.hh"
@@ -17,17 +19,18 @@
 #include <utility>
 
 namespace ddm {
-/** Two-level Schwarz preconditioner with a Nicolaides coarse space. With M^{-1} the fine level (see SchwarzPrec) and
+/** Two-level Schwarz preconditioner with a GenEO coarse space. With M^{-1} the fine level (see SchwarzPrec) and
  *  Q = R_0^T A_0^{-1} R_0 the coarse correction (see CoarseCorrection), it applies
  *  - additive: z = M^{-1} r + Q r
  *  - deflated: y = M^{-1} r, z = y + Q (r - A y)
  *
  *  Config:
- *  - coarse_mode: additive | deflated (default additive)
- *  - overlap:     overlap of the fine level, takes precedence over fine.overlap
- *  - pou:         partition of unity of both levels, takes precedence over fine.pou
- *  - fine:        config of the fine level (see SchwarzPrec)
- *  - coarse:      config of the coarse correction (see CoarseCorrection)
+ *  - coarse_mode:  additive | deflated (default additive)
+ *  - overlap:      overlap of the fine level, takes precedence over fine.overlap
+ *  - pou:          partition of unity of both levels, takes precedence over fine.pou
+ *  - fine:         config of the fine level (see SchwarzPrec)
+ *  - coarse:       config of the coarse correction (see CoarseCorrection)
+ *  - coarse_space: config of the coarse space (see geneo_coarse_space())
  */
 template <class T>
 class TwoLevelSchwarzPrec final : public Prec<T> {
@@ -37,7 +40,7 @@ public:
       : Prec<T>(std::move(A))
       , deflated_(parse_coarse_mode(config.get("coarse_mode", "additive")))
       , schwarz_(fine_config(config), this->mat())
-      , coarse_space_(nicolaides_coarse_space<T>(schwarz_.get_overlap(), *schwarz_.get_pou(), schwarz_.get_overlapping_mat()->local()))
+      , coarse_space_(geneo_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat()->local()))
       , coarse_correction_(config.sub("coarse"), this->mat(), schwarz_.get_overlapping_mat()->local(), coarse_space_)
       , tmp_(this->mat()->create_domain_vector())
       , res_(this->mat()->create_range_vector())
