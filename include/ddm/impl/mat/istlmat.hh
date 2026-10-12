@@ -59,7 +59,7 @@ private:
       for (std::size_t c = 0; c < cols.size(); ++c) {
         auto it = row.find(static_cast<std::size_t>(cols[c]));
         DDM_CHECK(it != row.end(), "istl mat: add_values() entry ({}, {}) not in pattern", rows[r], cols[c]);
-        *it += vals[r * cols.size() + c];
+        *it += vals[r + c * rows.size()];
       }
     }
   }

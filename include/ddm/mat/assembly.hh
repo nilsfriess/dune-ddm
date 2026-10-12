@@ -34,6 +34,6 @@ private:
   std::vector<Index> dof_offsets_{0};   // dofs belonging to block i are at dofs_[dof_offsets_[i], dof_offsets[i+1])
   std::vector<Index> value_offsets_{0}; // same for values_
   std::vector<Index> dofs_;
-  std::vector<T> values_; // the values for the blocks; stored as a coniguous array (individual blocks are row-major)
+  std::vector<T> values_; // the values for the blocks; stored as a coniguous array (individual blocks are column-major)
 };
 } // namespace ddm

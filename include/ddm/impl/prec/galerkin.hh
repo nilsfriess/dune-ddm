@@ -329,20 +329,13 @@ private:
         for (Index c = 0; c < col_counts[p]; ++c) pattern.add(row_displs_[p] + a, all_cols[col_displs[p] + c]);
     pattern.finalize();
 
-    // Every rank's values are one dense block, but stored column by column, while add_values() expects it row by row.
-    // So transpose each block once and add it with a single call.
+    // Every rank's values are one dense block, stored column by column like add_values() expects it
     auto A0_local = create_local_mat_like<T>(config.sub("mat"), pattern, this->mat()->local());
     std::vector<Index> block_rows;
-    std::vector<T> block_values;
     for (int p = 0; p < size; ++p) {
-      const Index m = row_counts_[p];
-      const Index cols = col_counts[p];
-      block_rows.resize(m);
+      block_rows.resize(row_counts_[p]);
       std::iota(block_rows.begin(), block_rows.end(), row_displs_[p]);
-      block_values.resize(m * cols);
-      for (Index a = 0; a < m; ++a)
-        for (Index c = 0; c < cols; ++c) block_values[a * cols + c] = all_values[value_displs[p] + a + c * m];
-      A0_local->add_values(block_rows, std::span<const Index>(all_cols.data() + col_displs[p], cols), block_values);
+      A0_local->add_values(block_rows, std::span<const Index>(all_cols.data() + col_displs[p], col_counts[p]), std::span<const T>(all_values.data() + value_displs[p], value_counts[p]));
     }
     A0_local->assemble();
 

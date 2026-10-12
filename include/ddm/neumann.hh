@@ -113,7 +113,7 @@ public:
 
         const auto values = element_blocks->values(i);
         for (unsigned int m = 0; m < dofs.size(); ++m)
-          for (unsigned int n = 0; n < dofs.size(); ++n) triples.emplace_back(pos[dofs[m]], pos[dofs[n]], values[m * dofs.size() + n]);
+          for (unsigned int n = 0; n < dofs.size(); ++n) triples.emplace_back(pos[dofs[m]], pos[dofs[n]], values[m + n * dofs.size()]);
       }
 
       for (auto i : idx.send_idx)

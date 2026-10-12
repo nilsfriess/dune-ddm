@@ -46,7 +46,7 @@ public:
   // The pattern the matrix was created with
   const Pattern& pattern() const { return pattern_; }
 
-  // Adds the dense block `vals` (row-major, rows.size() x cols.size()) at the given indices.
+  // Adds the dense block `vals` (column-major, rows.size() x cols.size()) at the given indices.
   // Every (rows[r], cols[c]) must be part of the pattern.
   void add_values(std::span<const Index> rows, std::span<const Index> cols, std::span<const T> vals)
   {
