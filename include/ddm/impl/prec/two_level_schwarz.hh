@@ -47,7 +47,7 @@ public:
   {
     Logger::get().startEvent(Logger::get().registerOrGetEvent("Two-level Schwarz", "coarse space"));
     const auto coarse_space_type = config.get("coarse_space_type", "nicolaides");
-    if (coarse_space_type == "nicolaides") coarse_space_ = nicolaides_coarse_space<T>(schwarz_.get_overlap(), *schwarz_.get_pou(), schwarz_.get_overlapping_mat()->local());
+    if (coarse_space_type == "nicolaides") coarse_space_ = nicolaides_coarse_space<T>(schwarz_.get_overlap(), *schwarz_.get_pou(), *this->mat(), schwarz_.get_overlapping_mat()->local());
     else if (coarse_space_type == "geneo")
       coarse_space_ = geneo_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat()->local());
     else if (coarse_space_type == "msgfem")
