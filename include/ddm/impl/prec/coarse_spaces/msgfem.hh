@@ -18,10 +18,12 @@
 #include <vector>
 
 namespace ddm {
-/** GenEO coarse space: the eigenvectors v of A_neu v = lambda D A_ovlp D v with the smallest eigenvalues, multiplied
- *  by the partition of unity D. A_neu is the Neumann matrix on the overlapping subdomain (A must have been assembled
- *  with record_values), A_ovlp the restriction of A to it. The rows A's zero_rows() was called for are treated as
- *  Dirichlet dofs. Collective.
+/** MsGFEM coarse space: the GenEO eigenproblem A_neu v = lambda D A_ovlp D v, restricted to the discrete A-harmonic
+ *  functions on the overlapping subdomain (A_ovlp v = 0 at the interior dofs). The eigenvectors with the smallest
+ *  eigenvalues are multiplied by the partition of unity D. A_neu is the Neumann matrix on the overlapping subdomain
+ *  (A must have been assembled with record_values), A_ovlp the restriction of A to it. The rows A's zero_rows() was
+ *  called for are treated as Dirichlet dofs. A_dir solves the Dirichlet problem on the overlapping subdomain, it is
+ *  needed by the method `projected`. Collective.
  *
  *  Config:
  *  - method:      how to enforce the constraint in the eigenvalue problem, see solve_harmonic_gevp()
