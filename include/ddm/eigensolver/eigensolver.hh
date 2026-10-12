@@ -20,10 +20,12 @@ namespace ddm {
 template <class T>
 class Eigensolver {
 public:
+  static constexpr int default_nev = 16;
+
   Eigensolver(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B)
       : A_(std::move(A))
       , B_(std::move(B))
-      , nev_(config.get("nev", 16))
+      , nev_(config.get("nev", default_nev))
       , ncv_(config.get("ncv", 2 * nev_))
       , maxit_(config.get("maxit", 1000))
       , tolerance_(config.get("tolerance", T(1e-5)))
