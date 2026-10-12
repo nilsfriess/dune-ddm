@@ -10,11 +10,19 @@
 #include "ddm/vec/vec.hh"
 #include "dune/ddm/logger.hh"
 
+#include <algorithm>
 #include <dune/common/parametertree.hh>
 #include <memory>
 #include <span>
 #include <utility>
 #include <vector>
+
+#ifdef DUNE_DDM_HAVE_SPECTRA
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wextra-semi"
+#include <Eigen/Eigenvalues>
+#pragma GCC diagnostic pop
+#endif
 
 namespace ddm {
 // The space H of discrete A-harmonic functions on the overlapping subdomain: (A u)_i = 0 for the interior dofs,
@@ -183,13 +191,97 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_projected(const Dune::Parameter
   return eigensolver->vectors();
 }
 
+// Eigen is available together with Spectra (see extern/CMakeLists.txt)
+#ifdef DUNE_DDM_HAVE_SPECTRA
+/* Builds an explicit basis E of H, the harmonic extensions of the unit vectors of the boundary dofs, and solves the
+ * reduced problem E^T A E y = lambda E^T B E y with a dense solver. Neither E^T A E (singular for floating subdomains)
+ * nor E^T B E (singular if a harmonic function vanishes where B does) needs to be definite, but their sum is. So the
+ * dense solver gets the equivalent problem
+ *
+ *   E^T B E y = mu (E^T A E + E^T B E) y,   mu = 1 / (1 + lambda),
+ *
+ * whose largest mu belong to the smallest lambda.
+ */
+template <class T>
+std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_basis(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, const HarmonicSpace<T>& H)
+{
+  DDM_CHECK(H.can_project(), "solve_harmonic_gevp_basis(): the HarmonicSpace object must be able to project into the space, pass a suitable solver to its constructor");
+  const Index n_boundary = std::ssize(H.boundary());
+  const int nev = config.sub("eigensolver").get("nev", Eigensolver<T>::default_nev);
+  DDM_CHECK(1 <= nev && nev <= n_boundary, "solve_harmonic_gevp_basis(): nev must be between 1 and the number of boundary dofs {}, got {}", n_boundary, nev);
+
+  // The basis, one column per boundary dof
+  auto E = A->create_domain_multivector(n_boundary);
+  {
+    auto e = A->create_domain_vector();
+    auto y = A->create_domain_vector();
+    for (Index k = 0; k < n_boundary; ++k) {
+      const auto i = H.boundary()[k];
+      {
+        auto view = e.host_view(read_write);
+        view[i] = T{1};
+      }
+      H.project(e, y);
+      E->copy_into_column(k, y);
+      {
+        auto view = e.host_view(read_write);
+        view[i] = T{0};
+      }
+    }
+  }
+
+  // The reduced matrices E^T A E and E^T B E
+  auto At = E->create_multivector(n_boundary, n_boundary);
+  auto Bt = E->create_multivector(n_boundary, n_boundary);
+  {
+    auto W = A->create_domain_multivector(n_boundary);
+    A->spmm(*E, *W);
+    E->dot(*W, *At);
+    B->spmm(*E, *W);
+    E->dot(*W, *Bt);
+  }
+
+  // Both are column-major, like Eigen's matrices. Eigen only reads the lower triangles, so it doesn't matter that
+  // rounding makes the reduced matrices slightly non-symmetric.
+  using Matrix = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>;
+  Eigen::GeneralizedSelfAdjointEigenSolver<Matrix> es;
+  {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Eigensolver", "solve")};
+    const auto at = std::as_const(*At).host_view(read);
+    const auto bt = std::as_const(*Bt).host_view(read);
+    const Matrix Bm = Eigen::Map<const Matrix>(bt.data(), n_boundary, n_boundary);
+    const Matrix S = Eigen::Map<const Matrix>(at.data(), n_boundary, n_boundary) + Bm;
+    es.compute(Bm, S);
+  }
+  DDM_CHECK(es.info() == Eigen::Success, "solve_harmonic_gevp_basis(): the dense eigensolver failed");
+
+  // The mu are sorted from small to large, so the last nev columns in reverse order belong to the smallest lambda
+  const auto& mu = es.eigenvalues();
+  logger::debug_all("Dense eigensolver computed {} eigenvalues: smallest {}, largest {}", nev, 1 / mu(n_boundary - 1) - 1, 1 / mu(n_boundary - nev) - 1);
+
+  // Back to the original space: x_j = E y_j
+  auto vectors = std::shared_ptr<MultiVec<T>>(A->create_domain_multivector(nev));
+  auto c = E->create_vector(n_boundary);
+  auto x = A->create_domain_vector();
+  for (int j = 0; j < nev; ++j) {
+    {
+      auto view = c.host_view(write);
+      std::copy_n(es.eigenvectors().col(n_boundary - 1 - j).data(), n_boundary, view.data());
+    }
+    E->mv(c, x);
+    vectors->copy_into_column(j, x);
+  }
+  return vectors;
+}
+#endif
+
 } // namespace detail
 
 /** Solves A x = lambda B x for x in H, computing the eigenpairs with the smallest eigenvalues.
  *
  *  Config:
- *  - method:      saddle_point | projected | basis (default saddle_point); projected and basis need H.can_extend()
- *  - eigensolver: config of the eigensolver (see create_eigensolver())
+ *  - method:      saddle_point | projected | basis (default saddle_point); projected and basis need H.can_project()
+ *  - eigensolver: config of the eigensolver (see create_eigensolver()); basis uses a dense solver and only reads nev
  */
 template <class T>
 std::shared_ptr<MultiVec<T>> solve_harmonic_gevp(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, const HarmonicSpace<T>& H)
@@ -199,7 +291,14 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp(const Dune::ParameterTree& conf
   auto method = config.get("method", "saddle_point");
   if (method == "saddle_point") return detail::solve_harmonic_gevp_saddle_point(config, A, B, H);
   else if (method == "projected") return detail::solve_harmonic_gevp_projected(config, A, B, H);
-  else DDM_CHECK(false, "solve_harmonic_gevp() unknown method `{}`, known: {}, {}", method, "saddle_point", "projected");
+  else if (method == "basis") {
+#ifdef DUNE_DDM_HAVE_SPECTRA
+    return detail::solve_harmonic_gevp_basis(config, A, B, H);
+#else
+    DDM_CHECK(false, "solve_harmonic_gevp(): method `basis` requires Eigen, which was not found");
+#endif
+  }
+  else DDM_CHECK(false, "solve_harmonic_gevp() unknown method `{}`, known: {}, {}, {}", method, "saddle_point", "projected", "basis");
   return nullptr;
 }
 } // namespace ddm
