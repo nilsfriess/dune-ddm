@@ -161,6 +161,20 @@ public:
     if (comm_) comm_->reduce(diag);
   }
 
+  /** @brief Attach another matrix to this matrix that represents a symmetric part corresponding to it
+   *
+   *  Attaches the matrix \p A_sym to this matrix so that it can later be queried with get_symmetric_part().
+   *  This is used for the MsGFEM preconditioner for unsymmetric problems. In these cases, MsGFEM requires a
+   *  second matrix that represents a symmetric positive semidefinite problem associated with the original
+   *  problem. E.g. for convection diffusion problems this would be the matrix corresponding to the PDE
+   *  assembled without the convection part. Usually, -mat_record_values should be enabled for the matrix
+   *  that is passed here when used in the MsGFEM method.
+   */
+  void attach_symmetric_matrix(std::shared_ptr<const Mat<T>> A_sym) { A_sym_ = std::move(A_sym); }
+
+  // Returns the matrix attached with attach_symmetric_matrix(), nullptr if none was attached
+  std::shared_ptr<const Mat<T>> get_symmetric_part() const { return A_sym_; }
+
   LocalMat<T>& local() { return *local_; }
   const LocalMat<T>& local() const { return *local_; }
 
@@ -207,11 +221,13 @@ private:
   std::shared_ptr<Communication> comm_;
 
   std::vector<T> multiplicity_;
-  std::vector<Index> zeroed_rows_; ///< see zeroed_rows()
+  std::vector<Index> zeroed_rows_;    ///< see zeroed_rows()
   mutable std::optional<Vec<T>> tmp_; ///< temporary for applyscaleadd()
 
   bool record_values_ = false;
   std::optional<ElementBlocks<T>> element_blocks_;
+
+  std::shared_ptr<const Mat<T>> A_sym_ = nullptr; // optional symmetric matrix that can be attached to this matrix, see attach_symmetric_matrix()
 
   Logger::Event* apply_event_; ///< apply() and applyscaleadd()
 };

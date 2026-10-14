@@ -11,6 +11,7 @@
 #include <dune/istl/solvercategory.hh>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace ddm {
@@ -32,11 +33,15 @@ public:
   // z = P^{-1} r
   void apply(Vec<T>& z, const Vec<T>& r) final
   {
-    DDM_CHECK(&r != &z, "prec: apply() requires distinct vectors r and z");
-    DDM_CHECK(r.size() == A_->rows() && z.size() == A_->rows(), "prec: apply() size mismatch, matrix is {}x{}, but r has size {} and z has size {}", A_->rows(), A_->cols(), r.size(), z.size());
-    DDM_CHECK(r.backend() == A_->backend() && z.backend() == A_->backend(), "prec: apply() backend mismatch, matrix is {}, r is {}, z is {}", to_string(A_->backend()), to_string(r.backend()),
-              to_string(z.backend()));
+    check_apply_args(z, r, "apply()");
     do_apply(z, r);
+  }
+
+  // z = P^{-T} r. Not every preconditioner supports this, the others throw
+  void apply_transposed(Vec<T>& z, const Vec<T>& r)
+  {
+    check_apply_args(z, r, "apply_transposed()");
+    do_apply_transposed(z, r);
   }
 
   // Recomputes the preconditioner after the values (but not the pattern) of the matrix changed
@@ -60,7 +65,16 @@ protected:
   }
 
 private:
+  void check_apply_args(const Vec<T>& z, const Vec<T>& r, std::string_view op) const
+  {
+    DDM_CHECK(&r != &z, "prec: {} requires distinct vectors r and z", op);
+    DDM_CHECK(r.size() == A_->rows() && z.size() == A_->rows(), "prec: {} size mismatch, matrix is {}x{}, but r has size {} and z has size {}", op, A_->rows(), A_->cols(), r.size(), z.size());
+    DDM_CHECK(r.backend() == A_->backend() && z.backend() == A_->backend(), "prec: {} backend mismatch, matrix is {}, r is {}, z is {}", op, to_string(A_->backend()), to_string(r.backend()),
+              to_string(z.backend()));
+  }
+
   virtual void do_apply(Vec<T>& z, const Vec<T>& r) = 0;
+  virtual void do_apply_transposed(Vec<T>&, const Vec<T>&) { DDM_CHECK(false, "prec: apply_transposed() is not supported by this preconditioner"); }
   virtual void do_update() = 0;
   virtual void do_info() const = 0;
 

@@ -30,19 +30,23 @@
 namespace ddm {
 namespace detail::spectra {
 // The shift-invert operator (A - sigma B)^{-1}, the OpType of Spectra's generalised shift-invert solver, followed by the
-// projection if one is set (see Eigensolver::set_projection()). Spectra calls set_shift() once before the iteration,
-// which assembles A - sigma B and sets up the solver for it.
+// projection P if one is set and preceded by its transpose P^T if that is set as well (see
+// Eigensolver::set_projection()). Spectra calls set_shift() once before the iteration, which assembles A - sigma B and
+// sets up the solver for it.
 template <class T>
 class ShiftInvertOp {
 public:
   using Scalar = T;
 
-  ShiftInvertOp(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, typename Eigensolver<T>::Projection projection)
+  ShiftInvertOp(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, typename Eigensolver<T>::Projection projection,
+                typename Eigensolver<T>::Projection projection_transposed)
       : config_(config)
       , A_(std::move(A))
       , B_(std::move(B))
       , projection_(std::move(projection))
+      , projection_transposed_(std::move(projection_transposed))
       , b_(A_->create_range_vector())
+      , pt_(A_->create_range_vector())
       , x_(A_->create_domain_vector())
       , p_(A_->create_domain_vector())
   {
@@ -57,15 +61,16 @@ public:
     solver_ = create_subproblem_solver<T>(config_.sub("solver"), config_.sub("prec"), std::move(shifted));
   }
 
-  // y = P (A - sigma B)^{-1} x, or y = (A - sigma B)^{-1} x without a projection P
+  // y = P (A - sigma B)^{-1} P^T x, where P and P^T are left out if they are not set
   void perform_op(const T* x_in, T* y_out) const
   {
     {
       auto b = b_.host_view(write);
       std::copy_n(x_in, b.size(), b.data());
     }
+    if (projection_transposed_) projection_transposed_(b_, pt_);
     x_.zero();
-    solver_->solve(b_, x_);
+    solver_->solve(projection_transposed_ ? pt_ : b_, x_);
     if (projection_) projection_(x_, p_);
 
     const auto y = std::as_const(projection_ ? p_ : x_).host_view(read);
@@ -78,8 +83,10 @@ private:
   std::shared_ptr<const LocalMat<T>> B_;
   std::shared_ptr<Solver<T>> solver_;
   typename Eigensolver<T>::Projection projection_;
+  typename Eigensolver<T>::Projection projection_transposed_;
 
   mutable Vec<T> b_;
+  mutable Vec<T> pt_; ///< P^T applied to b_
   mutable Vec<T> x_;
   mutable Vec<T> p_; ///< the projection of x_
 };
@@ -149,7 +156,7 @@ public:
     const auto ncv = std::min(this->ncv(), n); // Spectra requires ncv <= n
     DDM_CHECK(nev < n, "spectra eigensolver: nev must be smaller than the size of the problem, got nev = {} for size {}", nev, n);
 
-    detail::spectra::ShiftInvertOp<T> op(config_, this->A(), this->B(), this->projection());
+    detail::spectra::ShiftInvertOp<T> op(config_, this->A(), this->B(), this->projection(), this->projection_transposed());
     detail::spectra::MatOp<T> Bop(this->B());
     Spectra::SymGEigsShiftSolver<detail::spectra::ShiftInvertOp<T>, detail::spectra::MatOp<T>, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, ncv, this->shift());
     if (this->projection()) {
@@ -171,8 +178,7 @@ public:
     // The largest eigenvalues of the shift-invert operator are the ones of the original problem closest to the shift,
     // sorted from small to large
     const auto nconv = geigs.compute(Spectra::SortRule::LargestMagn, this->maxit(), this->tolerance(), Spectra::SortRule::SmallestAlge);
-    DDM_CHECK(geigs.info() == Spectra::CompInfo::Successful, "spectra eigensolver: computation failed ({}), {} of {} eigenpairs converged", detail::spectra::to_string(geigs.info()), nconv,
-              nev);
+    DDM_CHECK(geigs.info() == Spectra::CompInfo::Successful, "spectra eigensolver: computation failed ({}), {} of {} eigenpairs converged", detail::spectra::to_string(geigs.info()), nconv, nev);
 
     const auto evalues = geigs.eigenvalues();
     values_.assign(evalues.data(), evalues.data() + evalues.size());

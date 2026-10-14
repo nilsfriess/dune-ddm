@@ -85,6 +85,23 @@ public:
     A_dir_->solve(*rhs_, y);
   }
 
+  // y = transpose of project() applied to x: the boundary values of A_dir^{-T} x, zero elsewhere. Requires A_dir and
+  // that its solver supports solve_transposed()
+  void project_transposed(const Vec<T>& x, Vec<T>& y) const
+  {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Harmonic space", "project transposed")};
+    DDM_CHECK(can_project(), "HarmonicSpace: project_transposed() requires a solver for the matrix, pass A_dir to the constructor");
+    if (!tmp_.has_value()) tmp_.emplace(A_->create_domain_vector());
+
+    tmp_->zero();
+    A_dir_->solve_transposed(x, *tmp_);
+
+    y.zero();
+    auto tmp_host = std::as_const(*tmp_).host_view(read);
+    auto y_host = y.host_view(read_write);
+    for (auto idx : boundary_) y_host[idx] = tmp_host[idx];
+  }
+
 private:
   std::shared_ptr<const Mat<T>> A_;
   std::vector<Index> boundary_;
@@ -92,6 +109,7 @@ private:
   std::vector<Index> interior_;
   std::shared_ptr<Solver<T>> A_dir_;
   mutable std::optional<Vec<T>> rhs_; ///< x with everything except the boundary values set to zero
+  mutable std::optional<Vec<T>> tmp_; ///< A_dir^{-T} x in project_transposed()
 };
 
 namespace detail {
@@ -191,6 +209,23 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_projected(const Dune::Parameter
   return eigensolver->vectors();
 }
 
+/* Like solve_harmonic_gevp_projected(), but the projection is applied on both sides of the shift-invert solve: with
+ * P = project() the operator is P (A - sigma B)^{-1} P^T B, which is self-adjoint in the B inner product for every
+ * shift. If A is the Neumann matrix of the constraint matrix, this is the same eigenproblem as for the other methods.
+ * Otherwise (e.g. A the Neumann matrix of the symmetric part of a non-symmetric constraint matrix), it is a different
+ * one: the harmonic functions are measured in the A-energy of the A-harmonic function with the same boundary values.
+ * Needs a solver for the constraint matrix that supports solve_transposed().
+ */
+template <class T>
+std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_two_sided(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, const HarmonicSpace<T>& H)
+{
+  DDM_CHECK(H.can_project(), "solve_harmonic_gevp_two_sided(): the HarmonicSpace object must be able to project into the space, pass a suitable solver to its constructor");
+  auto eigensolver = create_eigensolver<T>(config.sub("eigensolver"), A, B);
+  eigensolver->set_projection([&](const Vec<T>& x, Vec<T>& y) { H.project(x, y); }, [&](const Vec<T>& x, Vec<T>& y) { H.project_transposed(x, y); });
+  eigensolver->solve();
+  return eigensolver->vectors();
+}
+
 // Eigen is available together with Spectra (see extern/CMakeLists.txt)
 #ifdef DUNE_DDM_HAVE_SPECTRA
 /* Builds an explicit basis E of H, the harmonic extensions of the unit vectors of the boundary dofs, and solves the
@@ -280,7 +315,8 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_basis(const Dune::ParameterTree
 /** Solves A x = lambda B x for x in H, computing the eigenpairs with the smallest eigenvalues.
  *
  *  Config:
- *  - method:      saddle_point | projected | basis (default saddle_point); projected and basis need H.can_project()
+ *  - method:      saddle_point | projected | two_sided | basis (default saddle_point); all but saddle_point need
+ *                 H.can_project(), see solve_harmonic_gevp_two_sided() for what two_sided computes
  *  - eigensolver: config of the eigensolver (see create_eigensolver()); basis uses a dense solver and only reads nev
  */
 template <class T>
@@ -291,6 +327,7 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp(const Dune::ParameterTree& conf
   auto method = config.get("method", "saddle_point");
   if (method == "saddle_point") return detail::solve_harmonic_gevp_saddle_point(config, A, B, H);
   else if (method == "projected") return detail::solve_harmonic_gevp_projected(config, A, B, H);
+  else if (method == "two_sided") return detail::solve_harmonic_gevp_two_sided(config, A, B, H);
   else if (method == "basis") {
 #ifdef DUNE_DDM_HAVE_SPECTRA
     return detail::solve_harmonic_gevp_basis(config, A, B, H);
@@ -298,7 +335,7 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp(const Dune::ParameterTree& conf
     DDM_CHECK(false, "solve_harmonic_gevp(): method `basis` requires Eigen, which was not found");
 #endif
   }
-  else DDM_CHECK(false, "solve_harmonic_gevp() unknown method `{}`, known: {}, {}, {}", method, "saddle_point", "projected", "basis");
+  else DDM_CHECK(false, "solve_harmonic_gevp() unknown method `{}`, known: {}, {}, {}, {}", method, "saddle_point", "projected", "two_sided", "basis");
   return nullptr;
 }
 } // namespace ddm

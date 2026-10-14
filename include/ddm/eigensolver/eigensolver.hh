@@ -40,9 +40,15 @@ public:
   virtual ~Eigensolver() = default;
 
   // Restricts the iteration to the range of P, which must be a projection (P P = P). P is applied after every
-  // shift-invert solve and to the starting vector.
+  // shift-invert solve and to the starting vector. If its transpose P_transposed is given as well, it is applied
+  // before every shift-invert solve, so that the operator becomes P (A - sigma B)^{-1} P^T B, which is self-adjoint in
+  // the B inner product for every shift.
   using Projection = std::function<void(const Vec<T>& x, Vec<T>& y)>;
-  void set_projection(Projection P) { projection_ = std::move(P); }
+  void set_projection(Projection P, Projection P_transposed = {})
+  {
+    projection_ = std::move(P);
+    projection_transposed_ = std::move(P_transposed);
+  }
 
   virtual void solve() = 0;
   virtual const std::vector<T>& values() const = 0;
@@ -57,7 +63,8 @@ public:
   T shift() const { return shift_; }
 
 protected:
-  const Projection& projection() const { return projection_; } // empty if not set
+  const Projection& projection() const { return projection_; }                       // empty if not set
+  const Projection& projection_transposed() const { return projection_transposed_; } // empty if not set
 
 private:
   std::shared_ptr<const LocalMat<T>> A_;
@@ -70,6 +77,7 @@ private:
   T shift_;
 
   Projection projection_;
+  Projection projection_transposed_;
 };
 
 template <class T>

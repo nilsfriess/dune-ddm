@@ -26,11 +26,11 @@ template <class T>
 std::shared_ptr<CoarseSpace<T>> geneo_coarse_space(const Dune::ParameterTree& config, std::shared_ptr<const Overlap> ovlp, const Vec<T>& pou, std::shared_ptr<const Mat<T>> A,
                                                    const LocalMat<T>& A_ovlp)
 {
-  NeumannAssembler<T> na(A, ovlp);
+  NeumannAssembler<T> na(A->get_symmetric_part() != nullptr ? A->get_symmetric_part() : A, ovlp);
 
   auto region = Region::subdomain(*ovlp);
   auto lhs = na.matrix(Dune::ParameterTree{}, region);
-  auto rhs = A_ovlp.clone();
+  auto rhs = lhs->clone();
   rhs->scale(pou);
 
   // Eliminate the Dirichlet dofs symmetrically but put zeros on the diagonal of B in rows

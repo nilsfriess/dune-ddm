@@ -20,6 +20,7 @@ public:
 
 private:
   void do_solve(const Vec<T>& b, Vec<T>& x) override { this->prec()->apply(x, b); }
+  void do_solve_transposed(const Vec<T>& b, Vec<T>& x) override { this->prec()->apply_transposed(x, b); }
 
   void do_info() const override { logger::info("Direct solver (applies the preconditioner once)"); }
 };

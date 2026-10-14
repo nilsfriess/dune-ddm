@@ -123,6 +123,14 @@ private:
     for (std::size_t i = 0; i < n; ++i) data_[first * n + i] = v_istl[i];
   }
 
+  void do_extract_column_to_vec(Index column, Vec<T>& v) const override
+  {
+    auto& v_istl = as_istl(v).native();
+    const std::size_t n = this->rows();
+    const std::size_t first = column;
+    for (std::size_t i = 0; i < n; ++i) v_istl[i] = data_[first * n + i];
+  }
+
   // The data is in host memory already, so there is nothing to copy
   void do_scale_rows(const Vec<T>& d) override
   {

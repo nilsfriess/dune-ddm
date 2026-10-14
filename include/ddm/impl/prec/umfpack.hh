@@ -41,6 +41,25 @@ private:
     solver_.apply(x, b, res);
   }
 
+  // Dune::UMFPack only solves with A, so this calls UMFPACK directly with the same factorization
+  void do_apply_transposed(Vec<T>& z, const Vec<T>& r) override
+  {
+    Logger::ScopedLog sl{solve_event_};
+    if (r.size() == 0) return;
+
+    auto& x = as_istl(z).native();
+    const auto& b = as_istl(r).native();
+
+    double control[UMFPACK_CONTROL];
+    double info[UMFPACK_INFO];
+    umfpack_dl_defaults(control);
+    control[UMFPACK_IRSTEP] = 0; // as in do_update()
+
+    auto& M = solver_.getInternalMatrix();
+    Dune::UMFPackMethodChooser<T>::solve(UMFPACK_At, M.getColStart(), M.getRowIndex(), M.getValues(), &x[0], &b[0], solver_.getFactorization(), control, info);
+    DDM_CHECK(info[UMFPACK_STATUS] >= UMFPACK_OK, "UMFPACK: transposed solve failed with status {}", info[UMFPACK_STATUS]);
+  }
+
   void do_update() override
   {
     Logger::ScopedLog sl{factorize_event_};

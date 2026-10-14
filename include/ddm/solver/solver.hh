@@ -11,6 +11,7 @@
 #include <dune/common/parametertree.hh>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace ddm {
@@ -26,13 +27,17 @@ public:
   // Solves A x = b, x is used as the initial guess
   void solve(const Vec<T>& b, Vec<T>& x)
   {
-    DDM_CHECK(&b != &x, "solver: solve() requires distinct vectors b and x");
-    DDM_CHECK(A_->is_assembled(), "solver: solve() called with unassembled matrix");
-    DDM_CHECK(b.size() == A_->rows() && x.size() == A_->cols(), "solver: solve() size mismatch, matrix is {}x{}, but b has size {} and x has size {}", A_->rows(), A_->cols(), b.size(), x.size());
-    DDM_CHECK(b.backend() == A_->backend() && x.backend() == A_->backend(), "solver: solve() backend mismatch, matrix is {}, b is {}, x is {}", to_string(A_->backend()), to_string(b.backend()),
-              to_string(x.backend()));
+    check_solve_args(b, x, "solve()");
     if (info_) info();
     do_solve(b, x);
+  }
+
+  // Solves A^T x = b, x is used as the initial guess. Not every solver supports this, the others throw
+  void solve_transposed(const Vec<T>& b, Vec<T>& x)
+  {
+    check_solve_args(b, x, "solve_transposed()");
+    if (info_) info();
+    do_solve_transposed(b, x);
   }
 
   const std::shared_ptr<const Mat<T>>& mat() const { return A_; }
@@ -100,7 +105,17 @@ protected:
   }
 
 private:
+  void check_solve_args(const Vec<T>& b, const Vec<T>& x, std::string_view op) const
+  {
+    DDM_CHECK(&b != &x, "solver: {} requires distinct vectors b and x", op);
+    DDM_CHECK(A_->is_assembled(), "solver: {} called with unassembled matrix", op);
+    DDM_CHECK(b.size() == A_->rows() && x.size() == A_->cols(), "solver: {} size mismatch, matrix is {}x{}, but b has size {} and x has size {}", op, A_->rows(), A_->cols(), b.size(), x.size());
+    DDM_CHECK(b.backend() == A_->backend() && x.backend() == A_->backend(), "solver: {} backend mismatch, matrix is {}, b is {}, x is {}", op, to_string(A_->backend()), to_string(b.backend()),
+              to_string(x.backend()));
+  }
+
   virtual void do_solve(const Vec<T>& b, Vec<T>& x) = 0;
+  virtual void do_solve_transposed(const Vec<T>&, Vec<T>&) { DDM_CHECK(false, "solver: solve_transposed() is not supported by this solver"); }
   virtual void do_info() const = 0;
 
   std::shared_ptr<const Mat<T>> A_;

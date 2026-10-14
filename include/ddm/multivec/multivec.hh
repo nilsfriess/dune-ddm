@@ -179,6 +179,14 @@ public:
     do_copy_into_column(column, v);
   }
 
+  void extract_column_to_vec(Index column, Vec<T>& v) const
+  {
+    DDM_CHECK(backend() == v.backend(), "multivector: extract_column_to_vec() backend mismatch, multivector is {}, vector is {}", to_string(backend()), to_string(v.backend()));
+    DDM_CHECK(rows() == v.size(), "multivector: extract_column_to_vec() size mismatch, multivector has {} rows, vector has {} entries", rows(), v.size());
+    DDM_CHECK(column >= 0 and column < cols(), "multivector: extract_column_to_vec() column {} out of range for {} columns", column, cols());
+    do_extract_column_to_vec(column, v);
+  }
+
   // Multiplies row i of every column by d[i], i.e. *this = diag(d) * *this
   void scale_rows(const Vec<T>& d)
   {
@@ -210,6 +218,7 @@ private:
   virtual void do_pack_rows(std::span<const Index> idx, MultiVec& buffer) const = 0;
   virtual void do_unpack_rows(const MultiVec& buffer, std::span<const Index> idx, Index first_col) = 0;
   virtual void do_copy_into_column(Index column, const Vec<T>& v) = 0;
+  virtual void do_extract_column_to_vec(Index column, Vec<T>& v) const = 0;
   virtual void do_scale_rows(const Vec<T>& d) = 0;
 
   // Returns the data in host memory, column by column. For Access::write, the contents may be arbitrary. Every
