@@ -24,14 +24,6 @@ public:
     return r;
   }
 
-  static Region ring(const Overlap& ovlp, int extend = 0)
-  {
-    Region r;
-    r.region_to_subdomain_.reserve(2 * (ovlp.layer.size() - ovlp.n_original));
-
-    return r;
-  }
-
   // True if the region is the whole overlapping subdomain
   bool is_subdomain() const { return region_to_subdomain_.empty(); }
 
