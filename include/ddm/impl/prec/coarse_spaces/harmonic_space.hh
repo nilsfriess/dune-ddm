@@ -11,6 +11,7 @@
 #include "dune/ddm/logger.hh"
 
 #include <algorithm>
+#include <dune/common/math.hh>
 #include <dune/common/parametertree.hh>
 #include <memory>
 #include <span>
@@ -116,10 +117,10 @@ namespace detail {
 
 /* Enforces x in H with Lagrange multipliers mu, one per interior dof, i.e. solves the saddle point eigenproblem
  *
- *   [ A  C^T ] [x ]          [ B  0 ] [x ]
+ *   [ A  C^H ] [x ]          [ B  0 ] [x ]
  *   [ C  0   ] [mu] = lambda [ 0  0 ] [mu]
  *
- * where C consists of the interior rows of the constraint matrix. The Dirichlet dofs are not unknowns (x is zero
+ * where C consists of the interior rows of the constraint matrix and C^H is its conjugate transpose. The Dirichlet dofs are not unknowns (x is zero
  * there), so x only has the interior and boundary dofs, numbered interior first, then boundary. The multipliers
  * follow after them.
  */
@@ -151,7 +152,8 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_saddle_point(const Dune::Parame
     }
   };
 
-  // Left-hand side: A in the upper left block, C below it and C^T to its right
+  // Left-hand side: A in the upper left block, C below it and C^H to its right (the conjugate transpose, so that the
+  // matrix is Hermitian if A is; for real T this is C^T)
   Pattern lhs_pattern(n_big, n_big);
   for_each_entry(a, false, [&](Index r, Index col, T) { lhs_pattern.add(r, col); });
   for_each_entry(c, true, [&](Index r, Index col, T) {
@@ -164,8 +166,9 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_saddle_point(const Dune::Parame
   for_each_entry(a, false, [&](Index r, Index col, T v) { lhs->add_values(std::span(&r, 1), std::span(&col, 1), std::span(&v, 1)); });
   for_each_entry(c, true, [&](Index r, Index col, T v) {
     const Index mu = n_x + r;
+    const T v_conj = Dune::conjugateComplex(v);
     lhs->add_values(std::span(&mu, 1), std::span(&col, 1), std::span(&v, 1));
-    lhs->add_values(std::span(&col, 1), std::span(&mu, 1), std::span(&v, 1));
+    lhs->add_values(std::span(&col, 1), std::span(&mu, 1), std::span(&v_conj, 1));
   });
   lhs->assemble();
 
@@ -293,6 +296,11 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_basis(const Dune::ParameterTree
   // The mu are sorted from small to large, so the last nev columns in reverse order belong to the smallest lambda
   const auto& mu = es.eigenvalues();
   logger::debug_all("Dense eigensolver computed {} eigenvalues: smallest {}, largest {}", nev, 1 / mu(n_boundary - 1) - 1, 1 / mu(n_boundary - nev) - 1);
+  if (config.sub("eigensolver").get("print_eigenvalues", false)) {
+    std::vector<typename Matrix::RealScalar> lambda;
+    for (int j = 0; j < nev; ++j) lambda.push_back(1 / mu(n_boundary - 1 - j) - 1);
+    logger::print_all("Eigenvalues: {}", logger::join(lambda));
+  }
 
   // Back to the original space: x_j = E y_j
   auto vectors = std::shared_ptr<MultiVec<T>>(A->create_domain_multivector(nev));
@@ -318,6 +326,7 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_basis(const Dune::ParameterTree
  *  - method:      saddle_point | projected | two_sided | basis (default saddle_point); all but saddle_point need
  *                 H.can_project(), see solve_harmonic_gevp_two_sided() for what two_sided computes
  *  - eigensolver: config of the eigensolver (see create_eigensolver()); basis uses a dense solver and only reads nev
+ *                 and print_eigenvalues
  */
 template <class T>
 std::shared_ptr<MultiVec<T>> solve_harmonic_gevp(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, const HarmonicSpace<T>& H)

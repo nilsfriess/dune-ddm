@@ -13,6 +13,7 @@
 #include "dune/ddm/logger.hh"
 #include "ddm/registry.hh"
 
+#include <complex>
 #include <dune/common/parametertree.hh>
 #include <memory>
 #include <mutex>
@@ -77,6 +78,7 @@ void initialize()
     register_events();
     register_all<float>();
     register_all<double>();
+    register_all<std::complex<double>>();
   });
 }
 } // namespace ddm

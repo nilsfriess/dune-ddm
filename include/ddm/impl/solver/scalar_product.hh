@@ -3,6 +3,7 @@
 #include "ddm/communication.hh"
 #include "ddm/vec/vec.hh"
 
+#include <complex>
 #include <dune/istl/scalarproducts.hh>
 #include <dune/istl/solvercategory.hh>
 #include <memory>
@@ -28,7 +29,7 @@ public:
     return res;
   }
 
-  T norm(const Vec<T>& x) const override { return comm_->norm(x); }
+  typename Vec<T>::real_type norm(const Vec<T>& x) const override { return comm_->norm(x); }
 
   Dune::SolverCategory::Category category() const override { return Dune::SolverCategory::overlapping; }
 

@@ -380,13 +380,13 @@ public:
   }
 
   template <class T>
-  T norm(const Vec<T>& v) const
+  typename Vec<T>::real_type norm(const Vec<T>& v) const
   {
     T res{};
     dot(v, v, res);
 
     using std::sqrt;
-    return sqrt(res);
+    return sqrt(std::real(res));
   }
 
   Communicator communicator() const { return c; }

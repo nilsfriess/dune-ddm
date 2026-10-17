@@ -26,7 +26,7 @@ private:
   {
     this->mat()->get_diag(diag);
     auto diag_view = diag.host_view(read_write);
-    for (auto& d : diag_view) d = (d == 0) ? T(1) : T(1) / d;
+    for (auto& d : diag_view) d = (d == T(0)) ? T(1) : T(1) / d;
   }
 
   void do_info() const override { logger::info("Jacobi preconditioner"); }

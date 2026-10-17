@@ -67,7 +67,7 @@ public:
   void axpy(T alpha, const VecImpl<T>& x) override { v_.axpy(alpha, as_istl(x).v_); }
 
   T dot(const VecImpl<T>& y) const override { return v_.dot(as_istl(y).v_); }
-  T two_norm() const override { return v_.two_norm(); }
+  typename Vec<T>::real_type two_norm() const override { return v_.two_norm(); }
 
   void pointwise_mult(const VecImpl<T>& x, VecImpl<T>& y) const override
   {

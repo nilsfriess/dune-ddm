@@ -7,6 +7,7 @@
 #include "ddm/vec/exchange_plan.hh"
 #include "ddm/vec/host_view.hh"
 
+#include <complex>
 #include <cstddef>
 #include <dune/common/parametertree.hh>
 #include <memory>
@@ -42,7 +43,7 @@ public:
   virtual void axpy(T alpha, const VecImpl& x) = 0;
 
   virtual T dot(const VecImpl& y) const = 0;
-  virtual T two_norm() const = 0;
+  virtual typename Vec<T>::real_type two_norm() const = 0;
 
   // y[i] = *this[i] * x[i]
   virtual void pointwise_mult(const VecImpl& x, VecImpl& y) const = 0;
@@ -61,10 +62,7 @@ public:
 
   // Creates the buffers to exchange the entries at the indices in idxs with other ranks. The default works through
   // acquire_host() and release_host(), backends that keep their data elsewhere can override this to avoid the copies.
-  virtual std::unique_ptr<ExchangePlan<T>> make_exchange_plan(const CommunicationPattern::IndexMap& idxs) const
-  {
-    return std::make_unique<HostExchangePlan<T>>(idxs);
-  }
+  virtual std::unique_ptr<ExchangePlan<T>> make_exchange_plan(const CommunicationPattern::IndexMap& idxs) const { return std::make_unique<HostExchangePlan<T>>(idxs); }
 
 protected:
   VecImpl() = default;
@@ -79,6 +77,7 @@ template <class T>
 class Vec {
 public:
   using field_type = T;
+  using real_type = decltype(std::real(std::declval<T>()));
 
   explicit Vec(std::unique_ptr<VecImpl<T>> impl)
       : impl_(std::move(impl))
@@ -164,7 +163,7 @@ public:
     return impl().dot(y.impl());
   }
 
-  T two_norm() const { return impl().two_norm(); }
+  real_type two_norm() const { return impl().two_norm(); }
 
   // y[i] = *this[i] * x[i]
   void pointwise_mult(const Vec& x, Vec& y) const

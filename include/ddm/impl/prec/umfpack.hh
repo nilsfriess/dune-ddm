@@ -35,7 +35,7 @@ private:
     Logger::ScopedLog sl{solve_event_};
     Dune::InverseOperatorResult res;
 
-    auto &x = as_istl(z).native();
+    auto& x = as_istl(z).native();
     auto b = as_istl(r).native(); // UMFPack solver takes the rhs as a non-const reference so we need to copy here
 
     solver_.apply(x, b, res);
@@ -56,7 +56,19 @@ private:
     control[UMFPACK_IRSTEP] = 0; // as in do_update()
 
     auto& M = solver_.getInternalMatrix();
-    Dune::UMFPackMethodChooser<T>::solve(UMFPACK_At, M.getColStart(), M.getRowIndex(), M.getValues(), &x[0], &b[0], solver_.getFactorization(), control, info);
+
+    // These casts are necessary in the case of complex arithmetic; there we can pass the complex
+    // data as a single double* array. This is only necessary because DUNE doesn't support transposed
+    // solves in its UMFPack wrapper, so we have to call the UMFPack routines directly.
+    const double* Ax = reinterpret_cast<double*>(M.getValues());
+    double* Xx = reinterpret_cast<double*>(x.data());
+    const double* Bx = reinterpret_cast<const double*>(b.data());
+
+    if constexpr (std::is_same_v<T, double>) umfpack_dl_solve(UMFPACK_At, M.getColStart(), M.getRowIndex(), Ax, Xx, Bx, solver_.getFactorization(), control, info);
+    else if constexpr (std::is_same_v<T, std::complex<double>>)
+      umfpack_zl_solve(UMFPACK_At, M.getColStart(), M.getRowIndex(), Ax, nullptr, Xx, nullptr, Bx, nullptr, solver_.getFactorization(), control, info);
+    else static_assert(false, "UMFPack supports only double and complex<double>");
+
     DDM_CHECK(info[UMFPACK_STATUS] >= UMFPACK_OK, "UMFPACK: transposed solve failed with status {}", info[UMFPACK_STATUS]);
   }
 
@@ -72,7 +84,7 @@ private:
 
   Logger::Event* factorize_event_;
   Logger::Event* solve_event_;
-  Dune::UMFPack<Dune::IBCRSMatrix<double>> solver_;
+  Dune::UMFPack<Dune::IBCRSMatrix<T>> solver_;
 };
 
 // UMFPACK can't handle float, so we create a template specialisation that just throws when constructed

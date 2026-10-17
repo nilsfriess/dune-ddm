@@ -4,6 +4,8 @@
 #include "ddm/mat/mat.hh"
 #include "ddm/multivec/multivec.hh"
 #include "ddm/registry.hh"
+#include "ddm/vec/vec.hh"
+#include "dune/ddm/logger.hh"
 
 #include <dune/common/parametertree.hh>
 #include <functional>
@@ -16,6 +18,7 @@ namespace ddm {
  *  - maxit:     maximum number of iterations (default 1000)
  *  - tolerance: convergence tolerance (default 1e-5)
  *  - shift:     shift sigma of the shift-and-invert operator (A - sigma B)^{-1} (default 1e-3)
+ *  - print_eigenvalues: print the computed eigenvalues on every rank, at every log level except off (default false)
  */
 template <class T>
 class Eigensolver {
@@ -28,8 +31,9 @@ public:
       , nev_(config.get("nev", default_nev))
       , ncv_(config.get("ncv", 2 * nev_))
       , maxit_(config.get("maxit", 1000))
-      , tolerance_(config.get("tolerance", T(1e-5)))
-      , shift_(config.get("shift", T(1e-3)))
+      , tolerance_(config.get("tolerance", typename Vec<T>::real_type(1e-5)))
+      , shift_(config.get("shift", typename Vec<T>::real_type(1e-3)))
+      , print_eigenvalues_(config.get("print_eigenvalues", false))
   {
     DDM_CHECK(A_->rows() == B_->rows(), "Eigensolver: size mismatch, A has {} rows, B has {}", A_->rows(), B_->rows());
     DDM_CHECK(A_->cols() == B_->cols(), "Eigensolver: size mismatch, A has {} cols, B has {}", A_->cols(), B_->cols());
@@ -50,7 +54,13 @@ public:
     projection_transposed_ = std::move(P_transposed);
   }
 
-  virtual void solve() = 0;
+  // Computes the eigenpairs, see values() and vectors()
+  void solve()
+  {
+    do_solve();
+    if (print_eigenvalues_) logger::print_all("Eigenvalues: {}", logger::join(values()));
+  }
+
   virtual const std::vector<T>& values() const = 0;
   virtual std::shared_ptr<MultiVec<T>> vectors() const = 0;
 
@@ -59,22 +69,25 @@ public:
   int nev() const { return nev_; }
   int ncv() const { return ncv_; }
   int maxit() const { return maxit_; }
-  T tolerance() const { return tolerance_; }
-  T shift() const { return shift_; }
+  typename Vec<T>::real_type tolerance() const { return tolerance_; }
+  typename Vec<T>::real_type shift() const { return shift_; }
 
 protected:
   const Projection& projection() const { return projection_; }                       // empty if not set
   const Projection& projection_transposed() const { return projection_transposed_; } // empty if not set
 
 private:
+  virtual void do_solve() = 0;
+
   std::shared_ptr<const LocalMat<T>> A_;
   std::shared_ptr<const LocalMat<T>> B_;
 
   int nev_;
   int ncv_;
   int maxit_;
-  T tolerance_;
-  T shift_;
+  typename Vec<T>::real_type tolerance_;
+  typename Vec<T>::real_type shift_;
+  bool print_eigenvalues_;
 
   Projection projection_;
   Projection projection_transposed_;

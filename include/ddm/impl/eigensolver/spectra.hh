@@ -15,7 +15,8 @@
 #pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #pragma GCC diagnostic ignored "-Wextra-semi"
-#include <Spectra/SymGEigsShiftSolver.h>
+#include <Spectra/HermEigsBase.h>
+#include <Spectra/MatOp/internal/SymGEigsShiftInvertOp.h>
 #include <Spectra/Util/CompInfo.h>
 #include <Spectra/Util/SimpleRandom.h>
 #pragma GCC diagnostic pop
@@ -122,6 +123,42 @@ private:
   mutable Vec<T> y_;
 };
 
+// Spectra's SymGEigsShiftSolver in shift-invert mode, but with a real shift, so that it also works for complex Hermitian
+// problems. Spectra's version stores the shift as OpType::Scalar, which does not compile for complex Scalar: the Ritz
+// values are real, and transforming them back with a complex shift gives complex values.
+// TODO: Use Spectra::SymGEigsShiftSolver again once Spectra supports complex Scalar there
+template <class OpType, class BOpType>
+class HermGEigsShiftSolver final : public Spectra::HermEigsBase<Spectra::SymGEigsShiftInvertOp<OpType, BOpType>, BOpType> {
+  using Scalar = typename OpType::Scalar;
+  using RealScalar = typename Eigen::NumTraits<Scalar>::Real;
+  using ModeMatOp = Spectra::SymGEigsShiftInvertOp<OpType, BOpType>;
+  using Base = Spectra::HermEigsBase<ModeMatOp, BOpType>;
+  using Base::m_nev;
+  using Base::m_ritz_val;
+
+  const RealScalar sigma_;
+
+  static ModeMatOp set_shift_and_move(ModeMatOp&& op, RealScalar sigma)
+  {
+    op.set_shift(Scalar(sigma));
+    return std::move(op);
+  }
+
+  // The iteration computes the eigenvalues nu = 1 / (lambda - sigma) of the shift-invert operator
+  void sort_ritzpair(Spectra::SortRule sort_rule) override
+  {
+    m_ritz_val.head(m_nev).array() = RealScalar(1) / m_ritz_val.head(m_nev).array() + sigma_;
+    Base::sort_ritzpair(sort_rule);
+  }
+
+public:
+  HermGEigsShiftSolver(OpType& op, BOpType& Bop, Eigen::Index nev, Eigen::Index ncv, RealScalar sigma)
+      : Base(set_shift_and_move(ModeMatOp(op, Bop), sigma), Bop, nev, ncv)
+      , sigma_(sigma)
+  {
+  }
+};
+
 inline std::string_view to_string(Spectra::CompInfo info)
 {
   switch (info) {
@@ -134,10 +171,10 @@ inline std::string_view to_string(Spectra::CompInfo info)
 }
 } // namespace detail::spectra
 
-/** Eigensolver based on Spectra's shift-invert Lanczos for generalised symmetric problems (SymGEigsShiftSolver). The
- *  shifted matrix A - sigma B is solved with create_subproblem_solver(), configured by the subtrees "solver" and
- *  "prec" (default: exact solve). Runs on the host, so the matrices must support host_csr(). See Eigensolver for the
- *  other parameters.
+/** Eigensolver based on Spectra's shift-invert Lanczos for generalised symmetric or Hermitian problems (see
+ *  detail::spectra::HermGEigsShiftSolver). The shifted matrix A - sigma B is solved with create_subproblem_solver(),
+ *  configured by the subtrees "solver" and "prec" (default: exact solve). Runs on the host, so the matrices must support
+ *  host_csr(). See Eigensolver for the other parameters.
  */
 template <class T>
 class SpectraEigensolver final : public Eigensolver<T> {
@@ -148,7 +185,11 @@ public:
   {
   }
 
-  void solve() override
+  const std::vector<T>& values() const override { return values_; }
+  std::shared_ptr<MultiVec<T>> vectors() const override { return vectors_; }
+
+private:
+  void do_solve() override
   {
     Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Eigensolver", "solve")};
     const int n = this->A()->rows();
@@ -158,7 +199,7 @@ public:
 
     detail::spectra::ShiftInvertOp<T> op(config_, this->A(), this->B(), this->projection(), this->projection_transposed());
     detail::spectra::MatOp<T> Bop(this->B());
-    Spectra::SymGEigsShiftSolver<detail::spectra::ShiftInvertOp<T>, detail::spectra::MatOp<T>, Spectra::GEigsMode::ShiftInvert> geigs(op, Bop, nev, ncv, this->shift());
+    detail::spectra::HermGEigsShiftSolver<detail::spectra::ShiftInvertOp<T>, detail::spectra::MatOp<T>> geigs(op, Bop, nev, ncv, this->shift());
     if (this->projection()) {
       // The starting vector must lie in the range of the projection as well, otherwise so does the Krylov space. This
       // is the random vector of Spectra's init(), projected.
@@ -191,10 +232,6 @@ public:
     std::copy_n(evecs.data(), evecs.size(), view.data());
   }
 
-  const std::vector<T>& values() const override { return values_; }
-  std::shared_ptr<MultiVec<T>> vectors() const override { return vectors_; }
-
-private:
   Dune::ParameterTree config_;
 
   std::vector<T> values_;
