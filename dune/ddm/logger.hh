@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <complex>
 #include <cstdlib>
 #include <deque>
 #include <dune/common/parallel/mpitraits.hh>
@@ -30,12 +31,21 @@
 #include <mpi.h>
 #include <mutex>
 #include <ostream>
+#include <print>
 #include <ratio>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+// A formatter for std::complex<T>
+template <typename T>
+struct std::formatter<std::complex<T>, char> {
+  constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }
+
+  auto format(const std::complex<T>& c, std::format_context& ctx) const { return std::format_to(ctx.out(), "({0},{1})", c.real(), c.imag()); }
+};
 
 /**
  * @brief Simple logging namespace to replace spdlog dependency
@@ -45,7 +55,9 @@
  */
 namespace logger {
 
-enum class Level { trace = 0, debug = 1, info = 2, warn = 3, error = 4, off = 5 };
+// print is for output the user explicitly asked for (e.g. with a config flag like print_eigenvalues): it is above all
+// other levels, so it is printed at every level except off.
+enum class Level { trace = 0, debug = 1, info = 2, warn = 3, error = 4, print = 5, off = 6 };
 
 namespace detail {
 // Global logging state
@@ -65,6 +77,7 @@ inline void read_level_from_env()
     else if (level_str == "info") current_level = Level::info;
     else if (level_str == "warn") current_level = Level::warn;
     else if (level_str == "error") current_level = Level::error;
+    else if (level_str == "print") current_level = Level::print;
     else if (level_str == "off") current_level = Level::off;
   }
 }
@@ -86,6 +99,7 @@ inline const char* level_name(Level level)
     case Level::info: return "info";
     case Level::warn: return "warn";
     case Level::error: return "error";
+    case Level::print: return "print";
     case Level::off: return "off";
   }
   return "unknown";
@@ -199,6 +213,12 @@ void error(std::format_string<Args...> message, Args&&... args)
   detail::log_impl(Level::error, false, message, std::forward<Args>(args)...);
 }
 
+template <typename... Args>
+void print(std::format_string<Args...> message, Args&&... args)
+{
+  detail::log_impl(Level::print, false, message, std::forward<Args>(args)...);
+}
+
 // Logging functions for all ranks
 template <typename... Args>
 void trace_all(std::format_string<Args...> message, Args&&... args)
@@ -228,6 +248,12 @@ template <typename... Args>
 void error_all(std::format_string<Args...> message, Args&&... args)
 {
   detail::log_impl(Level::error, true, message, std::forward<Args>(args)...);
+}
+
+template <typename... Args>
+void print_all(std::format_string<Args...> message, Args&&... args)
+{
+  detail::log_impl(Level::print, true, message, std::forward<Args>(args)...);
 }
 
 } // namespace logger
