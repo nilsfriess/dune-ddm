@@ -3,7 +3,7 @@
 #include "ddm/check.hh"
 #include "ddm/index.hh"
 
-#include <dune/istl/sparseindexranges.hh>
+#include <dune/istl/experimental/sparseindexranges.hh>
 
 #include <cstddef>
 #include <memory>
@@ -19,7 +19,7 @@ namespace ddm {
 class Pattern {
 public:
   // ISTL only supports unsigned index types
-  using ranges_type = Dune::SparseIndexRanges<std::make_unsigned_t<Index>>;
+  using ranges_type = Dune::Experimental::SparseIndexRanges<std::make_unsigned_t<Index>>;
 
   // avg_per_row is a performance hint for the initial reservation
   Pattern(Index rows, Index cols, Index avg_per_row = 0)
@@ -84,7 +84,7 @@ public:
   }
 
 private:
-  using builder_type = Dune::UnsequencedSparseIndexRangeBuilder<>;
+  using builder_type = Dune::Experimental::UnsequencedSparseIndexRangeBuilder<>;
 
   Index rows_;
   Index cols_;

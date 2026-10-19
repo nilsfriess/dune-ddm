@@ -10,7 +10,7 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <dune/istl/ibcrsmatrix.hh>
+#include <dune/istl/experimental/bcrsmatrix.hh>
 #include <memory>
 #include <span>
 #include <type_traits>
@@ -34,7 +34,7 @@ const IstlMat<T>& as_istl(const LocalMat<T>& A)
 template <class T>
 class IstlMat final : public LocalMat<T> {
 public:
-  using Native = Dune::IBCRSMatrix<T, std::make_unsigned_t<Index>>;
+  using Native = Dune::Experimental::BCRSMatrix<T, std::make_unsigned_t<Index>>;
 
   explicit IstlMat(const Dune::ParameterTree& config, const Pattern& pattern)
       : LocalMat<T>(config, pattern)

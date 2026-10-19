@@ -9,7 +9,7 @@
 
 #include <dune/common/exceptions.hh>
 #include <dune/common/parametertree.hh>
-#include <dune/istl/ibcrsmatrix.hh>
+#include <dune/istl/experimental/bcrsmatrix.hh>
 #include <dune/istl/solver.hh>
 #include <dune/istl/umfpack.hh>
 #include <memory>
@@ -84,7 +84,7 @@ private:
 
   Logger::Event* factorize_event_;
   Logger::Event* solve_event_;
-  Dune::UMFPack<Dune::IBCRSMatrix<T>> solver_;
+  Dune::UMFPack<Dune::Experimental::BCRSMatrix<T>> solver_;
 };
 
 // UMFPACK can't handle float, so we create a template specialisation that just throws when constructed
