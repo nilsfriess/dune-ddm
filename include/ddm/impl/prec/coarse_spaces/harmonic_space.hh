@@ -8,7 +8,7 @@
 #include "ddm/overlap.hh"
 #include "ddm/solver/solver.hh"
 #include "ddm/vec/vec.hh"
-#include "dune/ddm/logger.hh"
+#include "ddm/logger.hh"
 
 #include <algorithm>
 #include <dune/common/math.hh>

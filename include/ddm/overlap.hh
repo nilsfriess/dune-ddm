@@ -9,7 +9,7 @@
 #include "ddm/mat/mat.hh"
 #include "ddm/mat/pattern.hh"
 #include "ddm/sparse_exchange.hh"
-#include "dune/ddm/logger.hh"
+#include "ddm/logger.hh"
 
 #include <algorithm>
 #include <cstddef>

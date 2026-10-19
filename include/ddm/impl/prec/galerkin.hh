@@ -12,7 +12,7 @@
 #include "ddm/prec/prec.hh"
 #include "ddm/solver/solver.hh"
 #include "ddm/vec/host_view.hh"
-#include "dune/ddm/logger.hh"
+#include "ddm/logger.hh"
 
 #include <dune/common/parallel/mpitraits.hh>
 #include <dune/common/parametertree.hh>

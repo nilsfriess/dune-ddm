@@ -1,7 +1,7 @@
 #pragma once
 
 #include "communication_nodes.hh"
-#include "dune/ddm/logger.hh"
+#include "ddm/logger.hh"
 #include "neighbours.hh"
 
 #include <mpi.h>

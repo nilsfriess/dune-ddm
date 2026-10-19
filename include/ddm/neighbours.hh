@@ -2,7 +2,7 @@
 
 #include "ddm/communication_nodes.hh"
 #include "ddm/sparse_exchange.hh"
-#include "dune/ddm/logger.hh"
+#include "ddm/logger.hh"
 
 #include <algorithm>
 #include <map>

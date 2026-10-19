@@ -3,7 +3,7 @@
 #include "ddm/check.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/overlap.hh"
-#include "dune/ddm/logger.hh"
+#include "ddm/logger.hh"
 
 #include <algorithm>
 #include <dune/common/parametertree.hh>

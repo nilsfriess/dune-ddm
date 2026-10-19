@@ -8,7 +8,7 @@
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/pattern.hh"
 #include "ddm/vec/vec.hh"
-#include "dune/ddm/logger.hh"
+#include "ddm/logger.hh"
 
 #include <algorithm>
 #include <cstddef>

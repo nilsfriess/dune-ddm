@@ -8,7 +8,7 @@
 #include "ddm/prec/prec.hh"
 #include "ddm/solver/solver.hh"
 #include "ddm/vec/vec.hh"
-#include "dune/ddm/logger.hh"
+#include "ddm/logger.hh"
 
 #include <dune/common/parametertree.hh>
 #include <dune/istl/solvercategory.hh>

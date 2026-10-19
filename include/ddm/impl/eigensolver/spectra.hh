@@ -8,7 +8,7 @@
 #include "ddm/mat/mat.hh"
 #include "ddm/solver/solver.hh"
 #include "ddm/vec/vec.hh"
-#include "dune/ddm/logger.hh"
+#include "ddm/logger.hh"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wshadow"

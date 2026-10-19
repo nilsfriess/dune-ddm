@@ -10,7 +10,7 @@
 #include "ddm/impl/solver/direct.hh"
 #include "ddm/impl/solver/gmres.hh"
 #include "ddm/impl/vec/istlvec.hh"
-#include "dune/ddm/logger.hh"
+#include "ddm/logger.hh"
 #include "ddm/registry.hh"
 
 #include <complex>

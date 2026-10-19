@@ -6,7 +6,7 @@
 #include "ddm/index.hh"
 #include "ddm/vec/exchange_plan.hh"
 #include "ddm/vec/vec.hh"
-#include "dune/ddm/logger.hh"
+#include "ddm/logger.hh"
 
 #include <algorithm>
 #include <cstddef>
