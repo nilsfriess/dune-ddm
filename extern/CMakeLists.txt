@@ -72,7 +72,7 @@ else()
 endif()
 
 # TRL - header-only randomized linear algebra library
-# Requires Eigen3 and OpenMP (already found in root CMakeLists.txt)
+# Requires Eigen3 (already found in root CMakeLists.txt)
 target_include_directories(duneddm PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/trl/include>
   $<INSTALL_INTERFACE:extern/trl/include>

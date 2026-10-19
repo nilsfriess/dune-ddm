@@ -47,3 +47,15 @@
 	path = doc/doxygen-awesome-css
 	url = https://github.com/jothepro/doxygen-awesome-css.git
 	branch = main
+[submodule "extern/metis"]
+	path = extern/metis
+	url = https://bitbucket.org/petsc/pkg-metis.git
+[submodule "extern/parmetis"]
+	path = extern/parmetis
+	url = https://bitbucket.org/petsc/pkg-parmetis.git
+[submodule "extern/eigen"]
+	path = extern/eigen
+	url = https://gitlab.com/libeigen/eigen.git
+[submodule "extern/suitesparse"]
+	path = extern/suitesparse
+	url = https://github.com/DrTimothyAldenDavis/SuiteSparse.git

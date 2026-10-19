@@ -52,6 +52,10 @@ if(DDM_SANITIZE)
   message(STATUS "Sanitizers enabled for all targets: ${DDM_SANITIZE}")
 endif()
 
+# METIS, ParMETIS, SuiteSparse and Eigen from extern/. This has to come before
+# the DUNE modules are added, because they search for these libraries.
+include(extern/BundledDeps.cmake)
+
 # ---------------------------------------------------------------------------
 # Superbuild
 #
@@ -125,11 +129,7 @@ else()
   dune_add_library(duneddm SOURCES src/initialize.cc EXPORT_NAME Dune::DDM)
 endif()
 
-find_package(BLAS REQUIRED)
-find_package(LAPACK REQUIRED)
-find_package(OpenMP REQUIRED)
 find_package(MPI REQUIRED)
-find_package(AdaptiveCpp REQUIRED) # TODO: Don't make this a hard requirement
 
 find_package(cudss 0.8.0)
 if (cudss_FOUND)
