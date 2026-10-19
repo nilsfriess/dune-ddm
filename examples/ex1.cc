@@ -16,7 +16,7 @@
 #include <dune/common/parallel/mpihelper.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/common/parametertreeparser.hh>
-#include <dune/ddm/logger.hh>
+#include <ddm/logger.hh>
 #include <dune/grid/io/file/vtk/vtkwriter.hh>
 #include <dune/grid/uggrid.hh>
 #include <dune/grid/utility/parmetisgridpartitioner.hh>

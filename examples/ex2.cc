@@ -31,7 +31,7 @@
 #include <dune/common/parametertree.hh>
 #include <dune/common/parametertreeparser.hh>
 #include <dune/common/shared_ptr.hh>
-#include <dune/ddm/logger.hh>
+#include <ddm/logger.hh>
 #include <dune/grid/io/file/vtk/subsamplingvtkwriter.hh>
 #include <dune/grid/uggrid.hh>
 #include <dune/grid/utility/parmetisgridpartitioner.hh>
