@@ -3,6 +3,7 @@
 #include "ddm/check.hh"
 #include "ddm/coarse_space.hh"
 #include "ddm/communication.hh"
+#include "ddm/debug/vec_sink.hh"
 #include "ddm/index.hh"
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/mat.hh"
@@ -16,6 +17,7 @@
 #include <dune/common/parallel/mpitraits.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/istl/solvercategory.hh>
+#include <format>
 #include <map>
 #include <memory>
 #include <mpi.h>
@@ -221,6 +223,20 @@ public:
     c_.emplace(V.create_vector(V.cols()));
 
     setup_coarse_problem(config, detail::coarse_matrix_rows(A_ovlp, *cs_));
+
+    // Visualise the basis vectors if the user has installed a vector sink
+    auto save_vectors = config.get("save_vectors", -1);
+    if (save_vectors > 0 and debug::has_vec_sink<T>()) {
+      auto v = A_ovlp.create_domain_vector();
+      auto v_novlp = this->mat()->create_domain_vector();
+      for (Index i = 0; i < std::min<Index>(cs_->basis->cols(), save_vectors); ++i) {
+        v.zero();
+        if (debug::vec_sink_debug_rank<T>() == this->mat()->communication()->rank()) cs_->basis->extract_column_to_vec(i, v);
+        cs_->overlap->comm->reduce(v);
+        v_novlp.copy_n_from(v, v_novlp.size());
+        debug::add_vec_to_sink(std::format("basis{:04d}", i), v_novlp);
+      }
+    }
   }
 
   Dune::SolverCategory::Category category() const override { return this->mat()->category(); }
