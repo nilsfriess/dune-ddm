@@ -39,6 +39,7 @@ public:
   // Collective
   TwoLevelSchwarzPrec(const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A)
       : Prec<T>(std::move(A))
+      , setup_event_(start_setup_event())
       , deflated_(parse_coarse_mode(config.get("coarse_mode", "additive")))
       , schwarz_(fine_config(config), this->mat())
       , tmp_(this->mat()->create_domain_vector())
@@ -57,12 +58,22 @@ public:
     Logger::get().endEvent(Logger::get().registerOrGetEvent("Two-level Schwarz", "coarse space"));
 
     coarse_correction_ = std::make_unique<CoarseCorrection<T>>(config.sub("coarse"), this->mat(), schwarz_.get_overlapping_mat()->local(), coarse_space_);
+    Logger::get().endEvent(setup_event_);
   }
 
   // On a single rank, the matrix is sequential, and so is the preconditioner
   Dune::SolverCategory::Category category() const override { return this->mat()->category(); }
 
 private:
+  // Registers and starts the setup event. Called in the member initializer list, so the event also covers the
+  // construction of the fine level
+  static Logger::Event* start_setup_event()
+  {
+    auto* event = Logger::get().registerOrGetEvent("Two-level Schwarz", "setup");
+    Logger::get().startEvent(event);
+    return event;
+  }
+
   static bool parse_coarse_mode(const std::string& mode)
   {
     DDM_CHECK(mode == "additive" || mode == "deflated", "two-level schwarz: unknown coarse_mode '{}', expected 'additive' or 'deflated'", mode);
@@ -87,6 +98,13 @@ private:
 
   void do_apply(Vec<T>& z, const Vec<T>& r) override
   {
+    // The fine-level subdomain solver is set up on its first use, count that as setup and not as apply time
+    if (!fine_solver_set_up_) {
+      Logger::ScopedLog sl{setup_event_};
+      schwarz_.get_subdomain_solver();
+      fine_solver_set_up_ = true;
+    }
+
     Logger::ScopedLog sl{apply_event_};
 
     // Both apply() overwrite their output completely
@@ -129,7 +147,9 @@ private:
   }
 
   // The coarse level is built from the overlapping index set and the overlapping matrix of the fine level, so the
-  // fine level must be constructed first: do not change the order of the members.
+  // fine level must be constructed first: do not change the order of the members. The setup event is started in the
+  // member initializer list, so it comes first to cover the whole construction.
+  Logger::Event* setup_event_;
   bool deflated_;
   SchwarzPrec<T> schwarz_;
   std::shared_ptr<CoarseSpace<T>> coarse_space_;
@@ -137,6 +157,8 @@ private:
 
   Vec<T> tmp_; ///< the coarse correction in apply()
   Vec<T> res_; ///< the residual of the fine-level correction in apply() (deflated only)
+
+  bool fine_solver_set_up_ = false; ///< false until the first apply(), which sets up the fine-level subdomain solver
 
   Logger::Event* apply_event_;
 };
