@@ -2,13 +2,13 @@
 
 #include "ddm/eigensolver/eigensolver.hh"
 #include "ddm/index.hh"
+#include "ddm/logger.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/mat/pattern.hh"
 #include "ddm/multivec/multivec.hh"
 #include "ddm/overlap.hh"
 #include "ddm/solver/solver.hh"
 #include "ddm/vec/vec.hh"
-#include "ddm/logger.hh"
 
 #include <algorithm>
 #include <dune/common/math.hh>
@@ -26,13 +26,14 @@
 #endif
 
 namespace ddm {
-// The space H of discrete A-harmonic functions on the overlapping subdomain: (A u)_i = 0 for the interior dofs,
-// u_i = 0 for the Dirichlet dofs, the boundary dofs are free.
+// The space H of discrete A-harmonic functions on the index set of A, e.g. the overlapping subdomain or a Region of it:
+// (A u)_i = 0 for the interior dofs, u_i = 0 for the Dirichlet dofs, the boundary dofs are free.
 template <class T>
 class HarmonicSpace {
 public:
-  // A:         the operator that defines harmonicity (the overlapping matrix of the actual operator)
-  // boundary:  the outermost layer without the Dirichlet dofs, sorted
+  // A:         the operator that defines harmonicity (e.g. the overlapping matrix of the actual operator or its
+  //            restriction to a region), only its rows of the interior dofs are used
+  // boundary:  the free dofs (e.g. the outermost layer of the overlapping subdomain) without the Dirichlet dofs, sorted
   // dirichlet: the Dirichlet dofs, sorted
   // A_dir:     solver for A with identity rows on boundary \cup dirichlet, nullptr if not available
   HarmonicSpace(std::shared_ptr<const Mat<T>> A, std::vector<Index> boundary, std::vector<Index> dirichlet, std::shared_ptr<Solver<T>> A_dir = nullptr)
@@ -64,11 +65,26 @@ public:
     DDM_ASSERT(sum == std::size_t(A_->rows()), "HarmonicSpace: the sum of the number of partitioned dofs {} does not equal the total number of dofs in the subdomain {}", sum, A_->rows());
   }
 
-  const Mat<T>& constraint_matrix() const { return *A_; }
-  std::span<const Index> boundary() const { return boundary_; }
-  std::span<const Index> dirichlet() const { return dirichlet_; }
-  std::span<const Index> interior() const { return interior_; }
-  bool can_project() const { return A_dir_ != nullptr; }
+  const Mat<T>& constraint_matrix() const
+  {
+    return *A_;
+  }
+  std::span<const Index> boundary() const
+  {
+    return boundary_;
+  }
+  std::span<const Index> dirichlet() const
+  {
+    return dirichlet_;
+  }
+  std::span<const Index> interior() const
+  {
+    return interior_;
+  }
+  bool can_project() const
+  {
+    return A_dir_ != nullptr;
+  }
 
   // y = harmonic function with the boundary values of x (projection onto H). Requires A_dir
   void project(const Vec<T>& x, Vec<T>& y) const
@@ -114,6 +130,31 @@ private:
 };
 
 namespace detail {
+
+/** The space H of discrete A-harmonic functions on the overlapping subdomain of ovlp, with the outermost layer as the
+ *  boundary. A_ovlp is the restriction of A to the overlapping subdomain, dirichlet are the Dirichlet dofs, sorted (see
+ *  overlapping_dirichlet_dofs()), and A_dir is a solver as described in HarmonicSpace (nullptr if not available).
+ */
+template <class T>
+HarmonicSpace<T> subdomain_harmonic_space(const Overlap& ovlp, std::shared_ptr<const Mat<T>> A_ovlp, std::vector<Index> dirichlet, std::shared_ptr<Solver<T>> A_dir)
+{
+  // Find the subdomain boundary indices (without the dirichlet dofs)
+  std::vector<Index> boundary;
+  boundary.reserve(ovlp.layer.size() - ovlp.n_original); // This is a (quite generous) upper bound
+  for (std::size_t i = 0; i < ovlp.layer.size(); ++i)
+    if (ovlp.layer[i] == ovlp.layers) boundary.push_back(static_cast<Index>(i));
+  std::ranges::sort(boundary);
+
+  // Remove dofs from boundary that are also Dirichlet dofs
+  auto ib = std::begin(dirichlet);
+  auto iter = std::remove_if(std::begin(boundary), std::end(boundary), [&](Index x) -> bool {
+    while (ib != std::end(dirichlet) && *ib < x) ++ib;
+    return (ib != std::end(dirichlet) && *ib == x);
+  });
+  boundary.erase(iter, boundary.end());
+
+  return HarmonicSpace<T>(std::move(A_ovlp), std::move(boundary), std::move(dirichlet), std::move(A_dir));
+}
 
 /* Enforces x in H with Lagrange multipliers mu, one per interior dof, i.e. solves the saddle point eigenproblem
  *

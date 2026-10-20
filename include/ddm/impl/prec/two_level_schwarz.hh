@@ -5,12 +5,13 @@
 #include "ddm/impl/prec/coarse_spaces/geneo.hh"
 #include "ddm/impl/prec/coarse_spaces/msgfem.hh"
 #include "ddm/impl/prec/coarse_spaces/nicolaides.hh"
+#include "ddm/impl/prec/coarse_spaces/ring.hh"
 #include "ddm/impl/prec/galerkin.hh"
 #include "ddm/impl/prec/schwarz.hh"
+#include "ddm/logger.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/prec/prec.hh"
 #include "ddm/vec/vec.hh"
-#include "ddm/logger.hh"
 
 #include <dune/common/parametertree.hh>
 #include <dune/istl/solvercategory.hh>
@@ -19,19 +20,20 @@
 #include <utility>
 
 namespace ddm {
-/** Two-level Schwarz preconditioner with a GenEO coarse space. With M^{-1} the fine level (see SchwarzPrec) and
- *  Q = R_0^T A_0^{-1} R_0 the coarse correction (see CoarseCorrection), it applies
+/** Two-level Schwarz preconditioner. With M^{-1} the fine level (see SchwarzPrec) and Q = R_0^T A_0^{-1} R_0 the
+ *  coarse correction (see CoarseCorrection), it applies
  *  - additive: z = M^{-1} r + Q r
  *  - deflated: y = M^{-1} r, z = y + Q (r - A y)
  *
  *  Config:
- *  - coarse_mode:  additive | deflated (default additive)
- *  - coarse_space: nicolaides | geneo | msgfem
- *  - overlap:      overlap of the fine level, takes precedence over fine.overlap
- *  - pou:          partition of unity of both levels, takes precedence over fine.pou
- *  - fine:         config of the fine level (see SchwarzPrec)
- *  - coarse:       config of the coarse correction (see CoarseCorrection)
- *  - coarse_space: config of the coarse space (see geneo_coarse_space())
+ *  - coarse_mode:       additive | deflated (default additive)
+ *  - coarse_space_type: nicolaides | geneo | msgfem | geneo_ring | msgfem_ring (default nicolaides)
+ *  - overlap:           overlap of the fine level, takes precedence over fine.overlap
+ *  - pou:               partition of unity of both levels, takes precedence over fine.pou
+ *  - fine:              config of the fine level (see SchwarzPrec)
+ *  - coarse:            config of the coarse correction (see CoarseCorrection)
+ *  - coarse_space:      config of the coarse space (see geneo_coarse_space(), msgfem_coarse_space(),
+ *                       ring_coarse_space())
  */
 template <class T>
 class TwoLevelSchwarzPrec final : public Prec<T> {
@@ -54,6 +56,9 @@ public:
     else if (coarse_space_type == "msgfem")
       coarse_space_ = msgfem_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat(),
                                              schwarz_.eliminates_boundary() ? schwarz_.get_subdomain_solver() : nullptr);
+    else if (coarse_space_type == "geneo_ring" || coarse_space_type == "msgfem_ring")
+      coarse_space_ = ring_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat(),
+                                           schwarz_.eliminates_boundary() ? schwarz_.get_subdomain_solver() : nullptr, coarse_space_type == "msgfem_ring");
     else DDM_CHECK(false, "TwoLevelSchwarzPrec: unknown coarse space type {}", coarse_space_type);
     Logger::get().endEvent(Logger::get().registerOrGetEvent("Two-level Schwarz", "coarse space"));
 
@@ -62,7 +67,10 @@ public:
   }
 
   // On a single rank, the matrix is sequential, and so is the preconditioner
-  Dune::SolverCategory::Category category() const override { return this->mat()->category(); }
+  Dune::SolverCategory::Category category() const override
+  {
+    return this->mat()->category();
+  }
 
 private:
   // Registers and starts the setup event. Called in the member initializer list, so the event also covers the
@@ -119,7 +127,10 @@ private:
     z += tmp_;
   }
 
-  void do_update() override { TODO("do_update"); }
+  void do_update() override
+  {
+    TODO("do_update");
+  }
 
   void do_info() const override
   {
