@@ -1,0 +1,175 @@
+# Doxygen configuration for dune-ddm.
+#
+# All paths below are relative to the repository root, so run doxygen from
+# there:
+#
+#     doxygen doc/Doxyfile
+#
+# and open doc/html/index.html. From the build directory, `make docs` does the
+# same thing. `make docs-coverage` reruns the same configuration with
+# EXTRACT_ALL disabled to list undocumented entities.
+#
+# This is a deliberately standalone Doxyfile rather than DUNE's
+# add_doxygen_target() machinery (doc/doxygen/Doxylocal + generated Doxyfile),
+# so that it can be edited and rerun without reconfiguring the superbuild.
+
+#---------------------------------------------------------------------------
+# Project
+#---------------------------------------------------------------------------
+PROJECT_NAME           = "dune-ddm"
+PROJECT_BRIEF          = "Domain decomposition methods for DUNE"
+PROJECT_NUMBER         = 0.0.1
+
+OUTPUT_DIRECTORY       = doc
+HTML_OUTPUT            = html
+CREATE_SUBDIRS         = NO
+OUTPUT_LANGUAGE        = English
+
+#---------------------------------------------------------------------------
+# Input
+#---------------------------------------------------------------------------
+INPUT                  = README.md \
+                         dune/ddm
+RECURSIVE              = YES
+FILE_PATTERNS          = *.hh *.cc *.md
+USE_MDFILE_AS_MAINPAGE = README.md
+
+# Sources that @include / @snippet can pull code from.
+EXAMPLE_PATH           = examples
+EXAMPLE_RECURSIVE      = NO
+
+# Show paths relative to the repository root instead of absolute ones.
+STRIP_FROM_PATH        = .
+STRIP_FROM_INC_PATH    = .
+
+#---------------------------------------------------------------------------
+# What to extract
+#---------------------------------------------------------------------------
+# EXTRACT_ALL makes undocumented entities show up too, so the generated pages
+# are a complete picture of the module rather than only the documented parts.
+# Note that it also suppresses WARN_IF_UNDOCUMENTED -- see `make docs-coverage`
+# for the report on what is still missing a comment.
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_CLASSES  = YES
+EXTRACT_ANON_NSPACES   = NO
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+INTERNAL_DOCS          = NO
+
+# Keep members in declaration order; for these headers that reads better than
+# alphabetical.
+SORT_MEMBER_DOCS       = NO
+SORT_BRIEF_DOCS        = NO
+SORT_MEMBERS_CTORS_1ST = YES
+
+#---------------------------------------------------------------------------
+# Comment style
+#---------------------------------------------------------------------------
+# The codebase mixes explicit @brief with plain leading sentences, so let the
+# first sentence act as the brief where @brief is absent.
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = NO
+MULTILINE_CPP_IS_BRIEF = NO
+INHERIT_DOCS           = YES
+MARKDOWN_SUPPORT       = YES
+AUTOLINK_SUPPORT       = YES
+TAB_SIZE               = 2
+
+#---------------------------------------------------------------------------
+# C++ handling
+#---------------------------------------------------------------------------
+BUILTIN_STL_SUPPORT    = YES
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES
+SEARCH_INCLUDES        = NO
+
+# Document the code paths that are active in a full-featured build, and define
+# DOXYGEN so headers can hide things from the docs with #ifndef DOXYGEN.
+PREDEFINED             = DOXYGEN=1 \
+                         HAVE_MPI=1 \
+                         HAVE_DUNE_PDELAB=1 \
+                         HAVE_SUITESPARSE_UMFPACK=1 \
+                         DUNE_DDM_HAVE_SPECTRA=1 \
+                         DUNE_DDM_HAVE_STRUMPACK=1
+
+#---------------------------------------------------------------------------
+# Warnings
+#---------------------------------------------------------------------------
+QUIET                  = NO
+WARNINGS               = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_NO_PARAMDOC       = YES
+WARN_AS_ERROR          = NO
+WARN_LOGFILE           = doc/doxygen-warnings.log
+
+#---------------------------------------------------------------------------
+# HTML output
+#---------------------------------------------------------------------------
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_XML           = NO
+SEARCHENGINE           = YES
+HTML_DYNAMIC_SECTIONS  = YES
+
+# Render \f$ ... \f$ formulas with MathJax rather than by shelling out to
+# latex. The headers use amsmath commands (\operatorname, \text) that are not
+# in doxygen's default latex preamble, which makes the latex path fail; MathJax
+# handles them out of the box and keeps the build to a few seconds. The cost is
+# that viewing the pages needs network access for the MathJax CDN.
+USE_MATHJAX            = YES
+MATHJAX_VERSION        = MathJax_3
+MATHJAX_FORMAT         = chtml
+
+# doxygen-awesome-css requires these three settings. The stylesheet follows the
+# browser's prefers-color-scheme, so light and dark both work without a toggle.
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+FULL_SIDEBAR           = NO
+HTML_COLORSTYLE        = LIGHT
+
+HTML_EXTRA_STYLESHEET  = doc/doxygen-awesome-css/doxygen-awesome.css \
+                         doc/doxygen-awesome-css/doxygen-awesome-sidebar-only.css
+
+#---------------------------------------------------------------------------
+# Source browser
+#---------------------------------------------------------------------------
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+STRIP_CODE_COMMENTS    = NO
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = NO
+VERBATIM_HEADERS       = YES
+
+#---------------------------------------------------------------------------
+# Diagrams
+#---------------------------------------------------------------------------
+HAVE_DOT               = YES
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+CLASS_GRAPH            = YES
+# Collaboration and include graphs are near-unreadable for these template-heavy
+# headers, so only the inheritance graphs are kept.
+COLLABORATION_GRAPH    = NO
+TEMPLATE_RELATIONS     = NO
+INCLUDE_GRAPH          = NO
+INCLUDED_BY_GRAPH      = NO
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+DOT_GRAPH_MAX_NODES    = 60
+MAX_DOT_GRAPH_DEPTH    = 3
+
+#---------------------------------------------------------------------------
+# Cross-linking into the upstream DUNE documentation
+#---------------------------------------------------------------------------
+# Building the vendored modules' docs (`make doc` in the build tree) produces
+# .tag files. Pointing TAGFILES at them turns references to Dune::BCRSMatrix &
+# co. into links. Left off by default because it requires those docs to be
+# built first, which takes a while:
+#
+# TAGFILES = build/extern/dune-common/doc/doxygen/dune-common.tag=../../../build/extern/dune-common/doc/doxygen/html \
+#            build/extern/dune-istl/doc/doxygen/dune-istl.tag=../../../build/extern/dune-istl/doc/doxygen/html
+GENERATE_TAGFILE       = doc/dune-ddm.tag

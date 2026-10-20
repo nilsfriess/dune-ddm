@@ -22,7 +22,7 @@
 [submodule "extern/dune-istl"]
 	path = extern/dune-istl
 	url = https://gitlab.dune-project.org/core/dune-istl.git
-	branch = releases/2.11
+	branch = master
 [submodule "extern/dune-localfunctions"]
 	path = extern/dune-localfunctions
 	url = https://gitlab.dune-project.org/core/dune-localfunctions.git
@@ -43,3 +43,19 @@
 	path = extern/dune-pdelab
 	url = https://gitlab.dune-project.org/pdelab/dune-pdelab.git
 	branch = releases/2.10
+[submodule "doc/doxygen-awesome-css"]
+	path = doc/doxygen-awesome-css
+	url = https://github.com/jothepro/doxygen-awesome-css.git
+	branch = main
+[submodule "extern/metis"]
+	path = extern/metis
+	url = https://bitbucket.org/petsc/pkg-metis.git
+[submodule "extern/parmetis"]
+	path = extern/parmetis
+	url = https://bitbucket.org/petsc/pkg-parmetis.git
+[submodule "extern/eigen"]
+	path = extern/eigen
+	url = https://gitlab.com/libeigen/eigen.git
+[submodule "extern/suitesparse"]
+	path = extern/suitesparse
+	url = https://github.com/DrTimothyAldenDavis/SuiteSparse.git

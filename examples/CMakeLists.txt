@@ -1,36 +1,27 @@
 if (${dune-pdelab_FOUND})
-  option(DUNE_DDM_BUILD_EXAMPLES "Try to build the examples" On)
-  if (${DUNE_DDM_BUILD_EXAMPLES})
-    # Nonlinear Poisson example
-    add_executable(nonlinearpoisson EXCLUDE_FROM_ALL nonlinearpoisson.cc)
-    target_link_libraries(nonlinearpoisson PUBLIC duneddm)
-    add_dune_blas_lapack_flags(nonlinearpoisson)
-    target_link_dune_default_libraries(nonlinearpoisson)
-    dune_symlink_to_source_files(FILES nonlinearpoisson.ini)
+   # 3d linear elasticity example
+   add_executable(ex1 ex1.cc)
+   target_link_libraries(ex1 PUBLIC duneddm)
+   target_link_dune_default_libraries(ex1)
 
-    # PDELab example demonstrating the unified DDM framework
-    add_executable(pdelab_example EXCLUDE_FROM_ALL pdelab_example.cc)
-    dune_symlink_to_source_files(FILES
-      coefficient.lua
-      convection_diffusion_coefficient.lua
-      layers_coefficient_3d.lua
-      layers_coefficient.lua
-      poisson_coefficient.lua
-      symmetric_convection_diffusion_coefficient.lua
-    )
-    target_link_libraries(pdelab_example PUBLIC duneddm)
-    # pdelab_example is the only example that uses Lua (via the *_problems.hh
-    # headers). LuaJIT is an examples-only dependency, so it is linked here
-    # rather than through the duneddm interface.
-    target_link_libraries(pdelab_example PRIVATE luajit)
-    target_link_dune_default_libraries(pdelab_example)
-    dune_symlink_to_source_files(FILES pdelab_example.ini)
+   # 2d convection-diffusion example
+   add_executable(ex2 ex2.cc)
+   target_link_libraries(ex2 PUBLIC duneddm)
+   target_link_dune_default_libraries(ex2)
 
-    add_executable(matrix_market_test EXCLUDE_FROM_ALL matrix_market_test.cc)
-    target_link_libraries(matrix_market_test PUBLIC duneddm)
-    target_link_dune_default_libraries(matrix_market_test)
-    dune_symlink_to_source_files(FILES matrix_market_test.ini)
-  endif()
-else()
-  message(WARNING "PDELab not found, not building examples")
+   # 2d diffusion example with DG
+   add_executable(ex3 ex3.cc)
+   target_link_libraries(ex3 PUBLIC duneddm)
+   target_link_dune_default_libraries(ex3)
+
+   # 2d Helmholtz example
+   add_executable(ex4 ex4.cc)
+   target_link_libraries(ex4 PUBLIC duneddm)
+   target_link_dune_default_libraries(ex4)
+
+   # 2d Helmholtz example on the BP 2004 velocity model, which it reads from data/
+   add_executable(ex5 ex5.cc)
+   target_link_libraries(ex5 PUBLIC duneddm)
+   target_link_dune_default_libraries(ex5)
+   target_compile_definitions(ex5 PRIVATE DDM_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
 endif()

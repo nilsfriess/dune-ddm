@@ -1,0 +1,391 @@
+#pragma once
+
+#include "ddm/eigensolver/eigensolver.hh"
+#include "ddm/index.hh"
+#include "ddm/logger.hh"
+#include "ddm/mat/mat.hh"
+#include "ddm/mat/pattern.hh"
+#include "ddm/multivec/multivec.hh"
+#include "ddm/overlap.hh"
+#include "ddm/solver/solver.hh"
+#include "ddm/vec/vec.hh"
+
+#include <algorithm>
+#include <dune/common/math.hh>
+#include <dune/common/parametertree.hh>
+#include <memory>
+#include <span>
+#include <utility>
+#include <vector>
+
+#ifdef DUNE_DDM_HAVE_SPECTRA
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wextra-semi"
+#include <Eigen/Eigenvalues>
+#pragma GCC diagnostic pop
+#endif
+
+namespace ddm {
+// The space H of discrete A-harmonic functions on the index set of A, e.g. the overlapping subdomain or a Region of it:
+// (A u)_i = 0 for the interior dofs, u_i = 0 for the Dirichlet dofs, the boundary dofs are free.
+template <class T>
+class HarmonicSpace {
+public:
+  // A:         the operator that defines harmonicity (e.g. the overlapping matrix of the actual operator or its
+  //            restriction to a region), only its rows of the interior dofs are used
+  // boundary:  the free dofs (e.g. the outermost layer of the overlapping subdomain) without the Dirichlet dofs, sorted
+  // dirichlet: the Dirichlet dofs, sorted
+  // A_dir:     solver for A with identity rows on boundary \cup dirichlet, nullptr if not available
+  HarmonicSpace(std::shared_ptr<const Mat<T>> A, std::vector<Index> boundary, std::vector<Index> dirichlet, std::shared_ptr<Solver<T>> A_dir = nullptr)
+      : A_(std::move(A))
+      , boundary_(std::move(boundary))
+      , dirichlet_(std::move(dirichlet))
+      , A_dir_(std::move(A_dir))
+  {
+    // Interior dofs are those that are neither boundary nor Dirichlet dofs; the following algorithm works
+    // because boundary and dirichlet are sorted by assumption
+    interior_.reserve(A_->rows());
+    std::size_t i_boundary = 0;
+    std::size_t i_dirichlet = 0;
+    for (Index i = 0; i < A_->rows(); ++i) {
+      if (i_boundary < boundary_.size() && boundary_[i_boundary] == i) {
+        i_boundary++;
+        continue;
+      }
+
+      if (i_dirichlet < dirichlet_.size() && dirichlet_[i_dirichlet] == i) {
+        i_dirichlet++;
+        continue;
+      }
+
+      // The current i is neither in the boundary list nor in the dirichlet list, so it's an interior dof
+      interior_.push_back(i);
+    }
+    const auto sum = boundary_.size() + dirichlet_.size() + interior_.size();
+    DDM_ASSERT(sum == std::size_t(A_->rows()), "HarmonicSpace: the sum of the number of partitioned dofs {} does not equal the total number of dofs in the subdomain {}", sum, A_->rows());
+  }
+
+  const Mat<T>& constraint_matrix() const
+  {
+    return *A_;
+  }
+  std::span<const Index> boundary() const
+  {
+    return boundary_;
+  }
+  std::span<const Index> dirichlet() const
+  {
+    return dirichlet_;
+  }
+  std::span<const Index> interior() const
+  {
+    return interior_;
+  }
+  bool can_project() const
+  {
+    return A_dir_ != nullptr;
+  }
+
+  // y = harmonic function with the boundary values of x (projection onto H). Requires A_dir
+  void project(const Vec<T>& x, Vec<T>& y) const
+  {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Harmonic space", "project")};
+    DDM_CHECK(can_project(), "HarmonicSpace: project() requires a solver for the matrix, pass A_dir to the constructor");
+    if (!rhs_.has_value()) rhs_.emplace(A_->create_range_vector());
+
+    {
+      rhs_->zero();
+      auto x_host = x.host_view(read);
+      auto rhs_host = rhs_->host_view(read_write);
+      for (auto idx : boundary_) rhs_host[idx] = x_host[idx];
+    }
+    A_dir_->solve(*rhs_, y);
+  }
+
+  // y = transpose of project() applied to x: the boundary values of A_dir^{-T} x, zero elsewhere. Requires A_dir and
+  // that its solver supports solve_transposed()
+  void project_transposed(const Vec<T>& x, Vec<T>& y) const
+  {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Harmonic space", "project transposed")};
+    DDM_CHECK(can_project(), "HarmonicSpace: project_transposed() requires a solver for the matrix, pass A_dir to the constructor");
+    if (!tmp_.has_value()) tmp_.emplace(A_->create_domain_vector());
+
+    tmp_->zero();
+    A_dir_->solve_transposed(x, *tmp_);
+
+    y.zero();
+    auto tmp_host = std::as_const(*tmp_).host_view(read);
+    auto y_host = y.host_view(read_write);
+    for (auto idx : boundary_) y_host[idx] = tmp_host[idx];
+  }
+
+private:
+  std::shared_ptr<const Mat<T>> A_;
+  std::vector<Index> boundary_;
+  std::vector<Index> dirichlet_;
+  std::vector<Index> interior_;
+  std::shared_ptr<Solver<T>> A_dir_;
+  mutable std::optional<Vec<T>> rhs_; ///< x with everything except the boundary values set to zero
+  mutable std::optional<Vec<T>> tmp_; ///< A_dir^{-T} x in project_transposed()
+};
+
+namespace detail {
+
+/** The space H of discrete A-harmonic functions on the overlapping subdomain of ovlp, with the outermost layer as the
+ *  boundary. A_ovlp is the restriction of A to the overlapping subdomain, dirichlet are the Dirichlet dofs, sorted (see
+ *  overlapping_dirichlet_dofs()), and A_dir is a solver as described in HarmonicSpace (nullptr if not available).
+ */
+template <class T>
+HarmonicSpace<T> subdomain_harmonic_space(const Overlap& ovlp, std::shared_ptr<const Mat<T>> A_ovlp, std::vector<Index> dirichlet, std::shared_ptr<Solver<T>> A_dir)
+{
+  // Find the subdomain boundary indices (without the dirichlet dofs)
+  std::vector<Index> boundary;
+  boundary.reserve(ovlp.layer.size() - ovlp.n_original); // This is a (quite generous) upper bound
+  for (std::size_t i = 0; i < ovlp.layer.size(); ++i)
+    if (ovlp.layer[i] == ovlp.layers) boundary.push_back(static_cast<Index>(i));
+  std::ranges::sort(boundary);
+
+  // Remove dofs from boundary that are also Dirichlet dofs
+  auto ib = std::begin(dirichlet);
+  auto iter = std::remove_if(std::begin(boundary), std::end(boundary), [&](Index x) -> bool {
+    while (ib != std::end(dirichlet) && *ib < x) ++ib;
+    return (ib != std::end(dirichlet) && *ib == x);
+  });
+  boundary.erase(iter, boundary.end());
+
+  return HarmonicSpace<T>(std::move(A_ovlp), std::move(boundary), std::move(dirichlet), std::move(A_dir));
+}
+
+/* Enforces x in H with Lagrange multipliers mu, one per interior dof, i.e. solves the saddle point eigenproblem
+ *
+ *   [ A  C^H ] [x ]          [ B  0 ] [x ]
+ *   [ C  0   ] [mu] = lambda [ 0  0 ] [mu]
+ *
+ * where C consists of the interior rows of the constraint matrix and C^H is its conjugate transpose. The Dirichlet dofs are not unknowns (x is zero
+ * there), so x only has the interior and boundary dofs, numbered interior first, then boundary. The multipliers
+ * follow after them.
+ */
+template <class T>
+std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_saddle_point(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, const HarmonicSpace<T>& H)
+{
+  const Index n = A->rows();
+  const Index n_interior = std::ssize(H.interior());
+  const Index n_x = n_interior + std::ssize(H.boundary());
+  const Index n_big = n_x + n_interior; // (n_interior + n_boundary) + n_interior  (upper block + lower block)
+
+  // Position of every dof in the saddle point system, -1 for the Dirichlet dofs
+  std::vector<Index> map(n, -1);
+  for (Index k = 0; k < n_interior; ++k) map[H.interior()[k]] = k;
+  for (Index k = 0; k < n_x - n_interior; ++k) map[H.boundary()[k]] = n_interior + k;
+
+  const auto a = A->host_csr();
+  const auto b = B->host_csr();
+  const auto c = H.constraint_matrix().local().host_csr();
+
+  // Calls f(row, col, value) for all entries of csr in rows and columns that are not Dirichlet dofs, in the numbering
+  // of the saddle point system. If interior_rows_only, only the interior rows are visited.
+  const auto for_each_entry = [&](const HostCsr<T>& csr, bool interior_rows_only, auto&& f) {
+    for (Index i = 0; i < n; ++i) {
+      const auto r = map[i];
+      if (r < 0 || (interior_rows_only && r >= n_interior)) continue;
+      for (auto k = csr.row_ptr[i]; k < csr.row_ptr[i + 1]; ++k)
+        if (const auto col = map[csr.cols[k]]; col >= 0) f(r, col, csr.values[k]);
+    }
+  };
+
+  // Left-hand side: A in the upper left block, C below it and C^H to its right (the conjugate transpose, so that the
+  // matrix is Hermitian if A is; for real T this is C^T)
+  Pattern lhs_pattern(n_big, n_big);
+  for_each_entry(a, false, [&](Index r, Index col, T) { lhs_pattern.add(r, col); });
+  for_each_entry(c, true, [&](Index r, Index col, T) {
+    lhs_pattern.add(n_x + r, col);
+    lhs_pattern.add(col, n_x + r);
+  });
+  lhs_pattern.finalize();
+
+  auto lhs = A->create_like(lhs_pattern);
+  for_each_entry(a, false, [&](Index r, Index col, T v) { lhs->add_values(std::span(&r, 1), std::span(&col, 1), std::span(&v, 1)); });
+  for_each_entry(c, true, [&](Index r, Index col, T v) {
+    const Index mu = n_x + r;
+    const T v_conj = Dune::conjugateComplex(v);
+    lhs->add_values(std::span(&mu, 1), std::span(&col, 1), std::span(&v, 1));
+    lhs->add_values(std::span(&col, 1), std::span(&mu, 1), std::span(&v_conj, 1));
+  });
+  lhs->assemble();
+
+  // Right-hand side: B in the upper left block, zero for the multipliers
+  Pattern rhs_pattern(n_big, n_big);
+  for_each_entry(b, false, [&](Index r, Index col, T) { rhs_pattern.add(r, col); });
+  rhs_pattern.finalize();
+
+  auto rhs = B->create_like(rhs_pattern);
+  for_each_entry(b, false, [&](Index r, Index col, T v) { rhs->add_values(std::span(&r, 1), std::span(&col, 1), std::span(&v, 1)); });
+  rhs->assemble();
+
+  auto eigensolver = create_eigensolver<T>(config.sub("eigensolver"), lhs, rhs);
+  eigensolver->solve();
+
+  // Drop the multipliers and go back to the original numbering, with zeros at the Dirichlet dofs
+  const auto big = eigensolver->vectors();
+  auto vectors = std::shared_ptr<MultiVec<T>>(A->create_domain_multivector(big->cols()));
+  {
+    const auto big_view = std::as_const(*big).host_view(read);
+    auto view = vectors->host_view(write);
+
+    const std::size_t m_big = n_big;
+    const std::size_t cols = big->cols();
+    for (std::size_t col = 0; col < cols; ++col)
+      for (std::size_t i = 0; i < std::size_t(n); ++i) {
+        const auto r = map[i];
+        view.data()[col * n + i] = r < 0 ? T{0} : big_view.data()[col * m_big + r];
+      }
+  }
+  return vectors;
+}
+
+template <class T>
+std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_projected(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, const HarmonicSpace<T>& H)
+{
+  DDM_CHECK(H.can_project(), "solve_harmonic_gevp_projected(): the HarmonicSpace object must be able to project into the space, pass a suitable solver to its constructor");
+  auto eigensolver = create_eigensolver<T>(config.sub("eigensolver"), A, B);
+  eigensolver->set_projection([&](const Vec<T>& x, Vec<T>& y) { H.project(x, y); });
+  eigensolver->solve();
+  return eigensolver->vectors();
+}
+
+/* Like solve_harmonic_gevp_projected(), but the projection is applied on both sides of the shift-invert solve: with
+ * P = project() the operator is P (A - sigma B)^{-1} P^T B, which is self-adjoint in the B inner product for every
+ * shift. If A is the Neumann matrix of the constraint matrix, this is the same eigenproblem as for the other methods.
+ * Otherwise (e.g. A the Neumann matrix of the symmetric part of a non-symmetric constraint matrix), it is a different
+ * one: the harmonic functions are measured in the A-energy of the A-harmonic function with the same boundary values.
+ * Needs a solver for the constraint matrix that supports solve_transposed().
+ */
+template <class T>
+std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_two_sided(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, const HarmonicSpace<T>& H)
+{
+  DDM_CHECK(H.can_project(), "solve_harmonic_gevp_two_sided(): the HarmonicSpace object must be able to project into the space, pass a suitable solver to its constructor");
+  auto eigensolver = create_eigensolver<T>(config.sub("eigensolver"), A, B);
+  eigensolver->set_projection([&](const Vec<T>& x, Vec<T>& y) { H.project(x, y); }, [&](const Vec<T>& x, Vec<T>& y) { H.project_transposed(x, y); });
+  eigensolver->solve();
+  return eigensolver->vectors();
+}
+
+// Eigen is available together with Spectra (see extern/CMakeLists.txt)
+#ifdef DUNE_DDM_HAVE_SPECTRA
+/* Builds an explicit basis E of H, the harmonic extensions of the unit vectors of the boundary dofs, and solves the
+ * reduced problem E^T A E y = lambda E^T B E y with a dense solver. Neither E^T A E (singular for floating subdomains)
+ * nor E^T B E (singular if a harmonic function vanishes where B does) needs to be definite, but their sum is. So the
+ * dense solver gets the equivalent problem
+ *
+ *   E^T B E y = mu (E^T A E + E^T B E) y,   mu = 1 / (1 + lambda),
+ *
+ * whose largest mu belong to the smallest lambda.
+ */
+template <class T>
+std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_basis(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, const HarmonicSpace<T>& H)
+{
+  DDM_CHECK(H.can_project(), "solve_harmonic_gevp_basis(): the HarmonicSpace object must be able to project into the space, pass a suitable solver to its constructor");
+  const Index n_boundary = std::ssize(H.boundary());
+  const int nev = config.sub("eigensolver").get("nev", Eigensolver<T>::default_nev);
+  DDM_CHECK(1 <= nev && nev <= n_boundary, "solve_harmonic_gevp_basis(): nev must be between 1 and the number of boundary dofs {}, got {}", n_boundary, nev);
+
+  // The basis, one column per boundary dof
+  auto E = A->create_domain_multivector(n_boundary);
+  {
+    auto e = A->create_domain_vector();
+    auto y = A->create_domain_vector();
+    for (Index k = 0; k < n_boundary; ++k) {
+      const auto i = H.boundary()[k];
+      {
+        auto view = e.host_view(read_write);
+        view[i] = T{1};
+      }
+      H.project(e, y);
+      E->copy_into_column(k, y);
+      {
+        auto view = e.host_view(read_write);
+        view[i] = T{0};
+      }
+    }
+  }
+
+  // The reduced matrices E^T A E and E^T B E
+  auto At = E->create_multivector(n_boundary, n_boundary);
+  auto Bt = E->create_multivector(n_boundary, n_boundary);
+  {
+    auto W = A->create_domain_multivector(n_boundary);
+    A->spmm(*E, *W);
+    E->dot(*W, *At);
+    B->spmm(*E, *W);
+    E->dot(*W, *Bt);
+  }
+
+  // Both are column-major, like Eigen's matrices. Eigen only reads the lower triangles, so it doesn't matter that
+  // rounding makes the reduced matrices slightly non-symmetric.
+  using Matrix = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>;
+  Eigen::GeneralizedSelfAdjointEigenSolver<Matrix> es;
+  {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Eigensolver", "solve")};
+    const auto at = std::as_const(*At).host_view(read);
+    const auto bt = std::as_const(*Bt).host_view(read);
+    const Matrix Bm = Eigen::Map<const Matrix>(bt.data(), n_boundary, n_boundary);
+    const Matrix S = Eigen::Map<const Matrix>(at.data(), n_boundary, n_boundary) + Bm;
+    es.compute(Bm, S);
+  }
+  DDM_CHECK(es.info() == Eigen::Success, "solve_harmonic_gevp_basis(): the dense eigensolver failed");
+
+  // The mu are sorted from small to large, so the last nev columns in reverse order belong to the smallest lambda
+  const auto& mu = es.eigenvalues();
+  logger::debug_all("Dense eigensolver computed {} eigenvalues: smallest {}, largest {}", nev, 1 / mu(n_boundary - 1) - 1, 1 / mu(n_boundary - nev) - 1);
+  if (config.sub("eigensolver").get("print_eigenvalues", false)) {
+    std::vector<typename Matrix::RealScalar> lambda;
+    for (int j = 0; j < nev; ++j) lambda.push_back(1 / mu(n_boundary - 1 - j) - 1);
+    logger::print_all("Eigenvalues: {}", logger::join(lambda));
+  }
+
+  // Back to the original space: x_j = E y_j
+  auto vectors = std::shared_ptr<MultiVec<T>>(A->create_domain_multivector(nev));
+  auto c = E->create_vector(n_boundary);
+  auto x = A->create_domain_vector();
+  for (int j = 0; j < nev; ++j) {
+    {
+      auto view = c.host_view(write);
+      std::copy_n(es.eigenvectors().col(n_boundary - 1 - j).data(), n_boundary, view.data());
+    }
+    E->mv(c, x);
+    vectors->copy_into_column(j, x);
+  }
+  return vectors;
+}
+#endif
+
+} // namespace detail
+
+/** Solves A x = lambda B x for x in H, computing the eigenpairs with the smallest eigenvalues.
+ *
+ *  Config:
+ *  - method:      saddle_point | projected | two_sided | basis (default saddle_point); all but saddle_point need
+ *                 H.can_project(), see solve_harmonic_gevp_two_sided() for what two_sided computes
+ *  - eigensolver: config of the eigensolver (see create_eigensolver()); basis uses a dense solver and only reads nev
+ *                 and print_eigenvalues
+ */
+template <class T>
+std::shared_ptr<MultiVec<T>> solve_harmonic_gevp(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, const HarmonicSpace<T>& H)
+{
+  // TODO: Check sizes match
+
+  auto method = config.get("method", "saddle_point");
+  if (method == "saddle_point") return detail::solve_harmonic_gevp_saddle_point(config, A, B, H);
+  else if (method == "projected") return detail::solve_harmonic_gevp_projected(config, A, B, H);
+  else if (method == "two_sided") return detail::solve_harmonic_gevp_two_sided(config, A, B, H);
+  else if (method == "basis") {
+#ifdef DUNE_DDM_HAVE_SPECTRA
+    return detail::solve_harmonic_gevp_basis(config, A, B, H);
+#else
+    DDM_CHECK(false, "solve_harmonic_gevp(): method `basis` requires Eigen, which was not found");
+#endif
+  }
+  else DDM_CHECK(false, "solve_harmonic_gevp() unknown method `{}`, known: {}, {}, {}, {}", method, "saddle_point", "projected", "two_sided", "basis");
+  return nullptr;
+}
+} // namespace ddm
