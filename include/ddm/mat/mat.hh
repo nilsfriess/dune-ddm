@@ -177,6 +177,18 @@ public:
 
   LocalMat<T>& local() { return *local_; }
   const LocalMat<T>& local() const { return *local_; }
+  // Add vectors that represent the (near) kernel of the matrix
+  void set_near_kernel(std::vector<Vec<T>> near_kernel)
+  {
+    for (const auto& v : near_kernel) DDM_CHECK(v.size() == rows(), "Mat: set_near_kernel() vector size mismatch, vector is {} but matrix has {} rows", v.size(), rows());
+    near_kernel_ = std::move(near_kernel);
+  }
+
+  // Get the near kernel modes that were set via set_near_kernel(). Empty if none were set.
+  const std::vector<Vec<T>>& get_near_kernel() const
+  {
+    return near_kernel_;
+  }
 
   // nullptr if the matrix is sequential
   const std::shared_ptr<Communication>& communication() const { return comm_; }
@@ -228,6 +240,8 @@ private:
   std::optional<ElementBlocks<T>> element_blocks_;
 
   std::shared_ptr<const Mat<T>> A_sym_ = nullptr; // optional symmetric matrix that can be attached to this matrix, see attach_symmetric_matrix()
+
+  std::vector<Vec<T>> near_kernel_; // (Near) kernel modes
 
   Logger::Event* apply_event_; ///< apply() and applyscaleadd()
 };

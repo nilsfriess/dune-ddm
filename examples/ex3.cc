@@ -131,6 +131,22 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
 
   auto [A, b] = ddm::examples::assemble_dg<RF>(config, gfs, lop);
 
+  // Attach some vectors to the matrix that approximate low energy-modes (they will then be picked up by the Nicolaides coarse space,
+  // if it is selected at runtime). Here we attach the constant function and the two linear functions f(x,y) = x and f(x,y) = y.
+  std::vector<ddm::Vec<RF>> vs;
+  const auto add_vector = [&](auto&& f) {
+    using V = Dune::PDELab::Backend::Vector<GFS, RF>;
+    V x(gfs, 0.0);
+    Dune::PDELab::interpolate(f, gfs, x);
+    auto& v = vs.emplace_back(A->create_domain_vector());
+    auto view = v.host_view(ddm::write);
+    std::copy(x.begin(), x.end(), view.begin());
+  };
+  add_vector([](const auto&) { return 1.; });
+  add_vector([](const auto& x) { return x[0]; });
+  add_vector([](const auto& x) { return x[1]; });
+  A->set_near_kernel(vs);
+
   // Define the VTKWriter already here, because the preconditioner might write something to the debug sink. The debug
   // vectors and the solution are written as DG functions, subsampled so that the discontinuous polynomials show.
   using X = Dune::PDELab::Backend::Vector<GFS, RF>;
