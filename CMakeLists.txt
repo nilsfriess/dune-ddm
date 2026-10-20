@@ -52,8 +52,9 @@ if(DDM_SANITIZE)
   message(STATUS "Sanitizers enabled for all targets: ${DDM_SANITIZE}")
 endif()
 
-# METIS, ParMETIS, SuiteSparse and Eigen from extern/. This has to come before
-# the DUNE modules are added, because they search for these libraries.
+# METIS, ParMETIS, SuiteSparse, Eigen and STRUMPACK from extern/. This has to
+# come before the DUNE modules are added, because they search for these
+# libraries.
 include(extern/BundledDeps.cmake)
 
 # ---------------------------------------------------------------------------
@@ -165,8 +166,12 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/ddm
         FILES_MATCHING PATTERN "*.hh")
 target_link_libraries(duneddm PUBLIC Dune::ISTL)
 
-# optionally find STRUMPACK
-find_package(STRUMPACK CONFIG)
+# STRUMPACK is optional, it is searched for in cmake/modules/DuneDdmMacros.cmake
+# like SuiteSparse.
+if(TARGET STRUMPACK::strumpack)
+  target_link_libraries(duneddm PUBLIC STRUMPACK::strumpack)
+  target_compile_definitions(duneddm PUBLIC DUNE_DDM_HAVE_STRUMPACK=1)
+endif()
 
 find_package(Eigen3 NO_MODULE REQUIRED)
 

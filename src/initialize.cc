@@ -5,6 +5,7 @@
 #include "ddm/impl/prec/jacobiprec.hh"
 #include "ddm/impl/prec/noneprec.hh"
 #include "ddm/impl/prec/schwarz.hh"
+#include "ddm/impl/prec/strumpack.hh"
 #include "ddm/impl/prec/two_level_schwarz.hh"
 #include "ddm/impl/prec/umfpack.hh"
 #include "ddm/impl/solver/direct.hh"
@@ -17,6 +18,7 @@
 #include <dune/common/parametertree.hh>
 #include <memory>
 #include <mutex>
+#include <type_traits>
 
 namespace ddm {
 namespace {
@@ -34,8 +36,17 @@ void register_all()
   register_prec<T>("jacobi", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<JacobiPrec<T>>(config, std::move(A)); });
   register_prec<T>("ilu", BackendId::istl, [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<IstlILUPrec<T>>(config, std::move(A)); });
   register_prec<T>("umfpack", BackendId::istl, [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<UMFPACKPrec<T>>(config, std::move(A)); });
-  // The LU decomposition of each backend, the default for exact solves of subproblems (see create_subproblem_solver())
-  register_prec<T>("lu", BackendId::istl, [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<UMFPACKPrec<T>>(config, std::move(A)); });
+#ifdef DUNE_DDM_HAVE_STRUMPACK
+  register_prec<T>("strumpack", BackendId::istl, [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<StrumpackPrec<T>>(config, std::move(A)); });
+#endif
+  // The LU decomposition of each backend, the default for exact solves of subproblems (see create_subproblem_solver()).
+  // UMFPACK has no float, so float uses STRUMPACK if it is available
+  register_prec<T>("lu", BackendId::istl, [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) -> std::shared_ptr<Prec<T>> {
+#ifdef DUNE_DDM_HAVE_STRUMPACK
+    if constexpr (std::is_same_v<T, float>) return std::make_shared<StrumpackPrec<T>>(config, std::move(A));
+#endif
+    return std::make_shared<UMFPACKPrec<T>>(config, std::move(A));
+  });
   register_prec<T>("schwarz", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<SchwarzPrec<T>>(config, std::move(A)); });
   register_prec<T>("tlschwarz", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<TwoLevelSchwarzPrec<T>>(config, std::move(A)); });
 
@@ -62,6 +73,9 @@ void register_events()
   for (const auto* event : {"apply"}) logger.registerOrGetEvent("Mat", event);
   for (const auto* event : {"solve"}) logger.registerOrGetEvent("GMRES", event);
   for (const auto* event : {"factorize", "solve"}) logger.registerOrGetEvent("UMFPACK", event);
+#ifdef DUNE_DDM_HAVE_STRUMPACK
+  for (const auto* event : {"factorize", "solve"}) logger.registerOrGetEvent("STRUMPACK", event);
+#endif
   for (const auto* event : {"apply"}) logger.registerOrGetEvent("ILU", event);
   for (const auto* event : {"coarse space", "apply"}) logger.registerOrGetEvent("Two-level Schwarz", event);
   for (const auto* event : {"setup", "apply", "coarse solve"}) logger.registerOrGetEvent("Coarse correction", event);
