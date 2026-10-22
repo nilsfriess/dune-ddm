@@ -293,15 +293,14 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_basis(const Dune::ParameterTree
   auto E = A->create_domain_multivector(n_boundary);
   {
     auto e = A->create_domain_vector();
-    auto y = A->create_domain_vector();
     for (Index k = 0; k < n_boundary; ++k) {
       const auto i = H.boundary()[k];
       {
         auto view = e.host_view(read_write);
         view[i] = T{1};
       }
-      H.project(e, y);
-      E->copy_into_column(k, y);
+      auto E_k = column(*E, k);
+      H.project(e, E_k);
       {
         auto view = e.host_view(read_write);
         view[i] = T{0};
@@ -344,17 +343,13 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_basis(const Dune::ParameterTree
   }
 
   // Back to the original space: x_j = E y_j
-  auto vectors = std::shared_ptr<MultiVec<T>>(A->create_domain_multivector(nev));
-  auto c = E->create_vector(n_boundary);
-  auto x = A->create_domain_vector();
-  for (int j = 0; j < nev; ++j) {
-    {
-      auto view = c.host_view(write);
-      std::copy_n(es.eigenvectors().col(n_boundary - 1 - j).data(), n_boundary, view.data());
-    }
-    E->mv(c, x);
-    vectors->copy_into_column(j, x);
+  auto Y = E->create_multivector(n_boundary, nev);
+  {
+    auto view = Y->host_view(write);
+    Eigen::Map<Matrix>(view.data(), n_boundary, nev) = es.eigenvectors().rightCols(nev).rowwise().reverse();
   }
+  auto vectors = std::shared_ptr<MultiVec<T>>(A->create_domain_multivector(nev));
+  E->mult(*Y, *vectors);
   return vectors;
 }
 #endif

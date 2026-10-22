@@ -241,6 +241,8 @@ if(DUNE_DDM_ENABLE_WARNINGS)
 endif()
 
 add_subdirectory(examples)
+enable_testing()
+add_subdirectory(tests)
 add_subdirectory(doc)
 
 finalize_dune_project(GENERATE_CONFIG_H_CMAKE)

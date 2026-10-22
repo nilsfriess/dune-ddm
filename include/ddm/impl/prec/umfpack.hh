@@ -2,10 +2,10 @@
 
 #include "ddm/check.hh"
 #include "ddm/impl/mat/istlmat.hh"
+#include "ddm/logger.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/prec/prec.hh"
 #include "ddm/vec/vec.hh"
-#include "ddm/logger.hh"
 
 #include <dune/common/exceptions.hh>
 #include <dune/common/parametertree.hh>
@@ -33,22 +33,23 @@ private:
   void do_apply(Vec<T>& z, const Vec<T>& r) override
   {
     Logger::ScopedLog sl{solve_event_};
-    Dune::InverseOperatorResult res;
-
-    auto& x = as_istl(z).native();
-    auto b = as_istl(r).native(); // UMFPack solver takes the rhs as a non-const reference so we need to copy here
-
-    solver_.apply(x, b, res);
+    solve(UMFPACK_A, z, r);
   }
 
-  // Dune::UMFPack only solves with A, so this calls UMFPACK directly with the same factorization
   void do_apply_transposed(Vec<T>& z, const Vec<T>& r) override
   {
     Logger::ScopedLog sl{solve_event_};
+    solve(UMFPACK_At, z, r);
+  }
+
+  // Solves the system sys (UMFPACK_A or UMFPACK_At) with the factorization of Dune::UMFPack. Calls UMFPACK directly on
+  // the data of the vectors, because Dune::UMFPack only solves with A and works on ISTL vectors only
+  void solve(int sys, Vec<T>& z, const Vec<T>& r)
+  {
     if (r.size() == 0) return;
 
-    auto& x = as_istl(z).native();
-    const auto& b = as_istl(r).native();
+    auto x = as_istl(z).data();
+    const auto b = as_istl(r).data();
 
     double control[UMFPACK_CONTROL];
     double info[UMFPACK_INFO];
@@ -58,18 +59,17 @@ private:
     auto& M = solver_.getInternalMatrix();
 
     // These casts are necessary in the case of complex arithmetic; there we can pass the complex
-    // data as a single double* array. This is only necessary because DUNE doesn't support transposed
-    // solves in its UMFPack wrapper, so we have to call the UMFPack routines directly.
+    // data as a single double* array.
     const double* Ax = reinterpret_cast<double*>(M.getValues());
     double* Xx = reinterpret_cast<double*>(x.data());
     const double* Bx = reinterpret_cast<const double*>(b.data());
 
-    if constexpr (std::is_same_v<T, double>) umfpack_dl_solve(UMFPACK_At, M.getColStart(), M.getRowIndex(), Ax, Xx, Bx, solver_.getFactorization(), control, info);
+    if constexpr (std::is_same_v<T, double>) umfpack_dl_solve(sys, M.getColStart(), M.getRowIndex(), Ax, Xx, Bx, solver_.getFactorization(), control, info);
     else if constexpr (std::is_same_v<T, std::complex<double>>)
-      umfpack_zl_solve(UMFPACK_At, M.getColStart(), M.getRowIndex(), Ax, nullptr, Xx, nullptr, Bx, nullptr, solver_.getFactorization(), control, info);
+      umfpack_zl_solve(sys, M.getColStart(), M.getRowIndex(), Ax, nullptr, Xx, nullptr, Bx, nullptr, solver_.getFactorization(), control, info);
     else static_assert(false, "UMFPack supports only double and complex<double>");
 
-    DDM_CHECK(info[UMFPACK_STATUS] >= UMFPACK_OK, "UMFPACK: transposed solve failed with status {}", info[UMFPACK_STATUS]);
+    DDM_CHECK(info[UMFPACK_STATUS] >= UMFPACK_OK, "UMFPACK: solve failed with status {}", info[UMFPACK_STATUS]);
   }
 
   void do_update() override
@@ -80,7 +80,10 @@ private:
     solver_.setMatrix(as_istl(this->mat()->local()).native());
   }
 
-  void do_info() const override { logger::info("UMFPACK solver"); }
+  void do_info() const override
+  {
+    logger::info("UMFPACK solver");
+  }
 
   Logger::Event* factorize_event_;
   Logger::Event* solve_event_;

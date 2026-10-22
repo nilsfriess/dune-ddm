@@ -218,9 +218,9 @@ public:
     DDM_CHECK(cs_->overlap->n_original == this->mat()->rows(), "coarse correction: the coarse space was built for {} indices, but the matrix has {} rows", cs_->overlap->n_original,
               this->mat()->rows());
 
-    d_.emplace(V.create_vector(V.rows()));
-    x_.emplace(V.create_vector(V.rows()));
-    c_.emplace(V.create_vector(V.cols()));
+    d_.emplace(create_vector(V, V.rows()));
+    x_.emplace(create_vector(V, V.rows()));
+    c_.emplace(create_vector(V, V.cols()));
 
     setup_coarse_problem(config, detail::coarse_matrix_rows(A_ovlp, *cs_));
 
@@ -231,7 +231,7 @@ public:
       auto v_novlp = this->mat()->create_domain_vector();
       for (Index i = 0; i < std::min<Index>(cs_->basis->cols(), save_vectors); ++i) {
         v.zero();
-        if (debug::vec_sink_debug_rank<T>() == this->mat()->communication()->rank()) cs_->basis->extract_column_to_vec(i, v);
+        if (debug::vec_sink_debug_rank<T>() == this->mat()->communication()->rank()) v = column(*cs_->basis, i);
         cs_->overlap->comm->reduce(v);
         v_novlp.copy_n_from(v, v_novlp.size());
         debug::add_vec_to_sink(std::format("basis{:04d}", i), v_novlp);
@@ -255,7 +255,7 @@ private:
     comm.broadcast(*d_);
 
     // Restriction: our part of R_0 r is V_i^H d
-    V.dot(*d_, *c_);
+    V.dot(d_->multivec(), c_->multivec());
 
     // Solve the coarse problem on rank 0 and hand everyone its part of the solution
     gather_coarse_defect();
@@ -267,7 +267,7 @@ private:
     scatter_coarse_solution();
 
     // Prolongation: R_0^T x_0 is the sum of V_i x_i over all subdomains, which the reduction makes consistent
-    V.mv(*c_, *x_);
+    V.mult(c_->multivec(), x_->multivec());
     comm.reduce(*x_);
     z.copy_n_from(*x_, n);
   }

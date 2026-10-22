@@ -39,14 +39,14 @@ std::shared_ptr<CoarseSpace<T>> nicolaides_coarse_space(std::shared_ptr<const Ov
       ovlp->comm->broadcast(v);
       v.pointwise_mult(pou, v);
       zero_at_dirichlet(v);
-      basis->copy_into_column(i, v);
+      column(*basis, i) = v;
     }
   }
   else {
     auto v = pou;
     zero_at_dirichlet(v);
     basis = std::shared_ptr<MultiVec<T>>(A_ovlp.create_domain_multivector(1));
-    basis->copy_into_column(0, v);
+    column(*basis, 0) = v;
   }
 
   return std::make_shared<CoarseSpace<T>>(std::move(ovlp), std::move(basis));

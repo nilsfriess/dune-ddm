@@ -1,6 +1,8 @@
 #include "ddm/eigensolver/eigensolver.hh"
 #include "ddm/impl/eigensolver/spectra.hh"
 #include "ddm/impl/mat/istlmat.hh"
+#include "ddm/impl/mat/syclmat.hh"
+#include "ddm/impl/multivec/istlmultivec.hh"
 #include "ddm/impl/prec/ilu_istl.hh"
 #include "ddm/impl/prec/jacobiprec.hh"
 #include "ddm/impl/prec/noneprec.hh"
@@ -10,7 +12,6 @@
 #include "ddm/impl/prec/umfpack.hh"
 #include "ddm/impl/solver/direct.hh"
 #include "ddm/impl/solver/gmres.hh"
-#include "ddm/impl/vec/istlvec.hh"
 #include "ddm/logger.hh"
 #include "ddm/registry.hh"
 
@@ -26,10 +27,14 @@ template <class T>
 void register_all()
 {
   // Register vectors
-  register_vec<T>("istl", [](const Dune::ParameterTree&, Index n) { return std::make_unique<IstlVec<T>>(n); });
+  register_vec<T>("istl", [](const Dune::ParameterTree&, Index n) { return std::make_unique<IstlMultiVec<T>>(n, 1); });
 
   // Register matrices
   register_local_mat<T>("istl", [](const Dune::ParameterTree& config, const Pattern& pattern) { return std::make_shared<IstlMat<T>>(config, pattern); });
+#if DUNE_DDM_HAVE_SYCL
+  // SyclMat is only instantiated for float and double (in src/sycl/syclmat.cc)
+  if constexpr (std::is_floating_point_v<T>) register_local_mat<T>("sycl", [](const Dune::ParameterTree& config, const Pattern& pattern) { return std::make_shared<SyclMat<T>>(config, pattern); });
+#endif
 
   // Register preconditioners
   register_prec<T>("none", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<NonePrec<T>>(config, std::move(A)); });

@@ -50,7 +50,7 @@ std::shared_ptr<CoarseSpace<T>> geneo_coarse_space(const Dune::ParameterTree& co
   eigensolver->solve();
 
   auto basis = eigensolver->vectors();
-  basis->scale_rows(pou);
+  basis->scale_rows(pou.multivec());
   return std::make_shared<CoarseSpace<T>>(ovlp, std::move(basis));
 }
 } // namespace ddm

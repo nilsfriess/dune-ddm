@@ -17,7 +17,7 @@ namespace ddm {
 // access a registry directly. Safe to call more than once.
 void initialize();
 
-// Maps type names to factories for one interface (Mat<T>, VecImpl<T>, ...). Result is the (smart) pointer type the
+// Maps type names to factories for one interface (LocalMat<T>, MultiVec<T>, ...). Result is the (smart) pointer type the
 // factories return. The factory receives the config subtree of the object (so implementations can read their own
 // options) followed by Args.
 //
@@ -37,7 +37,10 @@ public:
   }
 
   // Registers a factory that works for any backend
-  void add(std::string name, Factory factory) { add(std::move(name), std::nullopt, std::move(factory)); }
+  void add(std::string name, Factory factory)
+  {
+    add(std::move(name), std::nullopt, std::move(factory));
+  }
 
   // Registers a factory for one backend, or for any backend if backend is std::nullopt
   void add(std::string name, std::optional<BackendId> backend, Factory factory)
@@ -74,7 +77,10 @@ public:
 private:
   using ByBackend = std::map<std::optional<BackendId>, Factory>;
 
-  static std::string_view backend_name(std::optional<BackendId> backend) { return backend ? to_string(*backend) : "any"; }
+  static std::string_view backend_name(std::optional<BackendId> backend)
+  {
+    return backend ? to_string(*backend) : "any";
+  }
 
   std::string names() const
   {

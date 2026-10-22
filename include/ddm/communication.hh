@@ -57,10 +57,11 @@ public:
    *
    *  \p v must stay valid until the matching end() call.
    */
-  void begin(MPI_Comm pcomm, VecImpl<T>& v, ReductionOperation op)
+  void begin(MPI_Comm pcomm, Vec<T>& v, ReductionOperation op)
   {
     if (busy()) DUNE_THROW(Dune::InvalidStateException, "an exchange on this plan is still in flight");
-    if (!plan) plan = v.make_exchange_plan(idxs);
+    auto& mv = v.multivec();
+    if (!plan) plan = mv.make_exchange_plan(idxs);
 
     const auto mpi_type = Dune::MPITraits<T>::getType();
 
@@ -68,9 +69,9 @@ public:
     for (const auto& [peer, buffer] : plan->recv_buffers()) MPI_Irecv(buffer.data(), (int)buffer.size(), mpi_type, peer, 4, pcomm, &requests.emplace_back());
 
     // Post the sends
-    for (const auto& [peer, buffer] : plan->pack(v)) MPI_Isend(buffer.data(), (int)buffer.size(), mpi_type, peer, 4, pcomm, &requests.emplace_back());
+    for (const auto& [peer, buffer] : plan->pack(mv)) MPI_Isend(buffer.data(), (int)buffer.size(), mpi_type, peer, 4, pcomm, &requests.emplace_back());
 
-    target = &v;
+    target = &mv;
     reduction_op = op;
   }
 
@@ -94,7 +95,7 @@ private:
   const CommunicationPattern::IndexMap& idxs;
   std::unique_ptr<ExchangePlan<T>> plan;
 
-  VecImpl<T>* target = nullptr; ///< where end() writes the received values
+  MultiVec<T>* target = nullptr; ///< where end() writes the received values
   ReductionOperation reduction_op = ReductionOperation::None;
 
   std::vector<MPI_Request> requests;
@@ -138,13 +139,13 @@ public:
   void broadcast_begin(Vec<T>& v)
   {
     Logger::ScopedLog sl{broadcast_begin_event};
-    broadcast_state.begin(pattern->communicator(), v.impl(), ReductionOperation::None);
+    broadcast_state.begin(pattern->communicator(), v, ReductionOperation::None);
   }
 
   void reduce_begin(Vec<T>& v, ReductionOperation op)
   {
     Logger::ScopedLog sl{reduce_begin_event};
-    reduction_state.begin(pattern->communicator(), v.impl(), op);
+    reduction_state.begin(pattern->communicator(), v, op);
   }
 
   /// The dot product of v and w restricted to the indices owned by this rank, as given by owner_mask

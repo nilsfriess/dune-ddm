@@ -2,11 +2,11 @@
 
 #include "ddm/backend_id.hh"
 #include "ddm/check.hh"
+#include "ddm/logger.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/prec/prec.hh"
 #include "ddm/registry.hh"
 #include "ddm/vec/vec.hh"
-#include "ddm/logger.hh"
 
 #include <dune/common/parametertree.hh>
 #include <memory>
@@ -40,10 +40,16 @@ public:
     do_solve_transposed(b, x);
   }
 
-  const std::shared_ptr<const Mat<T>>& mat() const { return A_; }
+  const std::shared_ptr<const Mat<T>>& mat() const
+  {
+    return A_;
+  }
 
   // nullptr if the solver is unpreconditioned
-  const std::shared_ptr<Prec<T>>& prec() const { return P_; }
+  const std::shared_ptr<Prec<T>>& prec() const
+  {
+    return P_;
+  }
 
   // Print info about the solver, the system matrix, the preconditioner etc.
   // Is called automatically if the option `-solver.info true` is passed
@@ -84,9 +90,18 @@ public:
   }
 
   // Default values or config entry for common values the solvers need
-  double reduction() const { return reduction_; }
-  int maxit() const { return maxit_; }
-  int verbosity() const { return verbosity_; }
+  double reduction() const
+  {
+    return reduction_;
+  }
+  int maxit() const
+  {
+    return maxit_;
+  }
+  int verbosity() const
+  {
+    return verbosity_;
+  }
 
 protected:
   Solver(const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, std::shared_ptr<Prec<T>> P)
@@ -107,7 +122,7 @@ protected:
 private:
   void check_solve_args(const Vec<T>& b, const Vec<T>& x, std::string_view op) const
   {
-    DDM_CHECK(&b != &x, "solver: {} requires distinct vectors b and x", op);
+    DDM_CHECK(!b.multivec().overlaps(x.multivec()), "solver: {} requires distinct vectors b and x", op);
     DDM_CHECK(A_->is_assembled(), "solver: {} called with unassembled matrix", op);
     DDM_CHECK(b.size() == A_->rows() && x.size() == A_->cols(), "solver: {} size mismatch, matrix is {}x{}, but b has size {} and x has size {}", op, A_->rows(), A_->cols(), b.size(), x.size());
     DDM_CHECK(b.backend() == A_->backend() && x.backend() == A_->backend(), "solver: {} backend mismatch, matrix is {}, b is {}, x is {}", op, to_string(A_->backend()), to_string(b.backend()),
@@ -115,7 +130,10 @@ private:
   }
 
   virtual void do_solve(const Vec<T>& b, Vec<T>& x) = 0;
-  virtual void do_solve_transposed(const Vec<T>&, Vec<T>&) { DDM_CHECK(false, "solver: solve_transposed() is not supported by this solver"); }
+  virtual void do_solve_transposed(const Vec<T>&, Vec<T>&)
+  {
+    DDM_CHECK(false, "solver: solve_transposed() is not supported by this solver");
+  }
   virtual void do_info() const = 0;
 
   std::shared_ptr<const Mat<T>> A_;

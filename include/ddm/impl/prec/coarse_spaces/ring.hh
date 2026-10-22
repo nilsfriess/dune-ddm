@@ -73,12 +73,11 @@ void project_rows(const HarmonicSpace<T>& H, const Region& r, MultiVec<T>& V)
 {
   auto X = H.constraint_matrix().local().create_domain_multivector(V.cols());
   V.pack_rows(r.indices(), *X);
-  auto x = H.constraint_matrix().create_domain_vector();
   auto y = H.constraint_matrix().create_domain_vector();
   for (Index j = 0; j < X->cols(); ++j) {
-    X->extract_column_to_vec(j, x);
+    auto x = column(*X, j);
     H.project(x, y);
-    X->copy_into_column(j, y);
+    x = y;
   }
   V.unpack_rows(*X, r.indices(), 0);
 }
@@ -252,7 +251,7 @@ std::shared_ptr<CoarseSpace<T>> ring_coarse_space(const Dune::ParameterTree& con
   }
   else detail::extend_from_ring(config, ring_layer, A_ovlp->local(), subdomain_dirichlet, *basis);
 
-  basis->scale_rows(pou);
+  basis->scale_rows(pou.multivec());
   return std::make_shared<CoarseSpace<T>>(ovlp, std::move(basis));
 }
 } // namespace ddm

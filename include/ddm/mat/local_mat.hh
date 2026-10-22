@@ -44,7 +44,10 @@ public:
   virtual BackendId backend() const = 0;
 
   // The pattern the matrix was created with
-  const Pattern& pattern() const { return pattern_; }
+  const Pattern& pattern() const
+  {
+    return pattern_;
+  }
 
   // Adds the dense block `vals` (column-major, rows.size() x cols.size()) at the given indices.
   // Every (rows[r], cols[c]) must be part of the pattern.
@@ -64,7 +67,10 @@ public:
     assembled_ = true;
   }
 
-  bool is_assembled() const { return assembled_; }
+  bool is_assembled() const
+  {
+    return assembled_;
+  }
 
   // Sets all entries in the given rows to zero and the diagonal entries of these rows to diag, e.g. to impose
   // Dirichlet conditions. The diagonal entries must be part of the pattern. Only the rows are changed, so a symmetric
@@ -95,7 +101,9 @@ public:
   void spmm(const MultiVec<T>& X, MultiVec<T>& Y) const
   {
     DDM_CHECK(assembled_, "mat: spmm() called before assemble()");
-    DDM_CHECK(&X != &Y, "mat: spmm() requires distinct multivectors X and Y");
+    DDM_CHECK(!X.overlaps(Y), "mat: spmm() requires distinct multivectors X and Y");
+    X.check_usable("spmm()");
+    Y.check_usable("spmm()");
     DDM_CHECK(X.rows() == cols() && Y.rows() == rows() && X.cols() == Y.cols(), "mat: spmm() size mismatch, matrix is {}x{}, but X is {}x{} and Y is {}x{}", rows(), cols(), X.rows(), X.cols(),
               Y.rows(), Y.cols());
     DDM_CHECK(X.backend() == backend() && Y.backend() == backend(), "mat: spmm() backend mismatch, matrix is {}, X is {}, Y is {}", to_string(backend()), to_string(X.backend()),
@@ -134,7 +142,10 @@ public:
   }
 
   // Returns a copy of the matrix (same type, pattern and values)
-  std::shared_ptr<LocalMat<T>> clone() const { return do_clone(); }
+  std::shared_ptr<LocalMat<T>> clone() const
+  {
+    return do_clone();
+  }
 
   // Returns a zero-initialized multivector with m columns from the range of the matrix
   std::unique_ptr<MultiVec<T>> create_range_multivector(Index m) const
@@ -161,7 +172,10 @@ public:
   }
 
   // Print info about this matrix
-  void info() const { do_info(); }
+  void info() const
+  {
+    do_info();
+  }
 
   // Scale the matrix rows and columns by the diagonal matrix diag(d)
   void scale(const Vec<T>& d)
@@ -185,7 +199,7 @@ private:
   void check_mv_args(const Vec<T>& x, const Vec<T>& y, std::string_view op) const
   {
     DDM_CHECK(assembled_, "mat: {} called before assemble()", op);
-    DDM_CHECK(&x != &y, "mat: {} requires distinct vectors x and y", op);
+    DDM_CHECK(!x.multivec().overlaps(y.multivec()), "mat: {} requires distinct vectors x and y", op);
     DDM_CHECK(x.size() == cols() && y.size() == rows(), "mat: {} size mismatch, matrix is {}x{}, but x has size {} and y has size {}", op, rows(), cols(), x.size(), y.size());
     DDM_CHECK(x.backend() == backend() && y.backend() == backend(), "mat: {} backend mismatch, matrix is {}, x is {}, y is {}", op, to_string(backend()), to_string(x.backend()),
               to_string(y.backend()));

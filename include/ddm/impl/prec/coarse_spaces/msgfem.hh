@@ -54,7 +54,7 @@ std::shared_ptr<CoarseSpace<T>> msgfem_coarse_space(const Dune::ParameterTree& c
 
   auto basis = solve_harmonic_gevp<T>(config, lhs, rhs, harmonic_space);
 
-  basis->scale_rows(pou);
+  basis->scale_rows(pou.multivec());
   return std::make_shared<CoarseSpace<T>>(ovlp, std::move(basis));
 }
 } // namespace ddm

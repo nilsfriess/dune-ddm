@@ -4,7 +4,7 @@
 
 #include "ddm/check.hh"
 #include "ddm/impl/mat/istlmat.hh"
-#include "ddm/impl/vec/istlvec.hh"
+#include "ddm/impl/multivec/istlmultivec.hh"
 #include "ddm/index.hh"
 #include "ddm/logger.hh"
 #include "ddm/mat/mat.hh"
@@ -106,7 +106,7 @@ private:
   {
     Logger::ScopedLog sl{solve_event_};
     if (r.size() == 0) return;
-    detail::check_strumpack(solver_.solve(as_istl(r).native().data(), as_istl(z).native().data()), "solve");
+    detail::check_strumpack(solver_.solve(as_istl(r).data().data(), as_istl(z).data().data()), "solve");
   }
 
   // The first call sets the matrix, later ones only update its values, so STRUMPACK reuses the reordering
