@@ -79,14 +79,15 @@ void register_events()
   for (const auto* event : {"solve"}) logger.registerOrGetEvent("GMRES", event);
   for (const auto* event : {"factorize", "solve"}) logger.registerOrGetEvent("UMFPACK", event);
 #ifdef DUNE_DDM_HAVE_STRUMPACK
-  for (const auto* event : {"factorize", "solve"}) logger.registerOrGetEvent("STRUMPACK", event);
+  for (const auto* event : {"factorize", "solve", "solve_multi"}) logger.registerOrGetEvent("STRUMPACK", event);
 #endif
   for (const auto* event : {"apply"}) logger.registerOrGetEvent("ILU", event);
   for (const auto* event : {"coarse space", "apply"}) logger.registerOrGetEvent("Two-level Schwarz", event);
   for (const auto* event : {"setup", "apply", "coarse solve"}) logger.registerOrGetEvent("Coarse correction", event);
   for (const auto* event : {"exchange", "matrix"}) logger.registerOrGetEvent("Neumann", event);
   for (const auto* event : {"solve"}) logger.registerOrGetEvent("Eigensolver", event);
-  for (const auto* event : {"project"}) logger.registerOrGetEvent("Harmonic space", event);
+  for (const auto* event : {"project", "project transposed"}) logger.registerOrGetEvent("Harmonic space", event);
+  for (const auto* event : {"spmm", "dot"}) logger.registerOrGetEvent("Harmonic basis", event);
 }
 } // namespace
 

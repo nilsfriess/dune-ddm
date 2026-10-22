@@ -125,9 +125,9 @@ dune_project()
 dune_enable_all_packages()
 
 if (dune-common_VERSION VERSION_GREATER_EQUAL 2.10)
-  dune_add_library(duneddm SOURCES src/initialize.cc EXPORT_NAME DDM)
+  dune_add_library(duneddm SOURCES src/initialize.cc src/blas_lapack.cc EXPORT_NAME DDM)
 else()
-  dune_add_library(duneddm SOURCES src/initialize.cc EXPORT_NAME Dune::DDM)
+  dune_add_library(duneddm SOURCES src/initialize.cc src/blas_lapack.cc EXPORT_NAME Dune::DDM)
 endif()
 
 find_package(MPI REQUIRED)
@@ -152,6 +152,10 @@ endif()
 # attach the imported target to the exported interface, so its include dirs and
 # libraries propagate to anything linking Dune::DDM.
 target_link_libraries(duneddm PUBLIC SuiteSparse::SuiteSparse)
+
+# dune-ddm calls BLAS and LAPACK directly (see src/blas_lapack.cc). They are
+# searched for in cmake/modules/DuneDdmMacros.cmake like SuiteSparse.
+target_link_libraries(duneddm PUBLIC LAPACK::LAPACK BLAS::BLAS)
 
 # duneddm compiles the implementations in src/, which include dune-ddm (dune/ddm/
 # and include/ddm/) and dune-istl headers.

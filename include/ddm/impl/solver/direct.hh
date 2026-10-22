@@ -2,8 +2,10 @@
 
 #include "ddm/check.hh"
 #include "ddm/mat/mat.hh"
+#include "ddm/multivec/multivec.hh"
 #include "ddm/prec/prec.hh"
 #include "ddm/solver/solver.hh"
+#include "ddm/vec/vec.hh"
 
 #include <memory>
 
@@ -19,9 +21,29 @@ public:
   }
 
 private:
-  void do_solve(const Vec<T>& b, Vec<T>& x) override { this->prec()->apply(x, b); }
-  void do_solve_transposed(const Vec<T>& b, Vec<T>& x) override { this->prec()->apply_transposed(x, b); }
+  void do_solve_multi(const MultiVec<T>& b, MultiVec<T>& x) override
+  {
+    this->prec()->apply(x, b);
+  }
 
-  void do_info() const override { logger::info("Direct solver (applies the preconditioner once)"); }
+  void do_solve_transposed_multi(const MultiVec<T>& b, MultiVec<T>& x) override
+  {
+    this->prec()->apply_transposed(x, b);
+  }
+
+  void do_solve(const Vec<T>& b, Vec<T>& x) override
+  {
+    this->prec()->apply(x, b);
+  }
+
+  void do_solve_transposed(const Vec<T>& b, Vec<T>& x) override
+  {
+    this->prec()->apply_transposed(x, b);
+  }
+
+  void do_info() const override
+  {
+    logger::info("Direct solver (applies the preconditioner once)");
+  }
 };
 } // namespace ddm

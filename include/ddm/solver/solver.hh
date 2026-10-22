@@ -4,6 +4,7 @@
 #include "ddm/check.hh"
 #include "ddm/logger.hh"
 #include "ddm/mat/mat.hh"
+#include "ddm/multivec/multivec.hh"
 #include "ddm/prec/prec.hh"
 #include "ddm/registry.hh"
 #include "ddm/vec/vec.hh"
@@ -27,17 +28,33 @@ public:
   // Solves A x = b, x is used as the initial guess
   void solve(const Vec<T>& b, Vec<T>& x)
   {
-    check_solve_args(b, x, "solve()");
+    check_solve_args(b.multivec(), x.multivec(), "solve()");
     if (info_) info();
     do_solve(b, x);
+  }
+
+  // Solves A X = B column by column, X is used as the initial guess
+  void solve(const MultiVec<T>& B, MultiVec<T>& X)
+  {
+    check_solve_args(B, X, "solve()");
+    if (info_) info();
+    do_solve_multi(B, X);
   }
 
   // Solves A^T x = b, x is used as the initial guess. Not every solver supports this, the others throw
   void solve_transposed(const Vec<T>& b, Vec<T>& x)
   {
-    check_solve_args(b, x, "solve_transposed()");
+    check_solve_args(b.multivec(), x.multivec(), "solve_transposed()");
     if (info_) info();
     do_solve_transposed(b, x);
+  }
+
+  // Solves A^T X = B column by column, X is used as the initial guess. Not every solver supports this, the others throw
+  void solve_transposed(const MultiVec<T>& B, MultiVec<T>& X)
+  {
+    check_solve_args(B, X, "solve_transposed()");
+    if (info_) info();
+    do_solve_transposed_multi(B, X);
   }
 
   const std::shared_ptr<const Mat<T>>& mat() const
@@ -120,20 +137,44 @@ protected:
   }
 
 private:
-  void check_solve_args(const Vec<T>& b, const Vec<T>& x, std::string_view op) const
+  // Also used for the transposed solves, which is only correct because the matrix is square (see the constructor)
+  void check_solve_args(const MultiVec<T>& b, const MultiVec<T>& x, std::string_view op) const
   {
-    DDM_CHECK(!b.multivec().overlaps(x.multivec()), "solver: {} requires distinct vectors b and x", op);
+    DDM_CHECK(!b.overlaps(x), "solver: {} requires distinct vectors b and x", op);
+    DDM_CHECK(b.cols() == x.cols(), "solver: {} requires multivectors with the same number of columns, but b has {} and x has {}", op, b.cols(), x.cols());
     DDM_CHECK(A_->is_assembled(), "solver: {} called with unassembled matrix", op);
-    DDM_CHECK(b.size() == A_->rows() && x.size() == A_->cols(), "solver: {} size mismatch, matrix is {}x{}, but b has size {} and x has size {}", op, A_->rows(), A_->cols(), b.size(), x.size());
+    DDM_CHECK(b.rows() == A_->rows() && x.rows() == A_->cols(), "solver: {} size mismatch, matrix is {}x{}, but b has size {} and x has size {}", op, A_->rows(), A_->cols(), b.rows(), x.rows());
     DDM_CHECK(b.backend() == A_->backend() && x.backend() == A_->backend(), "solver: {} backend mismatch, matrix is {}, b is {}, x is {}", op, to_string(A_->backend()), to_string(b.backend()),
               to_string(x.backend()));
   }
 
-  virtual void do_solve(const Vec<T>& b, Vec<T>& x) = 0;
-  virtual void do_solve_transposed(const Vec<T>&, Vec<T>&)
+  // Calls solve_column(b, x) for every column b of B and the corresponding column x of X
+  template <class F>
+  static void for_each_column(const MultiVec<T>& B, MultiVec<T>& X, F&& solve_column)
   {
-    DDM_CHECK(false, "solver: solve_transposed() is not supported by this solver");
+    for (Index j = 0; j < B.cols(); ++j) {
+      const auto b = column(B, j);
+      auto x = column(X, j);
+      solve_column(b, x);
+    }
   }
+
+  // Every solver implements the solve for one vector
+  virtual void do_solve(const Vec<T>& b, Vec<T>& x) = 0;
+
+  // Solvers that can do better than one solve per column override this
+  virtual void do_solve_multi(const MultiVec<T>& B, MultiVec<T>& X)
+  {
+    for_each_column(B, X, [this](const Vec<T>& b, Vec<T>& x) { do_solve(b, x); });
+  }
+
+  virtual void do_solve_transposed(const Vec<T>&, Vec<T>&) { DDM_CHECK(false, "solver: solve_transposed() is not supported by this solver"); }
+
+  virtual void do_solve_transposed_multi(const MultiVec<T>& B, MultiVec<T>& X)
+  {
+    for_each_column(B, X, [this](const Vec<T>& b, Vec<T>& x) { do_solve_transposed(b, x); });
+  }
+
   virtual void do_info() const = 0;
 
   std::shared_ptr<const Mat<T>> A_;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ddm/eigensolver/eigensolver.hh"
+#include "ddm/impl/blas_lapack.hh"
 #include "ddm/index.hh"
 #include "ddm/logger.hh"
 #include "ddm/mat/mat.hh"
@@ -21,7 +22,7 @@
 #ifdef DUNE_DDM_HAVE_SPECTRA
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wextra-semi"
-#include <Eigen/Eigenvalues>
+#include <Eigen/Core>
 #pragma GCC diagnostic pop
 #endif
 
@@ -86,37 +87,54 @@ public:
     return A_dir_ != nullptr;
   }
 
-  // y = harmonic function with the boundary values of x (projection onto H). Requires A_dir
-  void project(const Vec<T>& x, Vec<T>& y) const
+  // Y[:] = harmonic function with the boundary values of X[:] (projection onto H). Requires A_dir
+  void project(const MultiVec<T>& X, MultiVec<T>& Y) const
   {
     Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Harmonic space", "project")};
     DDM_CHECK(can_project(), "HarmonicSpace: project() requires a solver for the matrix, pass A_dir to the constructor");
-    if (!rhs_.has_value()) rhs_.emplace(A_->create_range_vector());
+    DDM_CHECK(X.cols() == Y.cols(), "HarmonicSpace: project() multivectors must have the same number of columns, X has {}, Y has {}", X.cols(), Y.cols());
+
+    if (!rhs_) rhs_ = X.create_multivector(X.rows(), X.cols());
 
     {
       rhs_->zero();
-      auto x_host = x.host_view(read);
+      auto x_host = X.host_view(read);
       auto rhs_host = rhs_->host_view(read_write);
-      for (auto idx : boundary_) rhs_host[idx] = x_host[idx];
+      for (Index k = 0; k < X.cols(); ++k)
+        for (auto idx : boundary_) rhs_host(idx, k) = x_host(idx, k);
     }
-    A_dir_->solve(*rhs_, y);
+    A_dir_->solve(*rhs_, Y);
   }
 
-  // y = transpose of project() applied to x: the boundary values of A_dir^{-T} x, zero elsewhere. Requires A_dir and
-  // that its solver supports solve_transposed()
-  void project_transposed(const Vec<T>& x, Vec<T>& y) const
+  // y = harmonic function with the boundary values of x (projection onto H). Requires A_dir
+  void project(const Vec<T>& x, Vec<T>& y) const
+  {
+    project(x.multivec(), y.multivec());
+  }
+
+  // Y = transpose of project() applied to X: the boundary values of A_dir^{-T} X, zero elsewhere.
+  // Requires A_dir and that its solver supports solve_transposed()
+  void project_transposed(const MultiVec<T>& X, MultiVec<T>& Y) const
   {
     Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Harmonic space", "project transposed")};
     DDM_CHECK(can_project(), "HarmonicSpace: project_transposed() requires a solver for the matrix, pass A_dir to the constructor");
-    if (!tmp_.has_value()) tmp_.emplace(A_->create_domain_vector());
+    if (!tmp_) tmp_ = X.create_multivector(X.rows(), X.cols());
 
     tmp_->zero();
-    A_dir_->solve_transposed(x, *tmp_);
+    A_dir_->solve_transposed(X, *tmp_);
 
-    y.zero();
+    Y.zero();
     auto tmp_host = std::as_const(*tmp_).host_view(read);
-    auto y_host = y.host_view(read_write);
-    for (auto idx : boundary_) y_host[idx] = tmp_host[idx];
+    auto y_host = Y.host_view(read_write);
+    for (Index k = 0; k < X.cols(); ++k)
+      for (auto idx : boundary_) y_host(idx, k) = tmp_host(idx, k);
+  }
+
+  // y = transpose of project() applied to x: the boundary values of A_dir^{-T} x, zero elsewhere.
+  // Requires A_dir and that its solver supports solve_transposed()
+  void project_transposed(const Vec<T>& x, Vec<T>& y) const
+  {
+    project_transposed(x.multivec(), y.multivec());
   }
 
 private:
@@ -125,8 +143,8 @@ private:
   std::vector<Index> dirichlet_;
   std::vector<Index> interior_;
   std::shared_ptr<Solver<T>> A_dir_;
-  mutable std::optional<Vec<T>> rhs_; ///< x with everything except the boundary values set to zero
-  mutable std::optional<Vec<T>> tmp_; ///< A_dir^{-T} x in project_transposed()
+  mutable std::unique_ptr<MultiVec<T>> rhs_; ///< x with everything except the boundary values set to zero
+  mutable std::unique_ptr<MultiVec<T>> tmp_; ///< A_dir^{-T} x in project_transposed()
 };
 
 namespace detail {
@@ -288,57 +306,62 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_basis(const Dune::ParameterTree
   const Index n_boundary = std::ssize(H.boundary());
   const int nev = config.sub("eigensolver").get("nev", Eigensolver<T>::default_nev);
   DDM_CHECK(1 <= nev && nev <= n_boundary, "solve_harmonic_gevp_basis(): nev must be between 1 and the number of boundary dofs {}, got {}", n_boundary, nev);
+  logger::debug_all("Harmonic basis of {} dofs with {} boundary dofs", A->rows(), n_boundary);
 
   // The basis, one column per boundary dof
+  auto I = A->create_range_multivector(n_boundary);
   auto E = A->create_domain_multivector(n_boundary);
   {
-    auto e = A->create_domain_vector();
+    auto I_host = I->host_view(read_write);
     for (Index k = 0; k < n_boundary; ++k) {
       const auto i = H.boundary()[k];
-      {
-        auto view = e.host_view(read_write);
-        view[i] = T{1};
-      }
-      auto E_k = column(*E, k);
-      H.project(e, E_k);
-      {
-        auto view = e.host_view(read_write);
-        view[i] = T{0};
-      }
+      I_host(i, k) = 1;
     }
   }
+  H.project(*I, *E);
 
   // The reduced matrices E^T A E and E^T B E
   auto At = E->create_multivector(n_boundary, n_boundary);
   auto Bt = E->create_multivector(n_boundary, n_boundary);
   {
+    auto* spmm_event = Logger::get().registerOrGetEvent("Harmonic basis", "spmm");
+    auto* dot_event = Logger::get().registerOrGetEvent("Harmonic basis", "dot");
     auto W = A->create_domain_multivector(n_boundary);
-    A->spmm(*E, *W);
-    E->dot(*W, *At);
-    B->spmm(*E, *W);
-    E->dot(*W, *Bt);
+
+    // Mt = E^H M E
+    const auto reduce = [&](const LocalMat<T>& M, MultiVec<T>& Mt) {
+      {
+        Logger::ScopedLog sl{spmm_event};
+        M.spmm(*E, *W);
+      }
+      Logger::ScopedLog sl{dot_event};
+      E->dot(*W, Mt);
+    };
+    reduce(*A, *At);
+    reduce(*B, *Bt);
   }
 
-  // Both are column-major, like Eigen's matrices. Eigen only reads the lower triangles, so it doesn't matter that
-  // rounding makes the reduced matrices slightly non-symmetric.
+  // Both are column-major, like Eigen's matrices. LAPACK only reads the lower triangles, so it doesn't matter that
+  // rounding makes the reduced matrices slightly non-symmetric. Only the nev largest mu are computed.
   using Matrix = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>;
-  Eigen::GeneralizedSelfAdjointEigenSolver<Matrix> es;
+  std::vector<typename Matrix::RealScalar> mu(nev);
+  Matrix Z(n_boundary, nev);
   {
     Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Eigensolver", "solve")};
     const auto at = std::as_const(*At).host_view(read);
     const auto bt = std::as_const(*Bt).host_view(read);
-    const Matrix Bm = Eigen::Map<const Matrix>(bt.data(), n_boundary, n_boundary);
-    const Matrix S = Eigen::Map<const Matrix>(at.data(), n_boundary, n_boundary) + Bm;
-    es.compute(Bm, S);
+    Matrix Bm = Eigen::Map<const Matrix>(bt.data(), n_boundary, n_boundary);
+    Matrix S = Eigen::Map<const Matrix>(at.data(), n_boundary, n_boundary) + Bm;
+    const int n = static_cast<int>(n_boundary);
+    const int info = lapack::sygvx(n, Bm.data(), S.data(), n - nev + 1, n, mu.data(), Z.data());
+    DDM_CHECK(info == 0, "solve_harmonic_gevp_basis(): the dense eigensolver failed, LAPACK returned info {}", info);
   }
-  DDM_CHECK(es.info() == Eigen::Success, "solve_harmonic_gevp_basis(): the dense eigensolver failed");
 
-  // The mu are sorted from small to large, so the last nev columns in reverse order belong to the smallest lambda
-  const auto& mu = es.eigenvalues();
-  logger::debug_all("Dense eigensolver computed {} eigenvalues: smallest {}, largest {}", nev, 1 / mu(n_boundary - 1) - 1, 1 / mu(n_boundary - nev) - 1);
+  // The mu are sorted from small to large, so the columns of Z in reverse order belong to the smallest lambda
+  logger::debug_all("Dense eigensolver computed {} eigenvalues: smallest {}, largest {}", nev, 1 / mu[nev - 1] - 1, 1 / mu[0] - 1);
   if (config.sub("eigensolver").get("print_eigenvalues", false)) {
     std::vector<typename Matrix::RealScalar> lambda;
-    for (int j = 0; j < nev; ++j) lambda.push_back(1 / mu(n_boundary - 1 - j) - 1);
+    for (int j = 0; j < nev; ++j) lambda.push_back(1 / mu[nev - 1 - j] - 1);
     logger::print_all("Eigenvalues: {}", logger::join(lambda));
   }
 
@@ -346,7 +369,7 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_basis(const Dune::ParameterTree
   auto Y = E->create_multivector(n_boundary, nev);
   {
     auto view = Y->host_view(write);
-    Eigen::Map<Matrix>(view.data(), n_boundary, nev) = es.eigenvectors().rightCols(nev).rowwise().reverse();
+    Eigen::Map<Matrix>(view.data(), n_boundary, nev) = Z.rowwise().reverse();
   }
   auto vectors = std::shared_ptr<MultiVec<T>>(A->create_domain_multivector(nev));
   E->mult(*Y, *vectors);

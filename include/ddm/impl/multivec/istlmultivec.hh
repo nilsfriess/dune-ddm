@@ -1,6 +1,8 @@
 #pragma once
 
 #include "ddm/backend_id.hh"
+#include "ddm/check.hh"
+#include "ddm/impl/blas_lapack.hh"
 #include "ddm/index.hh"
 #include "ddm/multivec/multivec.hh"
 #include "ddm/vec/host_view.hh"
@@ -8,9 +10,9 @@
 
 #include <algorithm>
 #include <cmath>
-#include <complex>
 #include <cstddef>
 #include <dune/common/math.hh>
+#include <limits>
 #include <memory>
 #include <span>
 #include <type_traits>
@@ -56,11 +58,20 @@ public:
   {
   }
 
-  BackendId backend() const override { return BackendId::istl; }
+  BackendId backend() const override
+  {
+    return BackendId::istl;
+  }
 
   // The data, column by column
-  std::span<T> data() { return data_; }
-  std::span<const T> data() const { return data_; }
+  std::span<T> data()
+  {
+    return data_;
+  }
+  std::span<const T> data() const
+  {
+    return data_;
+  }
 
 private:
   // A view of the columns [first, first + count) of parent
@@ -70,18 +81,30 @@ private:
   {
   }
 
-  std::unique_ptr<MultiVec<T>> do_columns(Index first, Index count) const override { return std::unique_ptr<MultiVec<T>>(new IstlMultiVec(*this, first, count)); }
+  std::unique_ptr<MultiVec<T>> do_columns(Index first, Index count) const override
+  {
+    return std::unique_ptr<MultiVec<T>>(new IstlMultiVec(*this, first, count));
+  }
 
-  std::unique_ptr<MultiVec<T>> do_create_multivector(Index rows, Index cols) const override { return std::make_unique<IstlMultiVec>(rows, cols); }
+  std::unique_ptr<MultiVec<T>> do_create_multivector(Index rows, Index cols) const override
+  {
+    return std::make_unique<IstlMultiVec>(rows, cols);
+  }
 
-  void do_fill(T value) override { std::ranges::fill(data_, value); }
+  void do_fill(T value) override
+  {
+    std::ranges::fill(data_, value);
+  }
 
   void do_scale(T alpha) override
   {
     for (auto& x : data_) x *= alpha;
   }
 
-  void do_copy_from(const MultiVec<T>& X) override { std::ranges::copy(as_istl(X).data(), data_.begin()); }
+  void do_copy_from(const MultiVec<T>& X) override
+  {
+    std::ranges::copy(as_istl(X).data(), data_.begin());
+  }
 
   void do_axpy(T alpha, const MultiVec<T>& X) override
   {
@@ -134,45 +157,33 @@ private:
     for (std::size_t j = 0; j < m; ++j) std::copy_n(s.data() + j * src_rows, n, data_.data() + j * rows);
   }
 
+  // C = X^H Y
   void do_dot(const MultiVec<T>& Y, MultiVec<T>& C) const override
   {
-    const auto y = as_istl(Y).data();
-    auto c = as_istl(C).data();
-    const std::size_t n = this->rows();
-    const std::size_t m_x = this->cols();
-    const std::size_t m_y = Y.cols();
-
-    for (std::size_t b = 0; b < m_y; ++b) {
-      for (std::size_t a = 0; a < m_x; ++a) {
-        T sum{0};
-        for (std::size_t i = 0; i < n; ++i) sum += Dune::conjugateComplex(data_[a * n + i]) * y[b * n + i];
-        c[b * m_x + a] = sum;
-      }
-    }
+    const int n = blas_int(this->rows());
+    detail::blas::gemm('C', 'N', blas_int(this->cols()), blas_int(Y.cols()), n, T{1}, data_.data(), leading_dim(n), as_istl(Y).data().data(), leading_dim(n), T{0}, as_istl(C).data().data(),
+                       leading_dim(blas_int(C.rows())));
   }
 
   // Y = alpha * X M + beta * Y
-  // TODO: Use BLAS for this
   void do_mult(const MultiVec<T>& M, MultiVec<T>& Y, T alpha, T beta) const override
   {
-    const auto m = as_istl(M).data();
-    auto y = as_istl(Y).data();
-    const std::size_t n = this->rows();
-    const std::size_t m_x = this->cols();
-    const std::size_t m_y = Y.cols();
+    const int n = blas_int(this->rows());
+    detail::blas::gemm('N', 'N', n, blas_int(Y.cols()), blas_int(this->cols()), alpha, data_.data(), leading_dim(n), as_istl(M).data().data(), leading_dim(blas_int(M.rows())), beta,
+                       as_istl(Y).data().data(), leading_dim(n));
+  }
 
-    // Column b of Y is a linear combination of the columns of X, so every loop over the rows is contiguous
-    for (std::size_t b = 0; b < m_y; ++b) {
-      auto y_b = y.subspan(b * n, n);
-      if (beta == T{0}) std::ranges::fill(y_b, T{0});
-      else if (beta != T{1})
-        for (auto& v : y_b) v *= beta;
+  // BLAS takes the sizes as int
+  static int blas_int(Index n)
+  {
+    DDM_CHECK(n <= std::numeric_limits<int>::max(), "istl multivector: size {} too large for BLAS", n);
+    return static_cast<int>(n);
+  }
 
-      for (std::size_t a = 0; a < m_x; ++a) {
-        const T coeff = alpha * m[b * m_x + a];
-        for (std::size_t i = 0; i < n; ++i) y_b[i] += coeff * data_[a * n + i];
-      }
-    }
+  // BLAS requires a leading dimension of at least 1, also for matrices without rows
+  static int leading_dim(int rows)
+  {
+    return std::max(1, rows);
   }
 
   void do_pack_rows(std::span<const Index> idx, MultiVec<T>& buffer) const override
@@ -208,7 +219,10 @@ private:
   }
 
   // The data is in host memory already, so there is nothing to copy
-  std::span<T> acquire_host(Access /*mode*/) override { return data_; }
+  std::span<T> acquire_host(Access /*mode*/) override
+  {
+    return data_;
+  }
   void release_host(Access /*mode*/) override {}
 
   // TODO(20261007-071012): Use an AlignedAllocator to allocate the MultiVec data

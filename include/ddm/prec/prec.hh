@@ -2,7 +2,9 @@
 
 #include "ddm/backend_id.hh"
 #include "ddm/check.hh"
+#include "ddm/index.hh"
 #include "ddm/mat/mat.hh"
+#include "ddm/multivec/multivec.hh"
 #include "ddm/registry.hh"
 #include "ddm/vec/vec.hh"
 
@@ -36,15 +38,29 @@ public:
   // z = P^{-1} r
   void apply(Vec<T>& z, const Vec<T>& r) final
   {
-    check_apply_args(z, r, "apply()");
+    check_apply_args(z.multivec(), r.multivec(), "apply()");
     do_apply(z, r);
+  }
+
+  // Z = P^{-1} R column by column
+  void apply(MultiVec<T>& Z, const MultiVec<T>& R)
+  {
+    check_apply_args(Z, R, "apply()");
+    do_apply_multi(Z, R);
   }
 
   // z = P^{-T} r. Not every preconditioner supports this, the others throw
   void apply_transposed(Vec<T>& z, const Vec<T>& r)
   {
-    check_apply_args(z, r, "apply_transposed()");
+    check_apply_args(z.multivec(), r.multivec(), "apply_transposed()");
     do_apply_transposed(z, r);
+  }
+
+  // Z = P^{-T} R column by column. Not every preconditioner supports this, the others throw
+  void apply_transposed(MultiVec<T>& Z, const MultiVec<T>& R)
+  {
+    check_apply_args(Z, R, "apply_transposed()");
+    do_apply_transposed_multi(Z, R);
   }
 
   // Recomputes the preconditioner after the values (but not the pattern) of the matrix changed
@@ -74,18 +90,45 @@ protected:
   }
 
 private:
-  void check_apply_args(const Vec<T>& z, const Vec<T>& r, std::string_view op) const
+  // Also used for the transposed applications, which is only correct because the matrix is square (see the
+  // constructor)
+  void check_apply_args(const MultiVec<T>& z, const MultiVec<T>& r, std::string_view op) const
   {
-    DDM_CHECK(!r.multivec().overlaps(z.multivec()), "prec: {} requires distinct vectors r and z", op);
-    DDM_CHECK(r.size() == A_->rows() && z.size() == A_->rows(), "prec: {} size mismatch, matrix is {}x{}, but r has size {} and z has size {}", op, A_->rows(), A_->cols(), r.size(), z.size());
+    DDM_CHECK(!r.overlaps(z), "prec: {} requires distinct vectors r and z", op);
+    DDM_CHECK(r.cols() == z.cols(), "prec: {} requires multivectors with the same number of columns, but r has {} and z has {}", op, r.cols(), z.cols());
+    DDM_CHECK(r.rows() == A_->rows() && z.rows() == A_->rows(), "prec: {} size mismatch, matrix is {}x{}, but r has size {} and z has size {}", op, A_->rows(), A_->cols(), r.rows(), z.rows());
     DDM_CHECK(r.backend() == A_->backend() && z.backend() == A_->backend(), "prec: {} backend mismatch, matrix is {}, r is {}, z is {}", op, to_string(A_->backend()), to_string(r.backend()),
               to_string(z.backend()));
   }
 
+  // Calls apply_column(z, r) for every column z of Z and the corresponding column r of R
+  template <class F>
+  static void for_each_column(MultiVec<T>& Z, const MultiVec<T>& R, F&& apply_column)
+  {
+    for (Index j = 0; j < R.cols(); ++j) {
+      auto z = column(Z, j);
+      const auto r = column(R, j);
+      apply_column(z, r);
+    }
+  }
+
+  // Every preconditioner implements the application to one vector
   virtual void do_apply(Vec<T>& z, const Vec<T>& r) = 0;
+
+  // Preconditioners that can do better than one application per column override this
+  virtual void do_apply_multi(MultiVec<T>& Z, const MultiVec<T>& R)
+  {
+    for_each_column(Z, R, [this](Vec<T>& z, const Vec<T>& r) { do_apply(z, r); });
+  }
+
   virtual void do_apply_transposed(Vec<T>&, const Vec<T>&)
   {
     DDM_CHECK(false, "prec: apply_transposed() is not supported by this preconditioner");
+  }
+
+  virtual void do_apply_transposed_multi(MultiVec<T>& Z, const MultiVec<T>& R)
+  {
+    for_each_column(Z, R, [this](Vec<T>& z, const Vec<T>& r) { do_apply_transposed(z, r); });
   }
   virtual void do_update() = 0;
   virtual void do_info() const = 0;

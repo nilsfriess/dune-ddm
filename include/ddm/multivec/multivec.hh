@@ -152,6 +152,7 @@ public:
   {
     return cols_;
   }
+
   virtual BackendId backend() const = 0;
 
   // Whether this is a view of the columns of another multivector, see columns()
@@ -190,6 +191,7 @@ public:
   {
     return MultiVecHostView<T>(this, open_view(Access::write), Access::write);
   }
+
   MultiVecHostView<T> host_view(read_write_t)
   {
     return MultiVecHostView<T>(this, open_view(Access::read_write), Access::read_write);
@@ -214,6 +216,11 @@ public:
   {
     check_usable("scale()");
     do_scale(alpha);
+  }
+
+  void zero()
+  {
+    fill(T{0});
   }
 
   // *this = X

@@ -41,14 +41,35 @@ public:
   {
   }
 
-  Index rows() const override { return static_cast<Index>(A_.N()); }
-  Index cols() const override { return static_cast<Index>(A_.M()); }
-  BackendId backend() const override { return BackendId::istl; }
+  Index rows() const override
+  {
+    return static_cast<Index>(A_.N());
+  }
 
-  Vec<T> create_domain_vector() const override { return Vec<T>(std::make_unique<IstlMultiVec<T>>(cols(), 1)); }
-  Vec<T> create_range_vector() const override { return Vec<T>(std::make_unique<IstlMultiVec<T>>(rows(), 1)); }
+  Index cols() const override
+  {
+    return static_cast<Index>(A_.M());
+  }
 
-  const Native& native() const { return A_; }
+  BackendId backend() const override
+  {
+    return BackendId::istl;
+  }
+
+  Vec<T> create_domain_vector() const override
+  {
+    return Vec<T>(std::make_unique<IstlMultiVec<T>>(cols(), 1));
+  }
+
+  Vec<T> create_range_vector() const override
+  {
+    return Vec<T>(std::make_unique<IstlMultiVec<T>>(rows(), 1));
+  }
+
+  const Native& native() const
+  {
+    return A_;
+  }
 
 private:
   void do_add_values(std::span<const Index> rows, std::span<const Index> cols, std::span<const T> vals) override
@@ -96,14 +117,7 @@ private:
 
   void do_mv(const Vec<T>& x, Vec<T>& y) const override
   {
-    const auto x_data = as_istl(x).data();
-    auto y_data = as_istl(y).data();
-    for (std::size_t i = 0; i < A_.N(); ++i) {
-      const auto row = A_[i];
-      T y_i{0};
-      for (auto ci = row.begin(); ci != row.end(); ++ci) y_i += *ci * x_data[ci.index()];
-      y_data[i] = y_i;
-    }
+    mv_data(as_istl(x).data().data(), as_istl(y).data().data());
   }
 
   void do_usmv(T alpha, const Vec<T>& x, Vec<T>& y) const override
@@ -116,18 +130,14 @@ private:
     }
   }
 
+  // One column at a time, so that all accesses to X and Y are contiguous
   void do_spmm(const MultiVec<T>& X, MultiVec<T>& Y) const override
   {
     const auto x = as_istl(X).data();
     auto y = as_istl(Y).data();
     const std::size_t x_rows = X.rows();
     const std::size_t y_rows = Y.rows();
-    const std::size_t m = X.cols();
-
-    std::fill(y.begin(), y.end(), T{0});
-    for (auto ri = A_.begin(); ri != A_.end(); ++ri)
-      for (auto ci = ri->begin(); ci != ri->end(); ++ci)
-        for (std::size_t j = 0; j < m; ++j) y[j * y_rows + ri.index()] += *ci * x[j * x_rows + ci.index()];
+    for (std::size_t j = 0; j < static_cast<std::size_t>(X.cols()); ++j) mv_data(x.data() + j * x_rows, y.data() + j * y_rows);
   }
 
   void do_get_diag(Vec<T>& diag) const override
@@ -141,10 +151,22 @@ private:
     }
   }
 
-  std::unique_ptr<MultiVec<T>> do_create_domain_multivector(Index m) const override { return std::make_unique<IstlMultiVec<T>>(this->cols(), m); }
-  std::unique_ptr<MultiVec<T>> do_create_range_multivector(Index m) const override { return std::make_unique<IstlMultiVec<T>>(this->rows(), m); }
-  std::shared_ptr<LocalMat<T>> do_create_like(const Dune::ParameterTree& config, const Pattern& pattern) const override { return std::make_shared<IstlMat<T>>(config, pattern); }
-  std::shared_ptr<LocalMat<T>> do_clone() const override { return std::make_shared<IstlMat<T>>(*this); }
+  std::unique_ptr<MultiVec<T>> do_create_domain_multivector(Index m) const override
+  {
+    return std::make_unique<IstlMultiVec<T>>(this->cols(), m);
+  }
+  std::unique_ptr<MultiVec<T>> do_create_range_multivector(Index m) const override
+  {
+    return std::make_unique<IstlMultiVec<T>>(this->rows(), m);
+  }
+  std::shared_ptr<LocalMat<T>> do_create_like(const Dune::ParameterTree& config, const Pattern& pattern) const override
+  {
+    return std::make_shared<IstlMat<T>>(config, pattern);
+  }
+  std::shared_ptr<LocalMat<T>> do_clone() const override
+  {
+    return std::make_shared<IstlMat<T>>(*this);
+  }
 
   HostCsr<T> do_host_csr() const override
   {
@@ -172,6 +194,17 @@ private:
     const auto d_istl = as_istl(d).data();
     for (auto ri = A_.begin(); ri != A_.end(); ++ri)
       for (auto ci = ri->begin(); ci != ri->end(); ++ci) *ci *= d_istl[ri.index()] * d_istl[ci.index()];
+  }
+
+  // y = A x for the entries of a vector or of a column of a multivector
+  void mv_data(const T* x, T* y) const
+  {
+    for (std::size_t i = 0; i < A_.N(); ++i) {
+      const auto row = A_[i];
+      T y_i{0};
+      for (auto ci = row.begin(); ci != row.end(); ++ci) y_i += *ci * x[ci.index()];
+      y[i] = y_i;
+    }
   }
 
   Native A_;

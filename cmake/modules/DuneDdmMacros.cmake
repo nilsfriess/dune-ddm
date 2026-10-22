@@ -13,6 +13,11 @@
 # component, so we require it explicitly here.
 find_package(SuiteSparse REQUIRED COMPONENTS UMFPACK CHOLMOD)
 
+# BLAS and LAPACK are public dependencies as well: dune-ddm calls them directly (see src/blas_lapack.cc), and dune-ddm
+# is usually a static library.
+find_package(BLAS REQUIRED)
+find_package(LAPACK REQUIRED)
+
 # STRUMPACK is optional. If it is found, Dune::DDM links it publicly, so it is
 # searched for here for the same reason as SuiteSparse.
 find_package(STRUMPACK CONFIG QUIET)

@@ -8,6 +8,7 @@
 #include "ddm/index.hh"
 #include "ddm/logger.hh"
 #include "ddm/mat/mat.hh"
+#include "ddm/multivec/multivec.hh"
 #include "ddm/prec/prec.hh"
 #include "ddm/vec/vec.hh"
 
@@ -92,6 +93,7 @@ public:
       : Prec<T>(std::move(A))
       , factorize_event_(Logger::get().registerOrGetEvent("STRUMPACK", "factorize"))
       , solve_event_(Logger::get().registerOrGetEvent("STRUMPACK", "solve"))
+      , solve_multi_event_(Logger::get().registerOrGetEvent("STRUMPACK", "solve_multi"))
       , solver_(false, detail::is_mpi_root())
   {
     // TODO(20261006-192425): It should be possible to mark a preconditioner or solver as "sequential" on a higher level
@@ -107,6 +109,14 @@ private:
     Logger::ScopedLog sl{solve_event_};
     if (r.size() == 0) return;
     detail::check_strumpack(solver_.solve(as_istl(r).data().data(), as_istl(z).data().data()), "solve");
+  }
+
+  void do_apply_multi(MultiVec<T>& Z, const MultiVec<T>& R) override
+  {
+    Logger::ScopedLog sl{solve_multi_event_};
+    if (R.rows() == 0 || R.cols() == 0) return;
+    const auto n = static_cast<int>(R.rows());
+    detail::check_strumpack(solver_.solve(static_cast<int>(R.cols()), as_istl(R).data().data(), n, as_istl(Z).data().data(), n), "solve");
   }
 
   // The first call sets the matrix, later ones only update its values, so STRUMPACK reuses the reordering
@@ -132,6 +142,7 @@ private:
 
   Logger::Event* factorize_event_;
   Logger::Event* solve_event_;
+  Logger::Event* solve_multi_event_;
   strumpack::SparseSolver<T, Index> solver_;
   bool matrix_set_ = false;
 };

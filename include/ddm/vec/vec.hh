@@ -193,6 +193,45 @@ Vec<T> column(MultiVec<T>& X, Index j)
   return Vec<T>(X.columns(j, 1));
 }
 
+template <class T>
+class ConstColumn;
+
+// A read-only view of column j of X, see ConstColumn
+template <class T>
+ConstColumn<T> column(const MultiVec<T>& X, Index j);
+
+// A read-only view of a column of a multivector, returned by column() for a const multivector. It can be passed
+// wherever a const Vec<T>& is expected (use *c or c-> otherwise), and like a Vec view it must not outlive the
+// multivector. It can neither be copied nor moved, so the view inside never ends up in a non-const Vec: copying the
+// vector gives an owning copy.
+template <class T>
+class ConstColumn {
+public:
+  ConstColumn(const ConstColumn&) = delete;
+  ConstColumn& operator=(const ConstColumn&) = delete;
+
+  operator const Vec<T>&() const { return vec_; }
+  const Vec<T>& operator*() const { return vec_; }
+  const Vec<T>* operator->() const { return &vec_; }
+
+private:
+  friend ConstColumn column<T>(const MultiVec<T>& X, Index j);
+
+  explicit ConstColumn(Vec<T> vec)
+      : vec_(std::move(vec))
+  {
+  }
+
+  Vec<T> vec_;
+};
+
+template <class T>
+ConstColumn<T> column(const MultiVec<T>& X, Index j)
+{
+  // The view is only accessible as const Vec<T>& through ConstColumn, so dropping the const is safe
+  return ConstColumn<T>(Vec<T>(const_cast<MultiVec<T>&>(X).columns(j, 1)));
+}
+
 // Returns a zero-initialized vector of size n with the same backend as X, e.g. for the coefficients of a linear
 // combination of the columns of X
 template <class T>
