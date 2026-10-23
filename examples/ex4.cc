@@ -8,8 +8,8 @@
 // of the discrete solution is printed at the end.
 //
 // As in that paper, the eigenproblems of MsGFEM use the k-weighted energy form int A grad(u) grad(v) + k^2 V^2 u v. Its
-// matrix is assembled alongside and attached to the matrix (see Mat::attach_symmetric_matrix()); harmonicity is still
-// defined by the Helmholtz matrix.
+// matrix is assembled with a second grid operator and attached to the matrix (see Mat::attach_symmetric_matrix());
+// harmonicity is still defined by the Helmholtz matrix.
 //
 // Example: mpirun -np 4 ./ex4 -grid.cells "32 32" -problem.k 10 -prec.type tlschwarz -prec.coarse_space_type msgfem
 
@@ -19,6 +19,7 @@
 #include "ddm/solver/solver.hh"
 #include "ddm/vec/vec.hh"
 #include "examples/assembly.hh"
+#include "examples/pdelab_communication.hh"
 
 #include <cmath>
 #include <complex>
@@ -77,7 +78,12 @@ std::complex<double> impedance_data(const ConstantParameters& params, const Dune
   return grad_u_n - ik * exact_solution(params, x);
 }
 
-class ConformingHelmholtzLocalOperator : public Dune::PDELab::FullVolumePattern, public Dune::PDELab::LocalOperatorDefaultFlags {
+// The residual terms alpha_volume() and alpha_boundary() multiply the element matrix with the coefficients (the
+// operator is linear and its data is in the lambda terms)
+class ConformingHelmholtzLocalOperator : public Dune::PDELab::JacobianBasedAlphaVolume<ConformingHelmholtzLocalOperator>,
+                                         public Dune::PDELab::JacobianBasedAlphaBoundary<ConformingHelmholtzLocalOperator>,
+                                         public Dune::PDELab::FullVolumePattern,
+                                         public Dune::PDELab::LocalOperatorDefaultFlags {
 public:
   enum { doAlphaVolume = true };
   enum { doLambdaVolume = true };
@@ -242,12 +248,26 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   gfs.name("solution");
 
   ConstantParameters params(config.get("problem.k", 1.));
-  typename GFS::template ConstraintsContainer<RF>::Type cc;
+  using CC = typename GFS::template ConstraintsContainer<RF>::Type;
+  CC cc;
   Dune::PDELab::constraints(params, gfs, cc);
   ConformingHelmholtzLocalOperator lop(params);
   ConformingHelmholtzLocalOperator lop_energy(params, true);
 
-  auto [A, b] = ddm::examples::assemble_conforming<RF>(config, gfs, lop, cc, &lop_energy);
+  // Only the grid loops of the grid operators are used, PDELab assembles no matrix (the matrix backend is part of the
+  // type)
+  using MBE = Dune::PDELab::ISTL::BCRSMatrixBackend<>;
+  using GO = Dune::PDELab::GridOperator<GFS, GFS, ConformingHelmholtzLocalOperator, MBE, RF, RF, RF, CC, CC>;
+  GO go(gfs, cc, gfs, cc, lop, MBE(19));
+  GO go_energy(gfs, cc, gfs, cc, lop_energy, MBE(19));
+
+  // As in PDELab, we solve for a correction: with the Jacobian A and the residual r at x0 = 0, A d = r gives the
+  // solution x0 - d. The energy matrix is attached to A.
+  GO::Traits::Domain x0(gfs, 0.0);
+  auto comm = make_communication(gfs);
+  auto A = ddm::examples::assemble_jacobian(config, go, x0, comm);
+  A->attach_symmetric_matrix(ddm::examples::assemble_jacobian(config, go_energy, x0, comm));
+  auto r = ddm::examples::assemble_residual(go, x0, *A);
 
   // Define the VTKWriter already here, because the preconditioner might write something to the debug sink. VTK has no
   // complex numbers, so every vector is written as its real and imaginary part, each subsampled so that the P2 functions
@@ -277,8 +297,11 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   // Now the problem is fully assembled and we can setup the preconditioner and solver and solve it
   auto P = ddm::create_prec<RF>(config.sub("prec"), A);
   auto solver = ddm::create_solver<RF>(config.sub("solver"), A, P);
+  auto d = A->create_domain_vector();
+  solver->solve(r, d);
   auto x = A->create_domain_vector();
-  solver->solve(b, x);
+  ddm::examples::copy(x0, x);
+  x -= d;
 
   const auto error = l2_error(gfs, params, x);
   if (gv.comm().rank() == 0) std::cout << "L2 error: " << error << "\n";

@@ -1,4 +1,9 @@
 if (${dune-pdelab_FOUND})
+   # 2d diffusion example with a high-contrast coefficient, the first example to read
+   add_executable(ex0 ex0.cc)
+   target_link_libraries(ex0 PUBLIC duneddm)
+   target_link_dune_default_libraries(ex0)
+
    # 3d linear elasticity example
    add_executable(ex1 ex1.cc)
    target_link_libraries(ex1 PUBLIC duneddm)

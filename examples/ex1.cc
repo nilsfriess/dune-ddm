@@ -4,6 +4,7 @@
 // Example: mpirun -np 4 ./ex1 -grid.cells "4 4 40" -prec.type tlschwarz -prec.coarse_space_type geneo
 
 #include "examples/assembly.hh"
+#include "examples/pdelab_communication.hh"
 
 #include <array>
 #include <ddm/index.hh>
@@ -81,27 +82,40 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   GFS gfs(es, fem);
   gfs.name("displacement");
 
-  BeamParameters<ES, RF> params;
-  typename GFS::template ConstraintsContainer<RF>::Type cc;
+  using Params = BeamParameters<ES, RF>;
+  Params params;
+  using CC = typename GFS::template ConstraintsContainer<RF>::Type;
+  CC cc;
   Dune::PDELab::constraints(params, gfs, cc);
-  Dune::PDELab::LinearElasticity lop(params);
-  auto [A, b] = ddm::examples::assemble_conforming<RF>(config, gfs, lop, cc);
 
-  // Now the problem is fully assembled and we can setup the preconditioner and solver and solve it
+  // Only the grid loop of the grid operator is used, PDELab assembles no matrix (the matrix backend is part of the
+  // type)
+  using LOP = Dune::PDELab::LinearElasticity<Params>;
+  using MBE = Dune::PDELab::ISTL::BCRSMatrixBackend<>;
+  using GO = Dune::PDELab::GridOperator<GFS, GFS, LOP, MBE, RF, RF, RF, CC, CC>;
+  LOP lop(params);
+  GO go(gfs, cc, gfs, cc, lop, MBE(45));
+
+  // As in PDELab, we solve for a correction: with the Jacobian A and the residual r at x0, A d = r gives the solution
+  // x0 - d. x0 has the Dirichlet values (zero at the clamped end), d is zero at the Dirichlet dofs.
+  using X = GO::Traits::Domain;
+  X x0(gfs, 0.0);
+  auto comm = make_communication(gfs);
+  auto A = ddm::examples::assemble_jacobian(config, go, x0, comm);
+  auto r = ddm::examples::assemble_residual(go, x0, *A);
+
   auto P = ddm::create_prec<RF>(config.sub("prec"), A);
   auto solver = ddm::create_solver<RF>(config.sub("solver"), A, P);
-  auto x = A->create_domain_vector();
-  solver->solve(b, x);
+  auto d = A->create_domain_vector();
+  solver->solve(r, d);
 
-  // VTK output of the displacement
-  Dune::PDELab::Backend::Vector<GFS, RF> x_pdelab(gfs, 0.0);
-  {
-    const auto view = x.host_view(ddm::read);
-    auto& native = Dune::PDELab::Backend::native(x_pdelab);
-    for (std::size_t i = 0; i < view.size(); ++i) native[i][0] = view[i];
-  }
+  // VTK output of the displacement x0 - d
+  X x = x0;
+  X d_pdelab(gfs, 0.0);
+  ddm::examples::copy(d, d_pdelab);
+  x -= d_pdelab;
   Dune::VTKWriter writer(gv);
-  Dune::PDELab::addSolutionToVTKWriter(writer, gfs, x_pdelab);
+  Dune::PDELab::addSolutionToVTKWriter(writer, gfs, x);
   std::vector<int> ranks(gv.size(0), gv.comm().rank());
   writer.addCellData(ranks, "Rank");
   writer.write("ex1");

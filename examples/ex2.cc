@@ -6,16 +6,18 @@
 // right sides the outflow boundary. The diffusion coefficient is a checkerboard of 8 x 8 squares, alternating between 1
 // and 1e-6.
 //
-// As in ex3, PDELab provides the function space and the local operator (ConvectionDiffusionDG), the global assembly into
-// a ddm::Mat is done by assemble_dg() in assembly.hh. The function space includes UGGrid's ghost elements, so that the
-// faces between two ranks can be assembled on one of them. The Dirichlet condition is imposed weakly by the penalty
-// terms on the boundary, there are no constrained dofs. The matrix of the diffusion-only problem is assembled alongside
-// and attached to the matrix (see Mat::attach_symmetric_matrix()).
+// As in ex3, PDELab provides the function space, the local operator (ConvectionDiffusionDG) and the grid operator,
+// assemble_jacobian() and assemble_residual() in assembly.hh assemble into a ddm::Mat and a ddm::Vec with the grid loop
+// of the grid operator. The function space includes UGGrid's ghost elements, so that the faces between two ranks can
+// be assembled on one of them. The Dirichlet condition is imposed weakly by the penalty terms on the boundary, there
+// are no constrained dofs. The matrix of the diffusion-only problem is assembled with a second grid operator and
+// attached to the matrix (see Mat::attach_symmetric_matrix()).
 //
 // Example: mpirun -np 4 ./ex2 -grid.cells "128 128" -prec.type tlschwarz -prec.coarse_space_type nicolaides
 
 #include "ddm/debug/vec_sink.hh"
 #include "examples/assembly.hh"
+#include "examples/pdelab_communication.hh"
 
 #include <array>
 #include <cmath>
@@ -144,11 +146,24 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   LOP lop(params, Dune::PDELab::ConvectionDiffusionDGMethod::SIPG, Dune::PDELab::ConvectionDiffusionDGWeights::weightsOn, alpha);
   LOP lop_sym(params_sym, Dune::PDELab::ConvectionDiffusionDGMethod::SIPG, Dune::PDELab::ConvectionDiffusionDGWeights::weightsOn, alpha);
 
-  auto [A, b] = ddm::examples::assemble_dg<RF>(config, gfs, lop, &lop_sym);
+  // Only the grid loops of the grid operators are used, PDELab assembles no matrix (the matrix backend is part of the
+  // type). There are no constraints.
+  using MBE = Dune::PDELab::ISTL::BCRSMatrixBackend<>;
+  using GO = Dune::PDELab::GridOperator<GFS, GFS, LOP, MBE, RF, RF, RF>;
+  GO go(gfs, gfs, lop, MBE(5));
+  GO go_sym(gfs, gfs, lop_sym, MBE(5));
+
+  // As in PDELab, we solve for a correction: with the Jacobian A and the residual r at x0 = 0, A d = r gives the
+  // solution x0 - d. The Dirichlet data is in the residual, through the penalty terms.
+  using X = GO::Traits::Domain;
+  X x0(gfs, 0.0);
+  auto comm = make_communication(gfs);
+  auto A = ddm::examples::assemble_jacobian(config, go, x0, comm);
+  A->attach_symmetric_matrix(ddm::examples::assemble_jacobian(config, go_sym, x0, comm));
+  auto r = ddm::examples::assemble_residual(go, x0, *A);
 
   // Define the VTKWriter already here, because the preconditioner might write something to the debug sink. The debug
   // vectors and the solution are written as DG functions, subsampled so that the discontinuous polynomials show.
-  using X = Dune::PDELab::Backend::Vector<GFS, RF>;
   using DGF = Dune::PDELab::DiscreteGridFunction<GFS, X>;
   Dune::SubsamplingVTKWriter<GV> writer(gv, Dune::refinementIntervals(degree));
   const auto add_to_writer = [&](std::string_view name, const ddm::Vec<RF>& v) {
@@ -163,8 +178,11 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
 
   auto P = ddm::create_prec<RF>(config.sub("prec"), A);
   auto solver = ddm::create_solver<RF>(config.sub("solver"), A, P);
+  auto d = A->create_domain_vector();
+  solver->solve(r, d);
   auto x = A->create_domain_vector();
-  solver->solve(b, x);
+  ddm::examples::copy(x0, x);
+  x -= d;
 
   // VTK output of the solution and the diffusion coefficient
   add_to_writer(gfs.name(), x);

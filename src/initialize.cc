@@ -1,7 +1,6 @@
 #include "ddm/eigensolver/eigensolver.hh"
 #include "ddm/impl/eigensolver/spectra.hh"
 #include "ddm/impl/mat/istlmat.hh"
-#include "ddm/impl/mat/syclmat.hh"
 #include "ddm/impl/multivec/istlmultivec.hh"
 #include "ddm/impl/prec/ilu_istl.hh"
 #include "ddm/impl/prec/jacobiprec.hh"
@@ -31,10 +30,6 @@ void register_all()
 
   // Register matrices
   register_local_mat<T>("istl", [](const Dune::ParameterTree& config, const Pattern& pattern) { return std::make_shared<IstlMat<T>>(config, pattern); });
-#if DUNE_DDM_HAVE_SYCL
-  // SyclMat is only instantiated for float and double (in src/sycl/syclmat.cc)
-  if constexpr (std::is_floating_point_v<T>) register_local_mat<T>("sycl", [](const Dune::ParameterTree& config, const Pattern& pattern) { return std::make_shared<SyclMat<T>>(config, pattern); });
-#endif
 
   // Register preconditioners
   register_prec<T>("none", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<NonePrec<T>>(config, std::move(A)); });

@@ -4,16 +4,17 @@
 // kappa is the "skyscraper" coefficient: 1 in the background, with an 8 x 8 array of squares (the skyscrapers) whose
 // values grow from 1e5 at (0, 0) to 1.5e6 at (1, 1), and four thin rotated channels with 1.5e5 and 2e6.
 //
-// As in ex1 and ex2, PDELab provides the function space and the local operator (ConvectionDiffusionDG without
-// convection), the global assembly into a ddm::Mat is done by assemble_dg() in assembly.hh. The DG dofs live on the
-// elements. The function space
-// includes UGGrid's ghost elements, so that the faces between two ranks can be assembled on one of them. The Dirichlet
-// condition is imposed weakly by the penalty terms on the boundary, there are no constrained dofs.
+// As in ex1 and ex2, PDELab provides the function space, the local operator (ConvectionDiffusionDG without convection)
+// and the grid operator, assemble_jacobian() and assemble_residual() in assembly.hh assemble into a ddm::Mat and a
+// ddm::Vec with the grid loop of the grid operator. The DG dofs live on the elements. The function space includes
+// UGGrid's ghost elements, so that the faces between two ranks can be assembled on one of them. The Dirichlet condition
+// is imposed weakly by the penalty terms on the boundary, there are no constrained dofs.
 //
 // Example: mpirun -np 4 ./ex3 -grid.cells "128 128" -prec.type tlschwarz -prec.coarse_space_type geneo
 
 #include "ddm/debug/vec_sink.hh"
 #include "examples/assembly.hh"
+#include "examples/pdelab_communication.hh"
 
 #include <array>
 #include <cmath>
@@ -129,18 +130,27 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   constexpr double alpha = 2;
   LOP lop(params, Dune::PDELab::ConvectionDiffusionDGMethod::SIPG, Dune::PDELab::ConvectionDiffusionDGWeights::weightsOn, alpha);
 
-  auto [A, b] = ddm::examples::assemble_dg<RF>(config, gfs, lop);
+  // Only the grid loop of the grid operator is used, PDELab assembles no matrix (the matrix backend is part of the
+  // type). There are no constraints.
+  using MBE = Dune::PDELab::ISTL::BCRSMatrixBackend<>;
+  using GO = Dune::PDELab::GridOperator<GFS, GFS, LOP, MBE, RF, RF, RF>;
+  GO go(gfs, gfs, lop, MBE(5));
+
+  // As in PDELab, we solve for a correction: with the Jacobian A and the residual r at x0 = 0, A d = r gives the
+  // solution x0 - d
+  using X = GO::Traits::Domain;
+  X x0(gfs, 0.0);
+  auto comm = make_communication(gfs);
+  auto A = ddm::examples::assemble_jacobian(config, go, x0, comm);
+  auto r = ddm::examples::assemble_residual(go, x0, *A);
 
   // Attach some vectors to the matrix that approximate low energy-modes (they will then be picked up by the Nicolaides coarse space,
   // if it is selected at runtime). Here we attach the constant function and the two linear functions f(x,y) = x and f(x,y) = y.
   std::vector<ddm::Vec<RF>> vs;
   const auto add_vector = [&](auto&& f) {
-    using V = Dune::PDELab::Backend::Vector<GFS, RF>;
-    V x(gfs, 0.0);
+    X x(gfs, 0.0);
     Dune::PDELab::interpolate(f, gfs, x);
-    auto& v = vs.emplace_back(A->create_domain_vector());
-    auto view = v.host_view(ddm::write);
-    std::copy(x.begin(), x.end(), view.begin());
+    ddm::examples::copy(x, vs.emplace_back(A->create_domain_vector()));
   };
   add_vector([](const auto&) { return 1.; });
   add_vector([](const auto& x) { return x[0]; });
@@ -149,7 +159,6 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
 
   // Define the VTKWriter already here, because the preconditioner might write something to the debug sink. The debug
   // vectors and the solution are written as DG functions, subsampled so that the discontinuous polynomials show.
-  using X = Dune::PDELab::Backend::Vector<GFS, RF>;
   using DGF = Dune::PDELab::DiscreteGridFunction<GFS, X>;
   Dune::SubsamplingVTKWriter<GV> writer(gv, Dune::refinementIntervals(degree));
   const auto add_to_writer = [&](std::string_view name, const ddm::Vec<RF>& v) {
@@ -164,8 +173,11 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
 
   auto P = ddm::create_prec<RF>(config.sub("prec"), A);
   auto solver = ddm::create_solver<RF>(config.sub("solver"), A, P);
+  auto d = A->create_domain_vector();
+  solver->solve(r, d);
   auto x = A->create_domain_vector();
-  solver->solve(b, x);
+  ddm::examples::copy(x0, x);
+  x -= d;
 
   // VTK output of the solution and the coefficient
   add_to_writer(gfs.name(), x);
