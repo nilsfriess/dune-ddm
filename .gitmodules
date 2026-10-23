@@ -1,64 +1,74 @@
-[submodule "extern/luajit"]
-	path = extern/luajit
-	url = https://luajit.org/git/luajit.git
 [submodule "extern/spectra"]
 	path = extern/spectra
 	url = https://github.com/yixuan/spectra.git
-[submodule "extern/trl"]
-	path = extern/trl
-	url = https://github.com/nilsfriess/trl.git
+	shallow = true
 [submodule "extern/dune-common"]
 	path = extern/dune-common
 	url = https://gitlab.dune-project.org/core/dune-common.git
 	branch = releases/2.11
+	shallow = true
 [submodule "extern/dune-geometry"]
 	path = extern/dune-geometry
 	url = https://gitlab.dune-project.org/core/dune-geometry.git
 	branch = releases/2.11
+	shallow = true
 [submodule "extern/dune-grid"]
 	path = extern/dune-grid
 	url = https://gitlab.dune-project.org/core/dune-grid.git
 	branch = releases/2.11
+	shallow = true
 [submodule "extern/dune-istl"]
 	path = extern/dune-istl
 	url = https://gitlab.dune-project.org/core/dune-istl.git
 	branch = master
+	shallow = true
 [submodule "extern/dune-localfunctions"]
 	path = extern/dune-localfunctions
 	url = https://gitlab.dune-project.org/core/dune-localfunctions.git
 	branch = releases/2.11
+	shallow = true
 [submodule "extern/dune-uggrid"]
 	path = extern/dune-uggrid
 	url = https://gitlab.dune-project.org/staging/dune-uggrid.git
 	branch = releases/2.11
+	shallow = true
 [submodule "extern/dune-functions"]
 	path = extern/dune-functions
 	url = https://gitlab.dune-project.org/staging/dune-functions.git
 	branch = releases/2.11
+	shallow = true
 [submodule "extern/dune-typetree"]
 	path = extern/dune-typetree
 	url = https://gitlab.dune-project.org/staging/dune-typetree.git
 	branch = releases/2.11
+	shallow = true
 [submodule "extern/dune-pdelab"]
 	path = extern/dune-pdelab
 	url = https://gitlab.dune-project.org/pdelab/dune-pdelab.git
 	branch = releases/2.10
+	shallow = true
 [submodule "doc/doxygen-awesome-css"]
 	path = doc/doxygen-awesome-css
 	url = https://github.com/jothepro/doxygen-awesome-css.git
 	branch = main
+	shallow = true
 [submodule "extern/metis"]
 	path = extern/metis
 	url = https://bitbucket.org/petsc/pkg-metis.git
+	shallow = true
 [submodule "extern/parmetis"]
 	path = extern/parmetis
 	url = https://bitbucket.org/petsc/pkg-parmetis.git
+	shallow = true
 [submodule "extern/eigen"]
 	path = extern/eigen
 	url = https://gitlab.com/libeigen/eigen.git
+	shallow = true
 [submodule "extern/suitesparse"]
 	path = extern/suitesparse
 	url = https://github.com/DrTimothyAldenDavis/SuiteSparse.git
+	shallow = true
 [submodule "extern/STRUMPACK"]
 	path = extern/STRUMPACK
 	url = https://github.com/pghysels/STRUMPACK.git
+	shallow = true

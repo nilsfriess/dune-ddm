@@ -193,7 +193,7 @@ add_subdirectory(extern)
 #
 # The options are deliberately set *here*, after the extern/ subdirectories have
 # been added, so they apply only to targets created below (examples, dune, doc,
-# tests) and never to the vendored DUNE modules or LuaJIT. Together with the
+# tests) and never to the vendored DUNE modules. Together with the
 # SYSTEM keyword on the superbuild subdirectories -- which makes the dependency
 # headers arrive via -isystem -- this keeps the warnings restricted to code we
 # actually maintain.
