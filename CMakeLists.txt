@@ -177,6 +177,15 @@ if(TARGET STRUMPACK::strumpack)
   target_compile_definitions(duneddm PUBLIC DUNE_DDM_HAVE_STRUMPACK=1)
 endif()
 
+# MKL is optional, it provides the PARDISO solver. It is searched for in
+# cmake/modules/DuneDdmMacros.cmake like SuiteSparse, point CMake to it with
+# -DMKL_DIR=<oneapi>/mkl/latest/lib/cmake/mkl or by sourcing oneAPI's setvars.sh.
+if(TARGET MKL::MKL)
+  target_link_libraries(duneddm PUBLIC MKL::MKL)
+  target_compile_definitions(duneddm PUBLIC DUNE_DDM_HAVE_MKL_PARDISO=1)
+  message(STATUS "MKL found, the PARDISO solver is available")
+endif()
+
 find_package(Eigen3 NO_MODULE REQUIRED)
 
 # Install dune-ddm's own cmake modules (DuneDdmMacros.cmake) for consumers.

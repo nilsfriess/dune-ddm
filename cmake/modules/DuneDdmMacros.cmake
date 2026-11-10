@@ -42,3 +42,15 @@ if(TARGET STRUMPACK::strumpack)
   endif()
   unset(_ddm_strumpack_options)
 endif()
+
+# MKL is optional, it provides the PARDISO solver. Dune::DDM links it publicly,
+# so it is searched for here for the same reason as SuiteSparse. Unless set
+# otherwise, MKL is used with 32 bit indices (its own default is 64 bit) and
+# without threading, since the parallelism comes from MPI.
+if(NOT DEFINED MKL_INTERFACE)
+  set(MKL_INTERFACE lp64)
+endif()
+if(NOT DEFINED MKL_THREADING)
+  set(MKL_THREADING sequential)
+endif()
+find_package(MKL CONFIG QUIET)

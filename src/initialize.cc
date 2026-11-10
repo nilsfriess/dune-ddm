@@ -5,6 +5,7 @@
 #include "ddm/impl/prec/ilu_istl.hh"
 #include "ddm/impl/prec/jacobiprec.hh"
 #include "ddm/impl/prec/noneprec.hh"
+#include "ddm/impl/prec/pardiso.hh"
 #include "ddm/impl/prec/schwarz.hh"
 #include "ddm/impl/prec/strumpack.hh"
 #include "ddm/impl/prec/two_level_schwarz.hh"
@@ -38,6 +39,9 @@ void register_all()
   register_prec<T>("umfpack", BackendId::istl, [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<UMFPACKPrec<T>>(config, std::move(A)); });
 #ifdef DUNE_DDM_HAVE_STRUMPACK
   register_prec<T>("strumpack", BackendId::istl, [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<StrumpackPrec<T>>(config, std::move(A)); });
+#endif
+#ifdef DUNE_DDM_HAVE_MKL_PARDISO
+  register_prec<T>("pardiso", BackendId::istl, [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A) { return std::make_shared<PardisoPrec<T>>(config, std::move(A)); });
 #endif
   // The LU decomposition of each backend, the default for exact solves of subproblems (see create_subproblem_solver()).
   // UMFPACK has no float, so float uses STRUMPACK if it is available
@@ -75,6 +79,9 @@ void register_events()
   for (const auto* event : {"factorize", "solve"}) logger.registerOrGetEvent("UMFPACK", event);
 #ifdef DUNE_DDM_HAVE_STRUMPACK
   for (const auto* event : {"factorize", "solve", "solve_multi"}) logger.registerOrGetEvent("STRUMPACK", event);
+#endif
+#ifdef DUNE_DDM_HAVE_MKL_PARDISO
+  for (const auto* event : {"factorize", "solve", "solve_multi"}) logger.registerOrGetEvent("PARDISO", event);
 #endif
   for (const auto* event : {"apply"}) logger.registerOrGetEvent("ILU", event);
   for (const auto* event : {"coarse space", "apply"}) logger.registerOrGetEvent("Two-level Schwarz", event);
