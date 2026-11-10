@@ -11,12 +11,13 @@
 # Differences: Dirichlet instead of impedance local solves, ParMETIS instead of uniform rectangular subdomains.
 #
 # Usage: scripts/ma2025_marmousi_table4.sh m   (m = 10, 20 or 40, runs 3 m^2 MPI ranks)
-# EX5 and VEL set the executable and the velocity model (download it with data/download_models.sh). Writes one log per
-# run and results.tsv into table4_m<m>/ in the current directory.
+# EX5, VEL and MPIRUN set the executable, the velocity model (download it with data/download_models.sh) and the MPI
+# launcher (default mpirun). Writes one log per run and results.tsv into table4_m<m>/ in the current directory.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 EX5=$(realpath "${EX5:-$repo/build/examples/ex5}")
 VEL=$(realpath "${VEL:-$repo/data/marmousi_vp.ini}")
+MPIRUN=${MPIRUN:-mpirun}
 m=$1
 np=$((3 * m * m))
 delta=$((40 / m)) # overlap in layers of elements
@@ -31,7 +32,7 @@ for method in saddle_point two_sided_ring; do
     for oversampling in 0 1; do
       for nloc in 15 20 25 30; do
         log="${method}_nu${nu}_os${oversampling}_n${nloc}.log"
-        mpirun --oversubscribe --mca mpi_yield_when_idle 1 -np $np -x MKL_NUM_THREADS=1 -x OMP_NUM_THREADS=1 -x OPENBLAS_NUM_THREADS=1 -x LOG_LEVEL=info \
+        $MPIRUN --oversubscribe --mca mpi_yield_when_idle 1 -np $np -x MKL_NUM_THREADS=1 -x OMP_NUM_THREADS=1 -x OPENBLAS_NUM_THREADS=1 -x LOG_LEVEL=info \
           "$EX5" -problem.velocity "$VEL" -problem.extent "9 3" -problem.source "6 3" -problem.free_surface true \
           -problem.frequency $nu -grid.cells "600 200" -grid.refine 1 \
           -prec.type tlschwarz -prec.coarse_space_type msgfem -prec.fine.variant restricted -prec.coarse_mode deflated \
