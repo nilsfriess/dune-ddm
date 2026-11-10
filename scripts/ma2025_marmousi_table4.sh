@@ -2,7 +2,12 @@
 # Table 4 of Ma et al., "Two-level restricted additive Schwarz preconditioner based on multiscale spectral generalized
 # FEM for heterogeneous Helmholtz problems", J. Sci. Comput. 105:99 (2025), arXiv:2409.06533, with ex5: GMRES
 # iterations on the Marmousi model for the frequencies 5, 10 and 20 Hz and n_loc = 15, 20, 25 and 30 eigenvectors per
-# subdomain, without (H/H* = 1) and with oversampling (H/H* = 0.86).
+# subdomain (and 40 and 50 beyond the paper), without (H/H* = 1) and with oversampling (H/H* = 0.86).
+#
+# Coarse spaces (the first part of the log names): MS-GFEM with the saddle point eigenproblem (saddle_point) and with
+# the two-sided one and the ring inner product (two_sided_ring), and the ring coarse space of arXiv:2507.12226 with the
+# two-sided eigenproblem on the ring, extended from the outer boundary (msgfem_ring_from_boundary) or from the ring as in
+# the paper (msgfem_ring_from_ring).
 #
 # Setup as in the paper: (0, 9 km) x (-3 km, 0), u = 0 on the top and impedance on the other sides, source at
 # (6 km, 0), P2 with h = 7.5 m, M = 3 m^2 subdomains, overlap of 40 h / m (the oversampling has the same width), RAS
@@ -26,18 +31,21 @@ delta=$((40 / m)) # overlap in layers of elements
 mkdir -p "table4_m$m"
 cd "table4_m$m"
 printf "method\tnu\toversampling\tnloc\titerations\n" > results.tsv
-for method in saddle_point two_sided_ring; do
-  args="-prec.coarse_space.method ${method%_ring}"
-  [ "$method" = two_sided_ring ] && args="$args -prec.coarse_space.inner_product ring"
+for method in saddle_point two_sided_ring msgfem_ring_from_boundary msgfem_ring_from_ring; do
+  case $method in
+    saddle_point) args="-prec.coarse_space_type msgfem -prec.coarse_space.method saddle_point" ;;
+    two_sided_ring) args="-prec.coarse_space_type msgfem -prec.coarse_space.method two_sided -prec.coarse_space.inner_product ring" ;;
+    msgfem_ring_*) args="-prec.coarse_space_type msgfem_ring -prec.coarse_space.method two_sided -prec.coarse_space.extension ${method#msgfem_ring_}" ;;
+  esac
   for nu in 5 10 20; do
     for oversampling in 0 1; do
-      for nloc in 15 20 25 30; do
+      for nloc in 15 20 25 30 40 50; do
         log="${method}_nu${nu}_os${oversampling}_n${nloc}.log"
         grep -q '^=== rate' "$log" 2> /dev/null ||
         $MPIRUN --oversubscribe --mca mpi_yield_when_idle 1 -np $np -x MKL_NUM_THREADS=1 -x OMP_NUM_THREADS=1 -x OPENBLAS_NUM_THREADS=1 -x LOG_LEVEL=info \
           "$EX5" -problem.velocity "$VEL" -problem.extent "9 3" -problem.source "6 3" -problem.free_surface true \
           -problem.frequency $nu -grid.cells "600 200" -grid.refine 1 \
-          -prec.type tlschwarz -prec.coarse_space_type msgfem -prec.fine.variant restricted -prec.coarse_mode deflated \
+          -prec.type tlschwarz -prec.fine.variant restricted -prec.coarse_mode deflated \
           -prec.overlap $((delta * (1 + oversampling))) -prec.pou.layers $delta $args \
           -prec.coarse_space.eigensolver.shift 0 -prec.coarse_space.eigensolver.nev $nloc \
           -solver.verbosity 1 -solver.reduction 1e-6 -solver.maxit 100 -solver.restart 100 > "$log" 2>&1 || true
