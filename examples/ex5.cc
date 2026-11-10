@@ -8,10 +8,18 @@
 // f = exp(-|x - x_s|^2 / w^2) whose width w is a quarter of the wavelength at x_s, so it acts like a point source.
 // Conforming P2 elements on a simplex grid.
 //
+// With problem.free_surface = true, the top of the model is a free surface (pressure release) instead, u = 0 there, as
+// in the real benchmark. The impedance condition stays on the other sides. The surface reflects the waves back into the
+// model, so the water layer acts as a waveguide and the problem is harder to solve.
+//
 // The velocity model is read from problem.velocity, an .ini file written by data/segy_to_bin.py from
 // vel_z6.25m_x12.5m_exact.segy of the BP 2004 benchmark. The default is data/bp2004_vel.ini in the source tree. The
 // model covers [0, 67.4375] x [0, 11.94375] km with the surface at the top. The source x_s is read from problem.source,
-// by default it is in the water 0.5 km below the surface in the middle of the model.
+// by default it is in the water 0.5 km below the surface in the middle of the model. data/marmousi_vp.ini describes the
+// original Marmousi model (9.2 x 3.004 km), its data is downloaded by data/download_models.sh.
+//
+// problem.extent (in km, default: the size of the model) restricts the domain to the upper left part of the model: the
+// domain is [0, extent[0]] x [0, extent[1]], and its top is the surface of the model.
 //
 // The grid should resolve the shortest wavelength c_min / frequency (c_min = 1.429 km/s) with about 5 elements, i.e. it
 // should have about 240 * frequency x 42 * frequency cells. The default is frequency 1 Hz on 240 x 42 cells.
@@ -50,27 +58,35 @@
 #include <vector>
 
 namespace {
-// The coefficients of the equation. There are no Dirichlet conditions, so no dof is constrained.
+// The coefficients of the equation. Only the dofs on a free surface are constrained (u = 0 there).
 class BPParameters : public Dune::PDELab::DirichletConstraintsParameters {
 public:
   BPParameters(const Dune::ParameterTree& config, ddm::examples::VelocityField velocity_)
       : velocity(std::move(velocity_))
       , frequency(config.get("problem.frequency", 1.))
       , k(2 * std::numbers::pi * frequency)
-      , upper{velocity.nx * velocity.dx / 1000, velocity.nz * velocity.dz / 1000}
+      , model_size{velocity.nx * velocity.dx / 1000, velocity.nz * velocity.dz / 1000}
+      , upper(config.get("problem.extent", model_size))
       , source(config.get("problem.source", Dune::FieldVector<double, 2>{upper[0] / 2, upper[1] - 0.5}))
       , source_width(c(source) / frequency / 4)
+      , free_surface(config.get("problem.free_surface", false))
   {
+    for (int i = 0; i < 2; ++i)
+      DDM_CHECK(upper[i] > 0 && upper[i] <= model_size[i] * (1 + 1e-12), "ex5: problem.extent {} must be positive and at most the model size {} in every direction", upper[i],
+                model_size[i]);
   }
 
   template <typename I>
-  bool isDirichlet(const I&, const Dune::FieldVector<typename I::ctype, I::mydimension>&) const
+  bool isDirichlet(const I& intersection, const Dune::FieldVector<typename I::ctype, I::mydimension>& coord) const
   {
-    return false;
+    return free_surface && on_top(intersection.geometry().global(coord));
   }
 
-  // Velocity in km/s at x (in km), the velocity field is in m/s and m
-  double c(const Dune::FieldVector<double, 2>& x) const { return velocity(1000 * x) / 1000; }
+  // Whether x (in km) is on the top of the model, the surface
+  bool on_top(const Dune::FieldVector<double, 2>& x) const { return std::abs(x[1] - upper[1]) < 1e-9 * upper[1]; }
+
+  // Velocity in km/s at x (in km), the velocity field is in m/s and m. The top of the domain is the top of the model.
+  double c(const Dune::FieldVector<double, 2>& x) const { return velocity(1000 * (x + Dune::FieldVector<double, 2>{0, model_size[1] - upper[1]})) / 1000; }
 
   double V(const Dune::FieldVector<double, 2>& x) const { return 1 / c(x); }
 
@@ -79,10 +95,14 @@ public:
   ddm::examples::VelocityField velocity;
   double frequency;
   double k;
-  // Upper right corner of the model, the lower left one is the origin
+  // Size of the whole velocity model
+  Dune::FieldVector<double, 2> model_size;
+  // Upper right corner of the domain, the lower left one is the origin
   Dune::FieldVector<double, 2> upper;
   Dune::FieldVector<double, 2> source;
   double source_width;
+  // Whether the top is a free surface (u = 0) instead of an impedance boundary
+  bool free_surface;
 };
 
 // The residual terms alpha_volume() and alpha_boundary() multiply the element matrix with the coefficients (the
@@ -136,11 +156,11 @@ public:
     }
   }
 
-  // Impedance term -i k int V u v on a boundary face (none for the energy form)
+  // Impedance term -i k int V u v on a boundary face (none for the energy form and on a free surface)
   template <typename IG, typename LFSU, typename X, typename LFSV, typename M>
   void jacobian_boundary(const IG& ig, const LFSU& lfsu, const X&, const LFSV& lfsv, M& mat) const
   {
-    if (energy_) return;
+    if (energy_ || params_.isDirichlet(ig.intersection(), ig.geometry().local(ig.geometry().center()))) return;
 
     using Basis = typename LFSU::Traits::FiniteElementType::Traits::LocalBasisType;
 
@@ -179,6 +199,70 @@ private:
   bool energy_;
 };
 
+// PDELab constrains the dofs of the Dirichlet faces of the elements of this rank. A vertex on such a face can also belong
+// to an element of another rank that touches the face only at this vertex, and that rank does not constrain it. Every
+// rank holding a constrained dof must constrain it (see assemble_jacobian()), so this constrains every dof that some
+// rank constrains. Collective.
+template <class GFS, class CC>
+void make_constraints_consistent(const GFS& gfs, CC& cc)
+{
+  using Dune::PDELab::Backend::native;
+  using V = Dune::PDELab::Backend::Vector<GFS, int>;
+  V constrained(gfs, 0);
+  for (const auto& [ci, row] : cc) native(constrained)[ci[0]][0] = 1;
+  Dune::PDELab::MaxDataHandle<GFS, V> handle(gfs, constrained);
+  gfs.gridView().communicate(handle, Dune::InteriorBorder_InteriorBorder_Interface, Dune::ForwardCommunication);
+
+  // An empty row is a Dirichlet constraint, the container indices come from the local function spaces
+  using LFS = Dune::PDELab::LocalFunctionSpace<GFS>;
+  LFS lfs(gfs);
+  Dune::PDELab::LFSIndexCache<LFS> cache(lfs);
+  for (const auto& e : elements(gfs.gridView(), Dune::Partitions::interior)) {
+    lfs.bind(e);
+    cache.update();
+    for (std::size_t i = 0; i < cache.size(); ++i)
+      if (native(constrained)[cache.containerIndex(i)[0]][0] == 1) cc[cache.containerIndex(i)];
+  }
+}
+
+// The modulus (angle = false) or the angle in (-pi, pi] (angle = true) of the complex function re + i im for the
+// VTKWriter. Both are computed at the points where the writer evaluates the function, from the values of re and im
+// there. Interpolating them from the dofs would be wrong: the modulus is not a P2 function, and the angle jumps by 2 pi.
+template <class DGF>
+class PolarVTKFunction : public Dune::VTKFunction<typename DGF::Traits::GridViewType> {
+  using GV = typename DGF::Traits::GridViewType;
+  using Entity = typename GV::template Codim<0>::Entity;
+
+public:
+  PolarVTKFunction(std::shared_ptr<const DGF> re, std::shared_ptr<const DGF> im, bool angle, std::string name)
+      : re_(std::move(re))
+      , im_(std::move(im))
+      , angle_(angle)
+      , name_(std::move(name))
+  {
+  }
+
+  int ncomps() const override { return 1; }
+
+  double evaluate(int, const Entity& e, const Dune::FieldVector<typename GV::ctype, GV::dimension>& xi) const override
+  {
+    typename DGF::Traits::RangeType re;
+    typename DGF::Traits::RangeType im;
+    re_->evaluate(e, xi, re);
+    im_->evaluate(e, xi, im);
+    const std::complex<double> z(re[0], im[0]);
+    return angle_ ? std::arg(z) : std::abs(z);
+  }
+
+  std::string name() const override { return name_; }
+
+private:
+  std::shared_ptr<const DGF> re_;
+  std::shared_ptr<const DGF> im_;
+  bool angle_;
+  std::string name_;
+};
+
 void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
 {
   BPParameters params(config, ddm::examples::read_velocity_field(config.get("problem.velocity", std::string(DDM_DATA_DIR "/bp2004_vel.ini"))));
@@ -198,7 +282,8 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
     const auto c_min = *std::ranges::min_element(params.velocity.data) / 1000;
     const auto h = std::max(params.upper[0] / cells[0], params.upper[1] / cells[1]) / (1 << refine);
     std::cout << "Frequency " << params.frequency << " Hz, " << c_min / params.frequency / h << " elements per shortest wavelength, source at "
-              << params.source << " (velocity " << params.c(params.source) << " km/s, width " << params.source_width << " km)\n";
+              << params.source << " (velocity " << params.c(params.source) << " km/s, width " << params.source_width << " km)"
+              << (params.free_surface ? ", free surface at the top" : "") << "\n";
   }
 
   // Define the types that PDELab needs to assemble the linear system and rhs
@@ -218,6 +303,7 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   using CC = typename GFS::template ConstraintsContainer<RF>::Type;
   CC cc;
   Dune::PDELab::constraints(params, gfs, cc);
+  make_constraints_consistent(gfs, cc);
   ConformingHelmholtzLocalOperator lop(params);
   ConformingHelmholtzLocalOperator lop_energy(params, true);
 
@@ -238,11 +324,12 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
 
   // Define the VTKWriter already here, because the preconditioner might write something to the debug sink. VTK has no
   // complex numbers, so every vector is written as its real and imaginary part, each subsampled so that the P2 functions
-  // show.
+  // show. With polar = true, also its modulus (the amplitude of the wave) and its angle (the phase, its jumps are the
+  // wavefronts) are written. The debug vectors are written without them.
   using X = Dune::PDELab::Backend::Vector<GFS, double>;
   using DGF = Dune::PDELab::DiscreteGridFunction<GFS, X>;
   Dune::SubsamplingVTKWriter<GV> writer(gv, Dune::refinementIntervals(degree));
-  const auto add_to_writer = [&](std::string_view name, const ddm::Vec<RF>& v) {
+  const auto add_to_writer = [&](std::string_view name, const ddm::Vec<RF>& v, bool polar = false) {
     auto re = std::make_shared<X>(gfs, 0.0);
     auto im = std::make_shared<X>(gfs, 0.0);
     {
@@ -254,9 +341,13 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
         native_im[i][0] = view[i].imag();
       }
     }
-    for (const auto& [u, suffix] : {std::pair{re, "_re"}, std::pair{im, "_im"}}) {
-      auto dgf = std::make_shared<DGF>(Dune::stackobject_to_shared_ptr(gfs), u);
+    auto dgf_re = std::make_shared<const DGF>(Dune::stackobject_to_shared_ptr(gfs), re);
+    auto dgf_im = std::make_shared<const DGF>(Dune::stackobject_to_shared_ptr(gfs), im);
+    for (const auto& [dgf, suffix] : {std::pair{dgf_re, "_re"}, std::pair{dgf_im, "_im"}})
       writer.addVertexData(std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<DGF>>(dgf, std::string(name) + suffix));
+    if (polar) {
+      writer.addVertexData(std::make_shared<PolarVTKFunction<DGF>>(dgf_re, dgf_im, false, std::string(name) + "_abs"));
+      writer.addVertexData(std::make_shared<PolarVTKFunction<DGF>>(dgf_re, dgf_im, true, std::string(name) + "_angle"));
     }
   };
   ddm::debug::VecSink<RF> sink(config.get("debug_rank", 0), add_to_writer);
@@ -271,7 +362,7 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   x -= d;
 
   // VTK output of the solution and of the velocity at the element centres
-  add_to_writer(gfs.name(), x);
+  add_to_writer(gfs.name(), x, true);
   std::vector<double> velocity(gv.size(0));
   for (const auto& e : elements(gv)) velocity[gv.indexSet().index(e)] = params.c(e.geometry().center());
   // addCellData() with all arguments, the short form is ambiguous for SubsamplingVTKWriter

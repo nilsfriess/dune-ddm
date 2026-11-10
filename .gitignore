@@ -61,3 +61,6 @@ octave-workspace
 .projectile
 conf.py
 scalascacc
+
+# Velocity models downloaded by data/download_models.sh
+data/marmousi_vp.bin
