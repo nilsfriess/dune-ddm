@@ -17,7 +17,9 @@ namespace ddm {
  *  - ncv:       number of Lanczos vectors (default 2 * nev)
  *  - maxit:     maximum number of iterations (default 1000)
  *  - tolerance: convergence tolerance (default 1e-5)
- *  - shift:     shift sigma of the shift-and-invert operator (A - sigma B)^{-1} (default 1e-3)
+ *  - shift:     shift sigma of the shift-and-invert operator (A - sigma B)^{-1} (default -1e-3). Negative, so that for
+ *               positive semi-definite A and B without a common kernel A - sigma B is positive definite and all
+ *               eigenvalues lie above the shift
  *  - print_eigenvalues: print the computed eigenvalues on every rank, at every log level except off (default false)
  */
 template <class T>
@@ -32,7 +34,7 @@ public:
       , ncv_(config.get("ncv", 2 * nev_))
       , maxit_(config.get("maxit", 1000))
       , tolerance_(config.get("tolerance", typename Vec<T>::real_type(1e-5)))
-      , shift_(config.get("shift", typename Vec<T>::real_type(1e-3)))
+      , shift_(config.get("shift", typename Vec<T>::real_type(-1e-3)))
       , print_eigenvalues_(config.get("print_eigenvalues", false))
   {
     DDM_CHECK(A_->rows() == B_->rows(), "Eigensolver: size mismatch, A has {} rows, B has {}", A_->rows(), B_->rows());
@@ -52,6 +54,16 @@ public:
   {
     projection_ = std::move(P);
     projection_transposed_ = std::move(P_transposed);
+  }
+
+  // Replaces (A - sigma B)^{-1} in the shift-invert operator: make(sigma) is called once with the shift before the
+  // iteration and returns the function that is applied instead. A is then only used for its size. The replacement S
+  // must be self-adjoint, so that the operator P S P^T B stays self-adjoint in the B inner product.
+  using ShiftInvert = std::function<void(const Vec<T>& b, Vec<T>& x)>;
+  using ShiftInvertFactory = std::function<ShiftInvert(typename Vec<T>::real_type sigma)>;
+  void set_shift_invert(ShiftInvertFactory make)
+  {
+    shift_invert_ = std::move(make);
   }
 
   // Computes the eigenpairs, see values() and vectors()
@@ -75,6 +87,7 @@ public:
 protected:
   const Projection& projection() const { return projection_; }                       // empty if not set
   const Projection& projection_transposed() const { return projection_transposed_; } // empty if not set
+  const ShiftInvertFactory& shift_invert() const { return shift_invert_; }           // empty if not set
 
 private:
   virtual void do_solve() = 0;
@@ -91,6 +104,7 @@ private:
 
   Projection projection_;
   Projection projection_transposed_;
+  ShiftInvertFactory shift_invert_;
 };
 
 template <class T>

@@ -8,6 +8,7 @@
 #include "ddm/mat/pattern.hh"
 #include "ddm/multivec/multivec.hh"
 #include "ddm/overlap.hh"
+#include "ddm/region.hh"
 #include "ddm/solver/solver.hh"
 #include "ddm/vec/vec.hh"
 
@@ -284,6 +285,53 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_two_sided(const Dune::Parameter
   DDM_CHECK(H.can_project(), "solve_harmonic_gevp_two_sided(): the HarmonicSpace object must be able to project into the space, pass a suitable solver to its constructor");
   auto eigensolver = create_eigensolver<T>(config.sub("eigensolver"), A, B);
   eigensolver->set_projection([&](const Vec<T>& x, Vec<T>& y) { H.project(x, y); }, [&](const Vec<T>& x, Vec<T>& y) { H.project_transposed(x, y); });
+  eigensolver->solve();
+  return eigensolver->vectors();
+}
+
+/* Like solve_harmonic_gevp_two_sided(), but (A - sigma B)^{-1} is replaced by R^T (A_ring - sigma B_ring)^{-1} R, where
+ * A_ring and B_ring are matrices on a region `ring` of the index set of A that contains the boundary of H, and R is the
+ * restriction to the ring. Since P^T x vanishes outside of the boundary of H and P only reads the boundary values, only
+ * the solve on the ring is needed. With A_ring the Neumann matrix on the ring, this measures the harmonic functions in
+ * the A_ring-energy of the function on the ring with the same boundary values that is A_ring-harmonic on the rest of
+ * the ring (with Neumann conditions on its inner boundary), instead of the A-energy on the whole index set. A is not
+ * factorised, only its size is used. B_ring should vanish on the boundary of H, like B.
+ *
+ * Config: as solve_harmonic_gevp(), and
+ * - ring_solver: config of the solver for A_ring - sigma B_ring (see create_subproblem_solver(), default: exact solve)
+ * - ring_prec:   config of the preconditioner of that solver (see create_subproblem_solver())
+ *
+ * TODO: A_ring is singular for floating subdomains. With a negative shift, A_ring - sigma B_ring is positive definite if
+ *       B_ring is positive on the kernel of A_ring (assumed here, not checked), but the shift perturbs the eigenpairs
+ *       by O(sigma). Pin a dof of A_ring instead and deflate its kernel.
+ */
+template <class T>
+std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_two_sided_ring(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, const HarmonicSpace<T>& H,
+                                                                const Region& ring, std::shared_ptr<const LocalMat<T>> A_ring, std::shared_ptr<const LocalMat<T>> B_ring)
+{
+  DDM_CHECK(H.can_project(), "solve_harmonic_gevp_two_sided_ring(): the HarmonicSpace object must be able to project into the space, pass a suitable solver to its constructor");
+  DDM_CHECK(ring.subdomain_size() == A->rows(), "solve_harmonic_gevp_two_sided_ring(): the ring was created for {} indices, but A has {} rows", ring.subdomain_size(), A->rows());
+  DDM_CHECK(A_ring->rows() == ring.size() && B_ring->rows() == ring.size(), "solve_harmonic_gevp_two_sided_ring(): the ring has {} indices, but A_ring has {} rows and B_ring {}", ring.size(), A_ring->rows(),
+            B_ring->rows());
+  for (auto i : H.boundary()) DDM_CHECK(ring.region_index(i) >= 0, "solve_harmonic_gevp_two_sided_ring(): the boundary dof {} is not in the ring", i);
+
+  auto eigensolver = create_eigensolver<T>(config.sub("eigensolver"), A, B);
+  eigensolver->set_projection([&](const Vec<T>& x, Vec<T>& y) { H.project(x, y); }, [&](const Vec<T>& x, Vec<T>& y) { H.project_transposed(x, y); });
+  eigensolver->set_shift_invert([&](typename Vec<T>::real_type sigma) -> typename Eigensolver<T>::ShiftInvert {
+    auto shifted = std::make_shared<const Mat<T>>(Dune::ParameterTree{}, add(*A_ring, T(-sigma), *B_ring), nullptr);
+    std::shared_ptr<Solver<T>> solver = create_subproblem_solver<T>(config.sub("ring_solver"), config.sub("ring_prec"), std::move(shifted));
+    auto b_ring = std::make_shared<Vec<T>>(A_ring->create_range_vector());
+    auto x_ring = std::make_shared<Vec<T>>(A_ring->create_domain_vector());
+
+    // x = R^T (A_ring - sigma B_ring)^{-1} R b
+    return [&ring, solver, b_ring, x_ring](const Vec<T>& b, Vec<T>& x) {
+      b.multivec().pack_rows(ring.indices(), b_ring->multivec());
+      x_ring->zero();
+      solver->solve(*b_ring, *x_ring);
+      x.zero();
+      x.multivec().unpack_rows(x_ring->multivec(), ring.indices(), 0);
+    };
+  });
   eigensolver->solve();
   return eigensolver->vectors();
 }

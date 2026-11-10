@@ -26,45 +26,6 @@
 
 namespace ddm {
 namespace detail {
-/* The layers of the ring of ring_coarse_space(), for every index of the overlapping subdomain:
- *   0: the overlap, where the partition of unity D is not 1 (this includes the outermost layer, where D is 0)
- *   1: the indices where D is 1 with a neighbour in layer 0
- *   2: the indices where D is 1 with a neighbour in layer 1, but none in layer 0 (the inner boundary of the ring)
- *  -1: all other indices, further inside of the subdomain
- * Neighbours are taken in graph, a graph on the overlapping index set (e.g. the pattern of the overlapping matrix). For
- * continuous elements with the dofs on the vertices, layers 1 and 2 are the vertices of the first layer of elements
- * where D is 1.
- */
-template <class T>
-std::vector<int> ring_layers(const Vec<T>& pou, const Pattern& graph)
-{
-  const Index n = pou.size();
-  DDM_CHECK(graph.rows() == n && graph.cols() == n, "ring_layers: graph is {}x{}, but the partition of unity has size {}", graph.rows(), graph.cols(), n);
-
-  // Breadth-first search for two steps, starting from the indices where D is not 1
-  std::vector<int> layer(n, -1);
-  std::vector<Index> frontier;
-  {
-    const auto pou_view = pou.host_view(read);
-    for (Index i = 0; i < n; ++i)
-      if (pou_view[i] != T{1}) {
-        layer[i] = 0;
-        frontier.push_back(i);
-      }
-  }
-  for (int l = 1; l <= 2; ++l) {
-    std::vector<Index> next;
-    for (auto i : frontier)
-      for (auto j : graph.row(i))
-        if (layer[j] < 0) {
-          layer[j] = l;
-          next.push_back(static_cast<Index>(j));
-        }
-    frontier = std::move(next);
-  }
-  return layer;
-}
-
 // Projects the columns of V (on the overlapping subdomain) onto H, a space of harmonic functions on the region r and
 // numbered by it: on r, every column is replaced by the function in H with its values on the boundary of H. The rows
 // outside of r are not changed.
