@@ -12,7 +12,8 @@
 #
 # Usage: scripts/ma2025_marmousi_table4.sh m   (m = 10, 20 or 40, runs 3 m^2 MPI ranks)
 # EX5, VEL and MPIRUN set the executable, the velocity model (download it with data/download_models.sh) and the MPI
-# launcher (default mpirun). Writes one log per run and results.tsv into table4_m<m>/ in the current directory.
+# launcher (default mpirun). Writes one log per run and results.tsv into table4_m<m>/ in the current directory. Runs
+# whose log already has an iteration count are not repeated, so running the script again only redoes the failed runs.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 EX5=$(realpath "${EX5:-$repo/build/examples/ex5}")
@@ -32,6 +33,7 @@ for method in saddle_point two_sided_ring; do
     for oversampling in 0 1; do
       for nloc in 15 20 25 30; do
         log="${method}_nu${nu}_os${oversampling}_n${nloc}.log"
+        grep -q '^=== rate' "$log" 2> /dev/null ||
         $MPIRUN --oversubscribe --mca mpi_yield_when_idle 1 -np $np -x MKL_NUM_THREADS=1 -x OMP_NUM_THREADS=1 -x OPENBLAS_NUM_THREADS=1 -x LOG_LEVEL=info \
           "$EX5" -problem.velocity "$VEL" -problem.extent "9 3" -problem.source "6 3" -problem.free_surface true \
           -problem.frequency $nu -grid.cells "600 200" -grid.refine 1 \
