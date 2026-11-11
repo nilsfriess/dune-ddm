@@ -306,6 +306,19 @@ public:
     do_mult(M, Y, alpha, beta);
   }
 
+  // The first k columns of X = *this become X M, where M is a cols() x k matrix of coefficients with k <= cols(), the
+  // other columns are left unchanged. Like mult() into the first k columns, but without a cols() x k temporary of the
+  // size of X (e.g. to rotate a basis in place). M must not overlap X.
+  void mult_in_place(const MultiVec& M)
+  {
+    check_usable("mult_in_place()");
+    M.check_usable("mult_in_place()");
+    DDM_CHECK(!overlaps(M), "multivector: mult_in_place() requires M to be distinct from X");
+    DDM_CHECK(M.rows() == cols() && M.cols() <= cols(), "multivector: mult_in_place() size mismatch, X is {}x{}, M is {}x{}", rows(), cols(), M.rows(), M.cols());
+    DDM_CHECK(M.backend() == backend(), "multivector: mult_in_place() backend mismatch, X is {}, M is {}", to_string(backend()), to_string(M.backend()));
+    do_mult_in_place(M);
+  }
+
   // buffer(k, c) = X(idx[k], c) with X = *this, i.e. copies the rows idx into buffer (|idx| x cols())
   void pack_rows(std::span<const Index> idx, MultiVec& buffer) const
   {
@@ -396,6 +409,7 @@ private:
   virtual void do_copy_rows_from(const MultiVec& src, Index n) = 0;
   virtual void do_dot(const MultiVec& Y, MultiVec& C) const = 0;
   virtual void do_mult(const MultiVec& M, MultiVec& Y, T alpha, T beta) const = 0;
+  virtual void do_mult_in_place(const MultiVec& M) = 0;
   virtual void do_pack_rows(std::span<const Index> idx, MultiVec& buffer) const = 0;
   virtual void do_unpack_rows(const MultiVec& buffer, std::span<const Index> idx, Index first_col) = 0;
   virtual void do_scale_rows(const MultiVec& d) = 0;

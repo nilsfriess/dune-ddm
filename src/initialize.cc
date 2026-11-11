@@ -1,4 +1,5 @@
 #include "ddm/eigensolver/eigensolver.hh"
+#include "ddm/impl/eigensolver/lanczos.hh"
 #include "ddm/impl/eigensolver/spectra.hh"
 #include "ddm/impl/mat/istlmat.hh"
 #include "ddm/impl/multivec/istlmultivec.hh"
@@ -61,6 +62,9 @@ void register_all()
       "direct", [](const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, std::shared_ptr<Prec<T>> P) { return std::make_shared<DirectSolver<T>>(config, std::move(A), std::move(P)); });
 
   // Register eigensolvers
+  register_eigensolver<T>("lanczos", [](const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B) {
+    return std::make_shared<LanczosEigensolver<T>>(config, std::move(A), std::move(B));
+  });
 #ifdef DUNE_DDM_HAVE_SPECTRA
   register_eigensolver<T>("spectra", [](const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B) {
     return std::make_shared<SpectraEigensolver<T>>(config, std::move(A), std::move(B));
@@ -88,6 +92,7 @@ void register_events()
   for (const auto* event : {"setup", "apply", "coarse solve"}) logger.registerOrGetEvent("Coarse correction", event);
   for (const auto* event : {"exchange", "matrix"}) logger.registerOrGetEvent("Neumann", event);
   for (const auto* event : {"solve"}) logger.registerOrGetEvent("Eigensolver", event);
+  for (const auto* event : {"operator", "orthonormalize", "restart"}) logger.registerOrGetEvent("Lanczos", event);
   for (const auto* event : {"project", "project transposed"}) logger.registerOrGetEvent("Harmonic space", event);
   for (const auto* event : {"spmm", "dot"}) logger.registerOrGetEvent("Harmonic basis", event);
 }

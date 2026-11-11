@@ -4,3 +4,4 @@
 #     cmake --build build --target build_ddm_tests && ctest --test-dir build -L ddm
 dune_add_test(SOURCES test_multivec.cc LINK_LIBRARIES duneddm LABELS ddm)
 dune_add_test(SOURCES test_vec.cc LINK_LIBRARIES duneddm LABELS ddm)
+dune_add_test(SOURCES test_eigensolver.cc LINK_LIBRARIES duneddm LABELS ddm)

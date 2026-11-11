@@ -1,18 +1,22 @@
 #pragma once
 
+#include "ddm/logger.hh"
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/multivec/multivec.hh"
 #include "ddm/registry.hh"
+#include "ddm/solver/solver.hh"
 #include "ddm/vec/vec.hh"
-#include "ddm/logger.hh"
 
 #include <dune/common/parametertree.hh>
 #include <functional>
+#include <memory>
+
 namespace ddm {
 /** Solver for the generalised eigenproblem A x = lambda B x, computing the eigenpairs with the smallest eigenvalues.
  *
  *  Config:
+ *  - type:      spectra (default) | lanczos, see SpectraEigensolver and LanczosEigensolver
  *  - nev:       number of eigenpairs to compute (default 16)
  *  - ncv:       number of Lanczos vectors (default 2 * nev)
  *  - maxit:     maximum number of iterations (default 1000)
@@ -48,8 +52,8 @@ public:
   // Restricts the iteration to the range of P, which must be a projection (P P = P). P is applied after every
   // shift-invert solve and to the starting vector. If its transpose P_transposed is given as well, it is applied
   // before every shift-invert solve, so that the operator becomes P (A - sigma B)^{-1} P^T B, which is self-adjoint in
-  // the B inner product for every shift.
-  using Projection = std::function<void(const Vec<T>& x, Vec<T>& y)>;
+  // the B inner product for every shift. Y = P X is applied to all columns of X at once, X and Y are distinct.
+  using Projection = std::function<void(const MultiVec<T>& X, MultiVec<T>& Y)>;
   void set_projection(Projection P, Projection P_transposed = {})
   {
     projection_ = std::move(P);
@@ -58,8 +62,9 @@ public:
 
   // Replaces (A - sigma B)^{-1} in the shift-invert operator: make(sigma) is called once with the shift before the
   // iteration and returns the function that is applied instead. A is then only used for its size. The replacement S
-  // must be self-adjoint, so that the operator P S P^T B stays self-adjoint in the B inner product.
-  using ShiftInvert = std::function<void(const Vec<T>& b, Vec<T>& x)>;
+  // must be self-adjoint, so that the operator P S P^T B stays self-adjoint in the B inner product. X = S B is applied
+  // to all columns of B at once, B and X are distinct.
+  using ShiftInvert = std::function<void(const MultiVec<T>& B, MultiVec<T>& X)>;
   using ShiftInvertFactory = std::function<ShiftInvert(typename Vec<T>::real_type sigma)>;
   void set_shift_invert(ShiftInvertFactory make)
   {
@@ -87,7 +92,20 @@ public:
 protected:
   const Projection& projection() const { return projection_; }                       // empty if not set
   const Projection& projection_transposed() const { return projection_transposed_; } // empty if not set
-  const ShiftInvertFactory& shift_invert() const { return shift_invert_; }           // empty if not set
+
+  // Sets up S = (A - sigma B)^{-1}, or its replacement if one was set with set_shift_invert(), and returns it. The solver
+  // for A - sigma B is created with create_subproblem_solver() from the subtrees "solver" and "prec" of config. Called
+  // once per solve(), S lives as long as the returned function.
+  ShiftInvert make_shift_invert(const Dune::ParameterTree& config, typename Vec<T>::real_type sigma) const
+  {
+    if (shift_invert_) return shift_invert_(sigma);
+    auto shifted = std::make_shared<const Mat<T>>(Dune::ParameterTree{}, add(*A_, T(-sigma), *B_), nullptr);
+    std::shared_ptr<Solver<T>> solver = create_subproblem_solver<T>(config.sub("solver"), config.sub("prec"), std::move(shifted));
+    return [solver](const MultiVec<T>& b, MultiVec<T>& x) {
+      x.zero();
+      solver->solve(b, x);
+    };
+  }
 
 private:
   virtual void do_solve() = 0;

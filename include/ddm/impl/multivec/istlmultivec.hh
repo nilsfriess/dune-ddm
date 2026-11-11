@@ -173,6 +173,22 @@ private:
                        as_istl(Y).data().data(), leading_dim(n));
   }
 
+  // X(:, 0:k) = X M, a block of rows at a time: the rows of the result only depend on the same rows of X, so each block
+  // is computed into a small temporary and then copied back
+  void do_mult_in_place(const MultiVec<T>& M) override
+  {
+    constexpr Index block_rows = 1024;
+    const Index n = this->rows();
+    const Index k = M.cols();
+    std::vector<T> tmp(static_cast<std::size_t>(std::min(block_rows, n) * k));
+    for (Index first = 0; first < n; first += block_rows) {
+      const Index rows = std::min(block_rows, n - first);
+      detail::blas::gemm('N', 'N', blas_int(rows), blas_int(k), blas_int(this->cols()), T{1}, data_.data() + first, leading_dim(blas_int(n)), as_istl(M).data().data(),
+                         leading_dim(blas_int(M.rows())), T{0}, tmp.data(), leading_dim(blas_int(rows)));
+      for (Index j = 0; j < k; ++j) std::copy_n(tmp.data() + j * rows, rows, data_.data() + j * n + first);
+    }
+  }
+
   // BLAS takes the sizes as int
   static int blas_int(Index n)
   {

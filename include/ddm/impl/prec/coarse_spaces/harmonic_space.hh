@@ -95,7 +95,7 @@ public:
     DDM_CHECK(can_project(), "HarmonicSpace: project() requires a solver for the matrix, pass A_dir to the constructor");
     DDM_CHECK(X.cols() == Y.cols(), "HarmonicSpace: project() multivectors must have the same number of columns, X has {}, Y has {}", X.cols(), Y.cols());
 
-    if (!rhs_) rhs_ = X.create_multivector(X.rows(), X.cols());
+    if (!rhs_ || rhs_->cols() != X.cols()) rhs_ = X.create_multivector(X.rows(), X.cols());
 
     {
       rhs_->zero();
@@ -119,7 +119,7 @@ public:
   {
     Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Harmonic space", "project transposed")};
     DDM_CHECK(can_project(), "HarmonicSpace: project_transposed() requires a solver for the matrix, pass A_dir to the constructor");
-    if (!tmp_) tmp_ = X.create_multivector(X.rows(), X.cols());
+    if (!tmp_ || tmp_->cols() != X.cols()) tmp_ = X.create_multivector(X.rows(), X.cols());
 
     tmp_->zero();
     A_dir_->solve_transposed(X, *tmp_);
@@ -144,8 +144,8 @@ private:
   std::vector<Index> dirichlet_;
   std::vector<Index> interior_;
   std::shared_ptr<Solver<T>> A_dir_;
-  mutable std::unique_ptr<MultiVec<T>> rhs_; ///< x with everything except the boundary values set to zero
-  mutable std::unique_ptr<MultiVec<T>> tmp_; ///< A_dir^{-T} x in project_transposed()
+  mutable std::unique_ptr<MultiVec<T>> rhs_; ///< x with everything except the boundary values set to zero, recreated when the number of columns changes
+  mutable std::unique_ptr<MultiVec<T>> tmp_; ///< A_dir^{-T} x in project_transposed(), recreated when the number of columns changes
 };
 
 namespace detail {
@@ -267,7 +267,7 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_projected(const Dune::Parameter
 {
   DDM_CHECK(H.can_project(), "solve_harmonic_gevp_projected(): the HarmonicSpace object must be able to project into the space, pass a suitable solver to its constructor");
   auto eigensolver = create_eigensolver<T>(config.sub("eigensolver"), A, B);
-  eigensolver->set_projection([&](const Vec<T>& x, Vec<T>& y) { H.project(x, y); });
+  eigensolver->set_projection([&](const MultiVec<T>& X, MultiVec<T>& Y) { H.project(X, Y); });
   eigensolver->solve();
   return eigensolver->vectors();
 }
@@ -284,7 +284,7 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_two_sided(const Dune::Parameter
 {
   DDM_CHECK(H.can_project(), "solve_harmonic_gevp_two_sided(): the HarmonicSpace object must be able to project into the space, pass a suitable solver to its constructor");
   auto eigensolver = create_eigensolver<T>(config.sub("eigensolver"), A, B);
-  eigensolver->set_projection([&](const Vec<T>& x, Vec<T>& y) { H.project(x, y); }, [&](const Vec<T>& x, Vec<T>& y) { H.project_transposed(x, y); });
+  eigensolver->set_projection([&](const MultiVec<T>& X, MultiVec<T>& Y) { H.project(X, Y); }, [&](const MultiVec<T>& X, MultiVec<T>& Y) { H.project_transposed(X, Y); });
   eigensolver->solve();
   return eigensolver->vectors();
 }
@@ -316,20 +316,25 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_two_sided_ring(const Dune::Para
   for (auto i : H.boundary()) DDM_CHECK(ring.region_index(i) >= 0, "solve_harmonic_gevp_two_sided_ring(): the boundary dof {} is not in the ring", i);
 
   auto eigensolver = create_eigensolver<T>(config.sub("eigensolver"), A, B);
-  eigensolver->set_projection([&](const Vec<T>& x, Vec<T>& y) { H.project(x, y); }, [&](const Vec<T>& x, Vec<T>& y) { H.project_transposed(x, y); });
+  eigensolver->set_projection([&](const MultiVec<T>& X, MultiVec<T>& Y) { H.project(X, Y); }, [&](const MultiVec<T>& X, MultiVec<T>& Y) { H.project_transposed(X, Y); });
   eigensolver->set_shift_invert([&](typename Vec<T>::real_type sigma) -> typename Eigensolver<T>::ShiftInvert {
     auto shifted = std::make_shared<const Mat<T>>(Dune::ParameterTree{}, add(*A_ring, T(-sigma), *B_ring), nullptr);
     std::shared_ptr<Solver<T>> solver = create_subproblem_solver<T>(config.sub("ring_solver"), config.sub("ring_prec"), std::move(shifted));
-    auto b_ring = std::make_shared<Vec<T>>(A_ring->create_range_vector());
-    auto x_ring = std::make_shared<Vec<T>>(A_ring->create_domain_vector());
 
-    // x = R^T (A_ring - sigma B_ring)^{-1} R b
-    return [&ring, solver, b_ring, x_ring](const Vec<T>& b, Vec<T>& x) {
-      b.multivec().pack_rows(ring.indices(), b_ring->multivec());
+    // x = R^T (A_ring - sigma B_ring)^{-1} R b for every column, with buffers on the ring that are reused while the
+    // number of columns stays the same
+    std::shared_ptr<MultiVec<T>> b_ring;
+    std::shared_ptr<MultiVec<T>> x_ring;
+    return [&ring, A_ring, solver, b_ring, x_ring](const MultiVec<T>& b, MultiVec<T>& x) mutable {
+      if (!b_ring || b_ring->cols() != b.cols()) {
+        b_ring = A_ring->create_range_multivector(b.cols());
+        x_ring = A_ring->create_domain_multivector(b.cols());
+      }
+      b.pack_rows(ring.indices(), *b_ring);
       x_ring->zero();
       solver->solve(*b_ring, *x_ring);
       x.zero();
-      x.multivec().unpack_rows(x_ring->multivec(), ring.indices(), 0);
+      x.unpack_rows(*x_ring, ring.indices(), 0);
     };
   });
   eigensolver->solve();

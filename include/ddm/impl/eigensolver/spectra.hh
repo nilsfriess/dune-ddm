@@ -33,21 +33,19 @@ namespace ddm {
 namespace detail::spectra {
 // The shift-invert operator (A - sigma B)^{-1}, the OpType of Spectra's generalised shift-invert solver, followed by the
 // projection P if one is set and preceded by its transpose P^T if that is set as well (see
-// Eigensolver::set_projection()). Spectra calls set_shift() once before the iteration, which assembles A - sigma B and
-// sets up the solver for it, or, if a replacement was set with Eigensolver::set_shift_invert(), sets up that instead.
+// Eigensolver::set_projection()). Spectra calls set_shift() once before the iteration, which sets up (A - sigma B)^{-1}
+// or its replacement (see Eigensolver::make_shift_invert()).
 template <class T>
 class ShiftInvertOp {
 public:
   using Scalar = T;
 
-  ShiftInvertOp(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, typename Eigensolver<T>::Projection projection,
-                typename Eigensolver<T>::Projection projection_transposed, typename Eigensolver<T>::ShiftInvertFactory shift_invert)
-      : config_(config)
-      , A_(std::move(A))
-      , B_(std::move(B))
+  ShiftInvertOp(std::shared_ptr<const LocalMat<T>> A, typename Eigensolver<T>::ShiftInvertFactory make_shift_invert, typename Eigensolver<T>::Projection projection,
+                typename Eigensolver<T>::Projection projection_transposed)
+      : A_(std::move(A))
+      , make_shift_invert_(std::move(make_shift_invert))
       , projection_(std::move(projection))
       , projection_transposed_(std::move(projection_transposed))
-      , shift_invert_(std::move(shift_invert))
       , b_(A_->create_range_vector())
       , pt_(A_->create_range_vector())
       , x_(A_->create_domain_vector())
@@ -58,15 +56,7 @@ public:
   Eigen::Index rows() const { return A_->rows(); }
   Eigen::Index cols() const { return A_->cols(); }
 
-  void set_shift(T sigma)
-  {
-    if (shift_invert_) {
-      solve_ = shift_invert_(std::real(sigma));
-      return;
-    }
-    auto shifted = std::make_shared<const Mat<T>>(Dune::ParameterTree{}, add(*A_, -sigma, *B_), nullptr);
-    solver_ = create_subproblem_solver<T>(config_.sub("solver"), config_.sub("prec"), std::move(shifted));
-  }
+  void set_shift(T sigma) { solve_ = make_shift_invert_(std::real(sigma)); }
 
   // y = P (A - sigma B)^{-1} P^T x, where P and P^T are left out if they are not set and (A - sigma B)^{-1} is
   // replaced if a replacement was set
@@ -76,25 +66,20 @@ public:
       auto b = b_.host_view(write);
       std::copy_n(x_in, b.size(), b.data());
     }
-    if (projection_transposed_) projection_transposed_(b_, pt_);
-    x_.zero();
-    if (solve_) solve_(projection_transposed_ ? pt_ : b_, x_);
-    else solver_->solve(projection_transposed_ ? pt_ : b_, x_);
-    if (projection_) projection_(x_, p_);
+    if (projection_transposed_) projection_transposed_(b_.multivec(), pt_.multivec());
+    solve_((projection_transposed_ ? pt_ : b_).multivec(), x_.multivec());
+    if (projection_) projection_(x_.multivec(), p_.multivec());
 
     const auto y = std::as_const(projection_ ? p_ : x_).host_view(read);
     std::copy_n(y.data(), y.size(), y_out);
   }
 
 private:
-  Dune::ParameterTree config_;
   std::shared_ptr<const LocalMat<T>> A_;
-  std::shared_ptr<const LocalMat<T>> B_;
-  std::shared_ptr<Solver<T>> solver_; ///< the solver for A - sigma B, not set up if replaced by solve_
+  typename Eigensolver<T>::ShiftInvertFactory make_shift_invert_;
   typename Eigensolver<T>::Projection projection_;
   typename Eigensolver<T>::Projection projection_transposed_;
-  typename Eigensolver<T>::ShiftInvertFactory shift_invert_;
-  typename Eigensolver<T>::ShiftInvert solve_; ///< the replacement of (A - sigma B)^{-1} made by shift_invert_
+  typename Eigensolver<T>::ShiftInvert solve_; ///< (A - sigma B)^{-1} or its replacement, set up by set_shift()
 
   mutable Vec<T> b_;
   mutable Vec<T> pt_; ///< P^T applied to b_
@@ -207,7 +192,8 @@ private:
     const auto ncv = std::min(this->ncv(), n); // Spectra requires ncv <= n
     DDM_CHECK(nev < n, "spectra eigensolver: nev must be smaller than the size of the problem, got nev = {} for size {}", nev, n);
 
-    detail::spectra::ShiftInvertOp<T> op(config_, this->A(), this->B(), this->projection(), this->projection_transposed(), this->shift_invert());
+    detail::spectra::ShiftInvertOp<T> op(
+        this->A(), [this](typename Vec<T>::real_type sigma) { return this->make_shift_invert(config_, sigma); }, this->projection(), this->projection_transposed());
     detail::spectra::MatOp<T> Bop(this->B());
     detail::spectra::HermGEigsShiftSolver<detail::spectra::ShiftInvertOp<T>, detail::spectra::MatOp<T>> geigs(op, Bop, nev, ncv, this->shift());
     if (this->projection()) {
@@ -220,7 +206,7 @@ private:
         auto view = v0.host_view(write);
         std::copy_n(random.data(), n, view.data());
       }
-      this->projection()(v0, p0);
+      this->projection()(v0.multivec(), p0.multivec());
       const auto view = std::as_const(p0).host_view(read);
       geigs.init(view.data());
     }
