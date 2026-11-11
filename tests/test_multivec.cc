@@ -281,6 +281,37 @@ TestSuite test_mult()
 }
 
 template <class T>
+TestSuite test_mult_in_place()
+{
+  TestSuite t(name<T>("mult_in_place"));
+  // More rows than the istl backend works on at once, so that several blocks of rows are needed
+  const Index n = 2500;
+  const auto Mx = random_matrix<T>(n, 8, 30);
+  const auto Mm = random_matrix<T>(5, 3, 31);
+  auto X = make_multivec<T>(n, 8);
+  auto M = make_multivec<T>(5, 3);
+  from_eigen(*X, Mx);
+  from_eigen(*M, Mm);
+
+  // On the columns [2, 7): columns 2, 3, 4 become the product, all others stay as they are
+  X->columns(2, 5)->mult_in_place(*M);
+  Matrix<T> expected = Mx;
+  expected.middleCols(2, 3) = Mx.middleCols(2, 5) * Mm;
+  t.check(approx(to_eigen(*X), expected), "first k columns of a view become X M, the rest is unchanged");
+
+  // A square M overwrites all columns
+  auto Msq = random_multivec<T>(8, 8, 32);
+  from_eigen(*X, Mx);
+  X->mult_in_place(*Msq);
+  t.check(approx(to_eigen(*X), Matrix<T>(Mx * to_eigen(*Msq))), "square M");
+
+  auto M_wide = make_multivec<T>(8, 9);
+  t.checkThrow<Error>([&] { X->mult_in_place(*M_wide); }, "mult_in_place() with more columns in M than in X");
+  t.checkThrow<Error>([&] { X->columns(0, 5)->mult_in_place(*X->columns(5, 3)); }, "mult_in_place() with M a view of X");
+  return t;
+}
+
+template <class T>
 TestSuite test_columnwise()
 {
   TestSuite t(name<T>("column_dots, column_norms, pointwise_mult, copy_rows_from"));
@@ -552,6 +583,7 @@ TestSuite test_all()
   t.subTest(test_columnwise<T>());
   t.subTest(test_dot<T>());
   t.subTest(test_mult<T>());
+  t.subTest(test_mult_in_place<T>());
   t.subTest(test_vector_ops<T>());
   t.subTest(test_spmm<T>());
   t.subTest(test_errors<T>());
