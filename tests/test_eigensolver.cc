@@ -1,13 +1,13 @@
 // Unit tests of the Lanczos eigensolver: the eigenpairs of small problems against a dense reference, against Spectra
-// with a projection, multiple eigenvalues (which need the replacement of dependent directions), and invalid configs.
+// with a projection, multiple eigenvalues (which need the replacement of dependent directions), a threshold instead of a
+// fixed number of eigenpairs, and invalid configs.
 // For double and complex<double>.
-
-#include "test_helpers.hh"
 
 #include "ddm/eigensolver/eigensolver.hh"
 #include "ddm/impl/mat/istlmat.hh"
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/pattern.hh"
+#include "test_helpers.hh"
 
 #include <algorithm>
 #include <cmath>
@@ -123,6 +123,21 @@ std::vector<Real<T>> real_values(const Eigensolver<T>& solver)
   return values;
 }
 
+// B-orthonormal eigenvectors with A x = lambda B x. With a semidefinite B, the eigenvectors are only determined up to the
+// kernel of B, so only B X is compared.
+template <class T>
+void check_eigenvectors(TestSuite& t, const Problem<T>& p, const Eigensolver<T>& solver, std::string_view where)
+{
+  const auto X = to_eigen(*solver.vectors());
+  const Index nev = X.cols();
+  Matrix<T> Lambda = Matrix<T>::Zero(nev, nev);
+  for (Index j = 0; j < nev; ++j) Lambda(j, j) = solver.values()[j];
+  t.check(approx(Matrix<T>(X.adjoint() * p.B * X), Matrix<T>(Matrix<T>::Identity(nev, nev))), std::format("B-orthonormal eigenvectors, {}", where));
+  const bool definite = p.B.diagonal().real().minCoeff() > 0;
+  const Matrix<T> residual = definite ? Matrix<T>(p.A * X - p.B * X * Lambda) : Matrix<T>(p.B * (p.A.inverse() * p.B * X * Lambda - X));
+  t.check(residual.norm() < 1e-7, std::format("eigenvector residual {}, {}", residual.norm(), where));
+}
+
 // Eigenvalues and eigenvectors against the dense reference, for several block sizes (including ones that divide neither
 // nev nor ncv) and for a definite and a semidefinite B
 template <class T>
@@ -142,15 +157,7 @@ TestSuite test_against_dense()
       auto solver = create_eigensolver<T>(lanczos_config(nev, blocksize), A, B);
       solver->solve();
       t.check(same_eigenvalues(real_values(*solver), expected), std::format("eigenvalues, {}", where));
-
-      // B-orthonormal eigenvectors with A x = lambda B x. With a semidefinite B, the eigenvectors are only determined up
-      // to the kernel of B, so only B X is compared.
-      const auto X = to_eigen(*solver->vectors());
-      Matrix<T> Lambda = Matrix<T>::Zero(nev, nev);
-      for (int j = 0; j < nev; ++j) Lambda(j, j) = solver->values()[j];
-      t.check(approx(Matrix<T>(X.adjoint() * p.B * X), Matrix<T>(Matrix<T>::Identity(nev, nev))), std::format("B-orthonormal eigenvectors, {}", where));
-      const Matrix<T> residual = zeros == 0 ? Matrix<T>(p.A * X - p.B * X * Lambda) : Matrix<T>(p.B * (p.A.inverse() * p.B * X * Lambda - X));
-      t.check(residual.norm() < 1e-7, std::format("eigenvector residual {}, {}", residual.norm(), where));
+      check_eigenvectors(t, p, *solver, where);
     }
   }
   return t;
@@ -230,6 +237,51 @@ TestSuite test_multiple_eigenvalues()
   return t;
 }
 
+// With a threshold: all eigenvalues below it, but at least nev and at most nev_max. Starting from nev 4 and the default
+// ncv 8, the solver has to grow the basis several times to hold the 40 eigenpairs below the threshold.
+template <class T>
+TestSuite test_threshold()
+{
+  TestSuite t(name<T>("lanczos with a threshold"));
+  const Index n = 120;
+  const int nev = 4;
+  for (const Index zeros : {Index(0), Index(10)}) {
+    const auto p = laplace_problem<T>(n, zeros);
+    const auto A = sparse(p.A);
+    const auto B = sparse(p.B);
+    const auto reference = reference_eigenvalues(p, 60);
+    const auto smallest = [&](Index count) {
+      return std::vector(reference.begin(), reference.begin() + count);
+    };
+    const auto between = [&](Index j) {
+      return std::format("{}", (reference[j - 1] + reference[j]) / 2);
+    }; // the j-th and the next
+
+    for (const int blocksize : {1, 4}) {
+      const auto where = std::format("blocksize {}, {} zeros in B", blocksize, zeros);
+      const auto solve = [&](const std::string& threshold, int nev_max) {
+        auto config = lanczos_config(nev, blocksize);
+        config["threshold"] = threshold;
+        config["nev_max"] = std::to_string(nev_max);
+        auto solver = create_eigensolver<T>(config, A, B);
+        solver->solve();
+        return solver;
+      };
+
+      const auto all = solve(between(40), 50);
+      t.check(same_eigenvalues(real_values(*all), smallest(40)), std::format("the eigenvalues below the threshold, {}", where));
+      check_eigenvectors(t, p, *all, where);
+
+      const auto minimum = solve(std::format("{}", reference[0] / 2), 50);
+      t.check(same_eigenvalues(real_values(*minimum), smallest(nev)), std::format("nev eigenvalues if none is below the threshold, {}", where));
+
+      const auto capped = solve(between(40), 20);
+      t.check(same_eigenvalues(real_values(*capped), smallest(20)), std::format("nev_max eigenvalues if more are below the threshold, {}", where));
+    }
+  }
+  return t;
+}
+
 template <class T>
 TestSuite test_errors()
 {
@@ -246,6 +298,19 @@ TestSuite test_errors()
   config = lanczos_config(4, 4);
   config["ncv"] = "17"; // ncv + blocksize > 20
   t.checkThrow<Error>([&] { create_eigensolver<T>(config, A, B)->solve(); }, "ncv + blocksize larger than the problem");
+  config = lanczos_config(4, 2);
+  config["threshold"] = "-1"; // below the default shift
+  t.checkThrow<Error>([&] { create_eigensolver<T>(config, A, B); }, "threshold below the shift");
+  config = lanczos_config(4, 2);
+  config["threshold"] = "1";
+  config["nev_max"] = "3";
+  t.checkThrow<Error>([&] { create_eigensolver<T>(config, A, B); }, "nev_max smaller than nev");
+#ifdef DUNE_DDM_HAVE_SPECTRA
+  config = lanczos_config(4, 2);
+  config["type"] = "spectra";
+  config["threshold"] = "1";
+  t.checkThrow<Error>([&] { create_eigensolver<T>(config, A, B)->solve(); }, "threshold with spectra");
+#endif
   return t;
 }
 
@@ -256,6 +321,7 @@ TestSuite test_all()
   t.subTest(test_against_dense<T>());
   t.subTest(test_projection_against_spectra<T>());
   t.subTest(test_multiple_eigenvalues<T>());
+  t.subTest(test_threshold<T>());
   t.subTest(test_errors<T>());
   return t;
 }

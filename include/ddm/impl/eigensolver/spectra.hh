@@ -4,11 +4,11 @@
 
 #include "ddm/check.hh"
 #include "ddm/eigensolver/eigensolver.hh"
+#include "ddm/logger.hh"
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/solver/solver.hh"
 #include "ddm/vec/vec.hh"
-#include "ddm/logger.hh"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wshadow"
@@ -40,7 +40,9 @@ class ShiftInvertOp {
 public:
   using Scalar = T;
 
-  ShiftInvertOp(std::shared_ptr<const LocalMat<T>> A, typename Eigensolver<T>::ShiftInvertFactory make_shift_invert, typename Eigensolver<T>::Projection projection,
+  ShiftInvertOp(std::shared_ptr<const LocalMat<T>> A,
+                typename Eigensolver<T>::ShiftInvertFactory make_shift_invert,
+                typename Eigensolver<T>::Projection projection,
                 typename Eigensolver<T>::Projection projection_transposed)
       : A_(std::move(A))
       , make_shift_invert_(std::move(make_shift_invert))
@@ -53,10 +55,19 @@ public:
   {
   }
 
-  Eigen::Index rows() const { return A_->rows(); }
-  Eigen::Index cols() const { return A_->cols(); }
+  Eigen::Index rows() const
+  {
+    return A_->rows();
+  }
+  Eigen::Index cols() const
+  {
+    return A_->cols();
+  }
 
-  void set_shift(T sigma) { solve_ = make_shift_invert_(std::real(sigma)); }
+  void set_shift(T sigma)
+  {
+    solve_ = make_shift_invert_(std::real(sigma));
+  }
 
   // y = P (A - sigma B)^{-1} P^T x, where P and P^T are left out if they are not set and (A - sigma B)^{-1} is
   // replaced if a replacement was set
@@ -180,8 +191,14 @@ public:
   {
   }
 
-  const std::vector<T>& values() const override { return values_; }
-  std::shared_ptr<MultiVec<T>> vectors() const override { return vectors_; }
+  const std::vector<T>& values() const override
+  {
+    return values_;
+  }
+  std::shared_ptr<MultiVec<T>> vectors() const override
+  {
+    return vectors_;
+  }
 
 private:
   void do_solve() override
@@ -190,10 +207,10 @@ private:
     const int n = this->A()->rows();
     const auto nev = this->nev();
     const auto ncv = std::min(this->ncv(), n); // Spectra requires ncv <= n
+    DDM_CHECK(!this->threshold(), "spectra eigensolver: threshold is not supported, use the lanczos eigensolver");
     DDM_CHECK(nev < n, "spectra eigensolver: nev must be smaller than the size of the problem, got nev = {} for size {}", nev, n);
 
-    detail::spectra::ShiftInvertOp<T> op(
-        this->A(), [this](typename Vec<T>::real_type sigma) { return this->make_shift_invert(config_, sigma); }, this->projection(), this->projection_transposed());
+    detail::spectra::ShiftInvertOp<T> op(this->A(), [this](typename Vec<T>::real_type sigma) { return this->make_shift_invert(config_, sigma); }, this->projection(), this->projection_transposed());
     detail::spectra::MatOp<T> Bop(this->B());
     detail::spectra::HermGEigsShiftSolver<detail::spectra::ShiftInvertOp<T>, detail::spectra::MatOp<T>> geigs(op, Bop, nev, ncv, this->shift());
     if (this->projection()) {

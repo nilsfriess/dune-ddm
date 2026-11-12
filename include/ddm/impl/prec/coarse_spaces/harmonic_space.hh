@@ -306,13 +306,18 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_two_sided(const Dune::Parameter
  *       by O(sigma). Pin a dof of A_ring instead and deflate its kernel.
  */
 template <class T>
-std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_two_sided_ring(const Dune::ParameterTree& config, std::shared_ptr<const LocalMat<T>> A, std::shared_ptr<const LocalMat<T>> B, const HarmonicSpace<T>& H,
-                                                                const Region& ring, std::shared_ptr<const LocalMat<T>> A_ring, std::shared_ptr<const LocalMat<T>> B_ring)
+std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_two_sided_ring(const Dune::ParameterTree& config,
+                                                                std::shared_ptr<const LocalMat<T>> A,
+                                                                std::shared_ptr<const LocalMat<T>> B,
+                                                                const HarmonicSpace<T>& H,
+                                                                const Region& ring,
+                                                                std::shared_ptr<const LocalMat<T>> A_ring,
+                                                                std::shared_ptr<const LocalMat<T>> B_ring)
 {
   DDM_CHECK(H.can_project(), "solve_harmonic_gevp_two_sided_ring(): the HarmonicSpace object must be able to project into the space, pass a suitable solver to its constructor");
   DDM_CHECK(ring.subdomain_size() == A->rows(), "solve_harmonic_gevp_two_sided_ring(): the ring was created for {} indices, but A has {} rows", ring.subdomain_size(), A->rows());
-  DDM_CHECK(A_ring->rows() == ring.size() && B_ring->rows() == ring.size(), "solve_harmonic_gevp_two_sided_ring(): the ring has {} indices, but A_ring has {} rows and B_ring {}", ring.size(), A_ring->rows(),
-            B_ring->rows());
+  DDM_CHECK(A_ring->rows() == ring.size() && B_ring->rows() == ring.size(), "solve_harmonic_gevp_two_sided_ring(): the ring has {} indices, but A_ring has {} rows and B_ring {}", ring.size(),
+            A_ring->rows(), B_ring->rows());
   for (auto i : H.boundary()) DDM_CHECK(ring.region_index(i) >= 0, "solve_harmonic_gevp_two_sided_ring(): the boundary dof {} is not in the ring", i);
 
   auto eigensolver = create_eigensolver<T>(config.sub("eigensolver"), A, B);
@@ -358,6 +363,7 @@ std::shared_ptr<MultiVec<T>> solve_harmonic_gevp_basis(const Dune::ParameterTree
   DDM_CHECK(H.can_project(), "solve_harmonic_gevp_basis(): the HarmonicSpace object must be able to project into the space, pass a suitable solver to its constructor");
   const Index n_boundary = std::ssize(H.boundary());
   const int nev = config.sub("eigensolver").get("nev", Eigensolver<T>::default_nev);
+  DDM_CHECK(!config.sub("eigensolver").hasKey("threshold"), "solve_harmonic_gevp_basis(): the dense eigensolver does not support a threshold");
   DDM_CHECK(1 <= nev && nev <= n_boundary, "solve_harmonic_gevp_basis(): nev must be between 1 and the number of boundary dofs {}, got {}", n_boundary, nev);
   logger::debug_all("Harmonic basis of {} dofs with {} boundary dofs", A->rows(), n_boundary);
 

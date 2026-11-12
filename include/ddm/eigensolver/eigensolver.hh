@@ -11,19 +11,26 @@
 #include <dune/common/parametertree.hh>
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace ddm {
 /** Solver for the generalised eigenproblem A x = lambda B x, computing the eigenpairs with the smallest eigenvalues.
  *
  *  Config:
  *  - type:      spectra (default) | lanczos, see SpectraEigensolver and LanczosEigensolver
- *  - nev:       number of eigenpairs to compute (default 16)
- *  - ncv:       number of Lanczos vectors (default 2 * nev)
+ *  - nev:       number of eigenpairs to compute (default 16), the minimum number if threshold is set
+ *  - ncv:       number of Lanczos vectors (default 2 * nev), the initial number if threshold is set
  *  - maxit:     maximum number of iterations (default 1000)
  *  - tolerance: convergence tolerance (default 1e-5)
  *  - shift:     shift sigma of the shift-and-invert operator (A - sigma B)^{-1} (default -1e-3). Negative, so that for
  *               positive semi-definite A and B without a common kernel A - sigma B is positive definite and all
  *               eigenvalues lie above the shift
+ *  - threshold: if set, the number of eigenpairs is not fixed: all eigenpairs with eigenvalues below the threshold tau
+ *               are computed, but at least nev and at most nev_max. More precisely, these are the eigenvalues with
+ *               |lambda - sigma| < |tau - sigma|, the same if the shift lies below the spectrum. Must lie above the
+ *               shift. Only supported by the lanczos eigensolver, which adds Lanczos vectors as needed, so a ncv above
+ *               the expected number of eigenpairs saves reallocations
+ *  - nev_max:   the maximum number of eigenpairs with a threshold (default 4 * ncv)
  *  - print_eigenvalues: print the computed eigenvalues on every rank, at every log level except off (default false)
  */
 template <class T>
@@ -36,15 +43,21 @@ public:
       , B_(std::move(B))
       , nev_(config.get("nev", default_nev))
       , ncv_(config.get("ncv", 2 * nev_))
+      , nev_max_(config.get("nev_max", 4 * ncv_))
       , maxit_(config.get("maxit", 1000))
       , tolerance_(config.get("tolerance", typename Vec<T>::real_type(1e-5)))
       , shift_(config.get("shift", typename Vec<T>::real_type(-1e-3)))
+      , threshold_(config.hasKey("threshold") ? std::optional(config.get<typename Vec<T>::real_type>("threshold")) : std::nullopt)
       , print_eigenvalues_(config.get("print_eigenvalues", false))
   {
     DDM_CHECK(A_->rows() == B_->rows(), "Eigensolver: size mismatch, A has {} rows, B has {}", A_->rows(), B_->rows());
     DDM_CHECK(A_->cols() == B_->cols(), "Eigensolver: size mismatch, A has {} cols, B has {}", A_->cols(), B_->cols());
     DDM_CHECK(nev_ >= 1, "Eigensolver: nev must be at least 1, got {}", nev_);
     DDM_CHECK(ncv_ > nev_, "Eigensolver: ncv must be larger than nev, got ncv = {} and nev = {}", ncv_, nev_);
+    if (threshold_) {
+      DDM_CHECK(nev_max_ >= nev_, "Eigensolver: nev_max must not be smaller than nev, got nev_max = {} and nev = {}", nev_max_, nev_);
+      DDM_CHECK(*threshold_ > shift_, "Eigensolver: the threshold must lie above the shift, got threshold {} and shift {}", *threshold_, shift_);
+    }
   }
 
   virtual ~Eigensolver() = default;
@@ -81,17 +94,52 @@ public:
   virtual const std::vector<T>& values() const = 0;
   virtual std::shared_ptr<MultiVec<T>> vectors() const = 0;
 
-  const std::shared_ptr<const LocalMat<T>>& A() const { return A_; }
-  const std::shared_ptr<const LocalMat<T>>& B() const { return B_; }
-  int nev() const { return nev_; }
-  int ncv() const { return ncv_; }
-  int maxit() const { return maxit_; }
-  typename Vec<T>::real_type tolerance() const { return tolerance_; }
-  typename Vec<T>::real_type shift() const { return shift_; }
+  const std::shared_ptr<const LocalMat<T>>& A() const
+  {
+    return A_;
+  }
+  const std::shared_ptr<const LocalMat<T>>& B() const
+  {
+    return B_;
+  }
+  int nev() const
+  {
+    return nev_;
+  }
+  int ncv() const
+  {
+    return ncv_;
+  }
+  int nev_max() const
+  {
+    return nev_max_;
+  }
+  int maxit() const
+  {
+    return maxit_;
+  }
+  typename Vec<T>::real_type tolerance() const
+  {
+    return tolerance_;
+  }
+  typename Vec<T>::real_type shift() const
+  {
+    return shift_;
+  }
+  std::optional<typename Vec<T>::real_type> threshold() const
+  {
+    return threshold_;
+  } // empty if not set
 
 protected:
-  const Projection& projection() const { return projection_; }                       // empty if not set
-  const Projection& projection_transposed() const { return projection_transposed_; } // empty if not set
+  const Projection& projection() const
+  {
+    return projection_;
+  } // empty if not set
+  const Projection& projection_transposed() const
+  {
+    return projection_transposed_;
+  } // empty if not set
 
   // Sets up S = (A - sigma B)^{-1}, or its replacement if one was set with set_shift_invert(), and returns it. The solver
   // for A - sigma B is created with create_subproblem_solver() from the subtrees "solver" and "prec" of config. Called
@@ -115,9 +163,11 @@ private:
 
   int nev_;
   int ncv_;
+  int nev_max_;
   int maxit_;
   typename Vec<T>::real_type tolerance_;
   typename Vec<T>::real_type shift_;
+  std::optional<typename Vec<T>::real_type> threshold_;
   bool print_eigenvalues_;
 
   Projection projection_;
