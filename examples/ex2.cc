@@ -17,12 +17,20 @@
 // are no constrained dofs. The matrix of the diffusion-only problem is assembled with a second grid operator and
 // attached to the matrix (see Mat::attach_symmetric_matrix()).
 //
+// The options are read from the ini files in -config and the command line, see read_config() in run.hh. The ini files
+// in examples/ini/ document the options of the experiments: ex2.ini the problem, the fine level, the eigensolver and
+// GMRES, and the files in examples/ini/methods/ the preconditioner (one-level RAS, or two-level with a coarse space).
+// With output.json, the configuration, the iteration count and the timings of all ranks are written to that file.
+//
 // Example: mpirun -np 4 ./ex2 -grid.cells "128 128" -prec.type tlschwarz -prec.coarse_space_type nicolaides
+//          mpirun -np 16 ./ex2 -config "examples/ini/ex2.ini examples/ini/methods/msgfem_ring.ini"
 
 #include "ddm/debug/vec_sink.hh"
 #include "examples/assembly.hh"
 #include "examples/pdelab_communication.hh"
+#include "examples/run.hh"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <ddm/index.hh>
@@ -47,6 +55,7 @@
 #include <dune/pdelab.hh>
 #pragma GCC diagnostic pop
 #include <exception>
+#include <format>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -190,15 +199,28 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   };
   ddm::debug::VecSink<RF> sink(config.get("debug_rank", 0), add_to_writer);
 
-  auto P = ddm::create_prec<RF>(config.sub("prec"), A);
-  auto solver = ddm::create_solver<RF>(config.sub("solver"), A, P);
+  std::shared_ptr<ddm::Prec<RF>> P;
+  std::shared_ptr<ddm::Solver<RF>> solver;
+  {
+    ddm::examples::TimedPhase phase("setup");
+    P = ddm::create_prec<RF>(config.sub("prec"), A);
+    solver = ddm::create_solver<RF>(config.sub("solver"), A, P);
+  }
   auto d = A->create_domain_vector();
-  solver->solve(r, d);
+  {
+    ddm::examples::TimedPhase phase("solve");
+    solver->solve(r, d);
+  }
   auto x = A->create_domain_vector();
   ddm::examples::copy(x0, x);
   x -= d;
 
+  const auto dofs = A->communication()->count_owners();
+  if (gv.comm().rank() == 0) std::cout << "Dofs: " << dofs << ", ranks: " << gv.comm().size() << std::endl;
+  ddm::examples::write_results(config, *solver, {{"dofs", std::to_string(dofs)}, {"peclet max", std::format("{:.6e}", 1.2 * velocity_scale / std::min(kappa_light, kappa_dark))}});
+
   // VTK output of the solution and the diffusion coefficient
+  if (!config.get("output.vtk", true)) return;
   add_to_writer(gfs.name(), x);
   // addCellData() with all arguments, the short form is ambiguous for SubsamplingVTKWriter
   std::vector<double> kappas(gv.size(0));
@@ -214,9 +236,7 @@ int main(int argc, char** argv)
 {
   try {
     const auto& helper = Dune::MPIHelper::instance(argc, argv);
-    Dune::ParameterTree config;
-    Dune::ParameterTreeParser::readOptions(argc, argv, config);
-
+    const auto config = ddm::examples::read_config(argc, argv);
     run(config, helper);
     Logger::get().report(MPI_COMM_WORLD);
   }
