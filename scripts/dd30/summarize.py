@@ -12,7 +12,8 @@ between them; they are then the maximum over the ranks and add up to the setup t
              other     everything else (e.g. assembly of the saddle point matrix)
   coarse   the coarse correction: Galerkin matrix, gathered and factorised on rank 0
   solve    GMRES
-Also: the setup time of the whole run (Run/setup), the coarse dimension and the peak memory (max over the ranks).
+Also: the setup time of the whole run (Run/setup), the coarse dimension, the size of the largest overlapping subdomain
+(sub_dofs) and of the largest ring of the ring variant (ring_dofs), and the peak memory (max over the ranks).
 
 Usage: summarize.py [--csv] <json files or directories>...
 """
@@ -49,6 +50,10 @@ def summarize(path):
     basis = d["stats"].get("Coarse space/basis size")
     dim = int(sum(v for v in basis if v)) if basis else 0
     rss = max(v for v in d["stats"]["memory/max rss [MB]"] if v is not None)
+    sub = d["stats"].get("Schwarz/subdomain dofs")
+    ring = d["stats"].get("Coarse space/ring dofs")
+    sub_dofs = int(max(v for v in sub if v is not None)) if sub else 0
+    ring_dofs = int(max(v for v in ring if v is not None)) if ring else 0
 
     prec = cfg.get("prec.type", "")
     if prec == "schwarz":
@@ -62,7 +67,7 @@ def summarize(path):
 
     return {
         "file": Path(path).stem, "method": method, "ranks": P, "dofs": res.get("dofs", 0), "its": res["iterations"],
-        "conv": res["converged"], "dim": dim, "setup": setup, "fine": fine, "space": space, "neumann": neumann,
+        "conv": res["converged"], "dim": dim, "sub_dofs": sub_dofs, "ring_dofs": ring_dofs, "setup": setup, "fine": fine, "space": space, "neumann": neumann,
         "eig_fact": eig_fact, "eig_iter": eig_iter, "other": other, "coarse": coarse, "solve": solve,
         "total": setup + solve, "rss_mb": rss,
     }
@@ -77,7 +82,7 @@ def main():
         p = Path(a)
         files += sorted(p.glob("*.json")) if p.is_dir() else [p]
     rows = [summarize(f) for f in files]
-    cols = ["file", "method", "ranks", "dofs", "its", "conv", "dim", "setup", "fine", "space", "neumann", "eig_fact",
+    cols = ["file", "method", "ranks", "dofs", "its", "conv", "dim", "sub_dofs", "ring_dofs", "setup", "fine", "space", "neumann", "eig_fact",
             "eig_iter", "other", "coarse", "solve", "total", "rss_mb"]
     if csv:
         print(",".join(cols))
@@ -85,7 +90,7 @@ def main():
             print(",".join(str(row[c]) for c in cols))
         return
     fmt = {"file": "{:<36}", "method": "{:<18}", "ranks": "{:>5}", "dofs": "{:>9}", "its": "{:>4}", "conv": "{!s:>5}",
-           "dim": "{:>6}", "rss_mb": "{:>8.0f}"}
+           "dim": "{:>6}", "sub_dofs": "{:>8}", "ring_dofs": "{:>9}", "rss_mb": "{:>8.0f}"}
     print(" ".join((fmt.get(c, "{:>8}").replace(".3f", "").replace(".0f", "").replace("!s", "")).format(c) for c in cols))
     for row in rows:
         print(" ".join(fmt.get(c, "{:>8.3f}").format(row[c]) for c in cols))
