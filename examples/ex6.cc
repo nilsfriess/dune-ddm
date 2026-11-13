@@ -10,9 +10,18 @@
 // of the convection-diffusion operator is the diffusion, and tangential to the side faces of the cube. Its streamlines
 // are helices around the axis, with about swirl pi^2 / (2 pi) turns near the axis while they rise through the cube.
 //
-// The diffusion coefficient is a checkerboard of checkers^3 cubes, alternating between kappa_light and kappa_dark, as in
-// the 2D example of Section 5.1 in arXiv:2509.17531 (ex2). With kappa_dark much smaller than kappa_light, the problem
-// is convection dominated in the dark cubes and has high contrast.
+// The diffusion coefficient is one of (problem.coefficient):
+// - checkerboard: checkers^3 cubes, alternating between kappa_light and kappa_dark, as in the 2D example of Section 5.1
+//   in arXiv:2509.17531 (ex2). With kappa_dark much smaller than kappa_light, the problem is convection dominated in
+//   the dark cubes and has high contrast. In 3D (and DG, which only couples elements through faces) the light cubes
+//   only touch along edges, so they are isolated inclusions: hardly harder for one-level methods than kappa = 1.
+// - channels: straight rods with kappa_channel in a background with kappa_background, which run through the whole
+//   cube and so cross many subdomain boundaries, the hard case for one-level methods and simple coarse spaces. The cube
+//   is cut into channels slices of thickness 1/channels in z; the lower channel_width of each slice holds channels rods
+//   with a square cross section of side channel_width, at y = j / channels along x in even slices and at
+//   x = j / channels along y in odd slices. The rods do not touch each other. With channel_width = 1 / (2 channels),
+//   the rods need at least 2 channels elements per direction, and their edges lie on element faces for multiples of
+//   that.
 //
 // Boundary conditions: the bottom face (z = 0) is the inflow boundary, with the Dirichlet data u = exp(-|x - x_s|^2 /
 // (2 w^2)), a Gaussian spot of width w = spot_width around x_s = spot (default off the axis, so that the spot is carried
@@ -76,16 +85,32 @@ struct Problem {
   explicit Problem(const Dune::ParameterTree& config)
       : velocity_scale(config.get("problem.velocity_scale", 1.))
       , swirl(config.get("problem.swirl", 1.))
+      , coefficient(config.get("problem.coefficient", std::string("checkerboard")))
       , kappa_light(config.get("problem.kappa_light", 1.))
       , kappa_dark(config.get("problem.kappa_dark", 1e-6))
       , checkers(config.get("problem.checkers", 8))
+      , kappa_channel(config.get("problem.kappa_channel", 1e6))
+      , kappa_background(config.get("problem.kappa_background", 1.))
+      , channels(config.get("problem.channels", 16))
+      , channel_width(config.get("problem.channel_width", 1. / 32))
       , spot(config.get("problem.spot", Point{0.5, 0.25, 0.}))
       , spot_width(config.get("problem.spot_width", 0.06))
   {
+    if (coefficient != "checkerboard" && coefficient != "channels") DUNE_THROW(Dune::Exception, std::format("Unknown problem.coefficient `{}`, known: checkerboard, channels", coefficient));
+    if (coefficient == "channels" && !(channel_width > 0 && channel_width < 1. / channels))
+      DUNE_THROW(Dune::Exception, std::format("problem.channel_width must lie in (0, 1 / channels), got {} with {} channels", channel_width, channels));
   }
 
+  // x is the element centre (see Parameters::A())
   double kappa(const Point& x) const
   {
+    if (coefficient == "channels") {
+      // Is t in the lower channel_width of its slice of thickness 1 / channels?
+      const auto in_band = [&](double t) { return t * channels - std::floor(t * channels) < channel_width * channels; };
+      if (!in_band(x[2])) return kappa_background;
+      const int slice = std::clamp(static_cast<int>(std::floor(x[2] * channels)), 0, channels - 1);
+      return in_band(slice % 2 == 0 ? x[1] : x[0]) ? kappa_channel : kappa_background;
+    }
     int sum = 0;
     for (int d = 0; d < dim; ++d) sum += std::clamp(static_cast<int>(std::floor(x[d] * checkers)), 0, checkers - 1);
     return sum % 2 == 0 ? kappa_light : kappa_dark;
@@ -105,14 +130,27 @@ struct Problem {
     return std::exp(-d.two_norm2() / (2 * spot_width * spot_width));
   }
 
+  double kappa_min() const { return coefficient == "channels" ? std::min(kappa_channel, kappa_background) : std::min(kappa_light, kappa_dark); }
+
+  std::string describe() const
+  {
+    if (coefficient == "channels") return std::format("kappa {} in {} channels of width {} per slice, {} elsewhere", kappa_channel, channels, channel_width, kappa_background);
+    return std::format("kappa {} / {} on {}^3 checkers", kappa_light, kappa_dark, checkers);
+  }
+
   // The largest |b|: the vortex is fastest at the middle of the side faces
   double max_velocity() const { return velocity_scale * std::sqrt(1 + swirl * swirl * std::numbers::pi * std::numbers::pi); }
 
   double velocity_scale;
   double swirl;
+  std::string coefficient;
   double kappa_light;
   double kappa_dark;
   int checkers;
+  double kappa_channel;
+  double kappa_background;
+  int channels;
+  double channel_width;
   Point spot;
   double spot_width;
 };
@@ -192,11 +230,9 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   gfs.name("u");
 
   const Problem problem(config);
-  const auto peclet_max = problem.max_velocity() / std::min(problem.kappa_light, problem.kappa_dark);
+  const auto peclet_max = problem.max_velocity() / problem.kappa_min();
   if (gv.comm().rank() == 0)
-    std::cout << std::format("Velocity scale {}, swirl {}, kappa {} / {} on {}^3 checkers, max |b| / kappa {:.3e}", problem.velocity_scale, problem.swirl, problem.kappa_light, problem.kappa_dark,
-                             problem.checkers, peclet_max)
-              << std::endl;
+    std::cout << std::format("Velocity scale {}, swirl {}, {}, max |b| / kappa {:.3e}", problem.velocity_scale, problem.swirl, problem.describe(), peclet_max) << std::endl;
 
   using Params = Parameters<ES, RF>;
   Params params(problem, true);
