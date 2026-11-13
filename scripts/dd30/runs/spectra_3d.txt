@@ -1,0 +1,11 @@
+# Spectra of the local eigenproblems on the geometry of the 3D pilot (ex6, 64 ranks, 64^3 elements), to choose the
+# thresholds of adaptive coarse spaces: nev = 80 with the eigenvalues printed on every rank. The two-sided variants
+# (eta = omega and ring) are printed with a shift of -1e-7: their eigenvalues are much smaller than those of the saddle
+# point problem, and the default shift -1e-3 perturbs them (the projection is outside of the shifted solve, so the
+# printed values belong to the shifted problem). Also eta = omega at nev 20 and 80 with the default shift, which the
+# pilot only has for the other two variants
+msgfem_kl1e-2_v1_nev80_eigs ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.nev 80 -prec.coarse_space.eigensolver.shift -1e-7 -prec.coarse_space.eigensolver.print_eigenvalues true
+msgfem_ring_kl1e-2_v1_nev80_eigs ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.nev 80 -prec.coarse_space.eigensolver.shift -1e-7 -prec.coarse_space.eigensolver.print_eigenvalues true
+msgfem_saddle_point_kl1e-2_v1_nev80_eigs ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.nev 80 -prec.coarse_space.eigensolver.print_eigenvalues true
+msgfem_kl1e-2_v1_nev20 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.nev 20
+msgfem_kl1e-2_v1_nev80 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.nev 80

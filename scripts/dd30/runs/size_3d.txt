@@ -1,0 +1,31 @@
+# Subdomain size ladder with ex6 on 64 ranks: the global grid grows (cells^3 * 4^3 elements), the number of subdomains
+# and the overlap (4 layers, the partition of unity on the inner 2) stay fixed, so the subdomains grow and the ring of
+# the ring variant (where the partition of unity is not 1) becomes a smaller part of them. Run with
+# RANKS_PER_NODE=8: the saddle point method needs more memory than 16 ranks per node leave at 20^3 cells.
+# Within a rung the saddle point method runs last; the largest rung (24^3 cells, ~260k dofs per overlapping subdomain)
+# leaves it out until the memory of the smaller rungs shows that it fits (it is the last line, commented out).
+# Physics as in the pilot's solver option runs (kappa_light 1e-2, velocity 1), nev 40 from ex6.ini
+# 12^3 cells, 48^3 elements
+ras_c12 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1e-2 -grid.cells "12 12 12"
+nicolaides_c12 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1e-2 -grid.cells "12 12 12"
+msgfem_ring_c12 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -grid.cells "12 12 12"
+msgfem_c12 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -grid.cells "12 12 12"
+msgfem_saddle_point_c12 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -grid.cells "12 12 12"
+# 16^3 cells, 64^3 elements
+ras_c16 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1e-2 -grid.cells "16 16 16"
+nicolaides_c16 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1e-2 -grid.cells "16 16 16"
+msgfem_ring_c16 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -grid.cells "16 16 16"
+msgfem_c16 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -grid.cells "16 16 16"
+msgfem_saddle_point_c16 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -grid.cells "16 16 16"
+# 20^3 cells, 80^3 elements
+ras_c20 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1e-2 -grid.cells "20 20 20"
+nicolaides_c20 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1e-2 -grid.cells "20 20 20"
+msgfem_ring_c20 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -grid.cells "20 20 20"
+msgfem_c20 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -grid.cells "20 20 20"
+msgfem_saddle_point_c20 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -grid.cells "20 20 20"
+# 24^3 cells, 96^3 elements
+ras_c24 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1e-2 -grid.cells "24 24 24"
+nicolaides_c24 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1e-2 -grid.cells "24 24 24"
+msgfem_ring_c24 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -grid.cells "24 24 24"
+msgfem_c24 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -grid.cells "24 24 24"
+# msgfem_saddle_point_c24 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -grid.cells "24 24 24"
