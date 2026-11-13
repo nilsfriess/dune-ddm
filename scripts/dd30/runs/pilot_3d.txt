@@ -1,0 +1,37 @@
+# 3D pilot with ex6 on 64 ranks: 64^3 elements (2.1M dofs, ~33k per subdomain), see scripts/dd30/submit_helix.sh
+# 1. Robustness: all methods for two contrasts and two velocities (nev = 40 from ex6.ini)
+ras_kl1_v1 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1 -problem.velocity_scale 1
+nicolaides_kl1_v1 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1 -problem.velocity_scale 1
+msgfem_saddle_point_kl1_v1 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1 -problem.velocity_scale 1
+msgfem_kl1_v1 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1 -problem.velocity_scale 1
+msgfem_ring_kl1_v1 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1 -problem.velocity_scale 1
+ras_kl1_v10 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1 -problem.velocity_scale 10
+nicolaides_kl1_v10 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1 -problem.velocity_scale 10
+msgfem_saddle_point_kl1_v10 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1 -problem.velocity_scale 10
+msgfem_kl1_v10 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1 -problem.velocity_scale 10
+msgfem_ring_kl1_v10 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1 -problem.velocity_scale 10
+ras_kl1e-2_v1 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1e-2 -problem.velocity_scale 1
+nicolaides_kl1e-2_v1 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1e-2 -problem.velocity_scale 1
+msgfem_saddle_point_kl1e-2_v1 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -problem.velocity_scale 1
+msgfem_kl1e-2_v1 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -problem.velocity_scale 1
+msgfem_ring_kl1e-2_v1 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -problem.velocity_scale 1
+ras_kl1e-2_v10 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1e-2 -problem.velocity_scale 10
+nicolaides_kl1e-2_v10 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1e-2 -problem.velocity_scale 10
+msgfem_saddle_point_kl1e-2_v10 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -problem.velocity_scale 10
+msgfem_kl1e-2_v10 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -problem.velocity_scale 10
+msgfem_ring_kl1e-2_v10 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -problem.velocity_scale 10
+# 2. Solver options at kappa_light 1e-2, velocity 1: Lanczos block size, PARDISO matrix types (baseline: mtype -2 / 2)
+msgfem_saddle_point_kl1e-2_v1_bs8 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.blocksize 8
+msgfem_saddle_point_kl1e-2_v1_bs16 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.blocksize 16
+msgfem_kl1e-2_v1_bs8 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.blocksize 8
+msgfem_kl1e-2_v1_bs16 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.blocksize 16
+msgfem_ring_kl1e-2_v1_bs8 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.blocksize 8
+msgfem_ring_kl1e-2_v1_bs16 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.blocksize 16
+msgfem_saddle_point_kl1e-2_v1_mtype11 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.prec.mtype 11
+msgfem_kl1e-2_v1_mtype11 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.prec.mtype 11
+msgfem_ring_kl1e-2_v1_mtype11 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -prec.coarse_space.ring_prec.mtype 11
+# 3. Number of eigenvectors per subdomain (ring only, the others have the same coarse space size)
+msgfem_ring_kl1e-2_v1_nev20 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.nev 20
+msgfem_saddle_point_kl1e-2_v1_nev20 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.nev 20
+msgfem_ring_kl1e-2_v1_nev80 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.nev 80
+msgfem_saddle_point_kl1e-2_v1_nev80 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -prec.coarse_space.eigensolver.nev 80
