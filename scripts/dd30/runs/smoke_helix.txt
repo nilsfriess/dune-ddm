@@ -1,0 +1,5 @@
+# Smoke test of the Helix setup (srun, binding, PARDISO, all runs of the list are executed) on one node with 16 ranks
+ras_tiny ex6 ex6.ini,methods/ras.ini -grid.cells "8 8 8" -grid.refine 1
+saddle_point_tiny ex6 ex6.ini,methods/msgfem_saddle_point.ini -grid.cells "8 8 8" -grid.refine 1
+ring_tiny ex6 ex6.ini,methods/msgfem_ring.ini -grid.cells "8 8 8" -grid.refine 1
+ex2_ring_tiny ex2 ex2.ini,methods/msgfem_ring.ini -grid.cells "64 64"
