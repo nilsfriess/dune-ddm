@@ -1,5 +1,16 @@
 # 3D pilot with ex6 on 64 ranks: 64^3 elements (2.1M dofs, ~33k per subdomain), see scripts/dd30/submit_helix.sh
-# 1. Robustness: all methods for two contrasts and two velocities (nev = 40 from ex6.ini)
+# 1. Robustness: all methods for two contrasts and four velocities (nev = 40 from ex6.ini). Low velocities make the
+#    problem diffusion dominated in the light cubes, where one-level methods should struggle most
+ras_kl1_v0.01 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1 -problem.velocity_scale 0.01
+nicolaides_kl1_v0.01 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1 -problem.velocity_scale 0.01
+msgfem_saddle_point_kl1_v0.01 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1 -problem.velocity_scale 0.01
+msgfem_kl1_v0.01 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1 -problem.velocity_scale 0.01
+msgfem_ring_kl1_v0.01 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1 -problem.velocity_scale 0.01
+ras_kl1_v0.1 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1 -problem.velocity_scale 0.1
+nicolaides_kl1_v0.1 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1 -problem.velocity_scale 0.1
+msgfem_saddle_point_kl1_v0.1 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1 -problem.velocity_scale 0.1
+msgfem_kl1_v0.1 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1 -problem.velocity_scale 0.1
+msgfem_ring_kl1_v0.1 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1 -problem.velocity_scale 0.1
 ras_kl1_v1 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1 -problem.velocity_scale 1
 nicolaides_kl1_v1 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1 -problem.velocity_scale 1
 msgfem_saddle_point_kl1_v1 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1 -problem.velocity_scale 1
@@ -10,6 +21,16 @@ nicolaides_kl1_v10 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1 -pr
 msgfem_saddle_point_kl1_v10 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1 -problem.velocity_scale 10
 msgfem_kl1_v10 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1 -problem.velocity_scale 10
 msgfem_ring_kl1_v10 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1 -problem.velocity_scale 10
+ras_kl1e-2_v0.01 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1e-2 -problem.velocity_scale 0.01
+nicolaides_kl1e-2_v0.01 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1e-2 -problem.velocity_scale 0.01
+msgfem_saddle_point_kl1e-2_v0.01 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -problem.velocity_scale 0.01
+msgfem_kl1e-2_v0.01 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -problem.velocity_scale 0.01
+msgfem_ring_kl1e-2_v0.01 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -problem.velocity_scale 0.01
+ras_kl1e-2_v0.1 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1e-2 -problem.velocity_scale 0.1
+nicolaides_kl1e-2_v0.1 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1e-2 -problem.velocity_scale 0.1
+msgfem_saddle_point_kl1e-2_v0.1 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -problem.velocity_scale 0.1
+msgfem_kl1e-2_v0.1 ex6 ex6.ini,methods/msgfem.ini -problem.kappa_light 1e-2 -problem.velocity_scale 0.1
+msgfem_ring_kl1e-2_v0.1 ex6 ex6.ini,methods/msgfem_ring.ini -problem.kappa_light 1e-2 -problem.velocity_scale 0.1
 ras_kl1e-2_v1 ex6 ex6.ini,methods/ras.ini -problem.kappa_light 1e-2 -problem.velocity_scale 1
 nicolaides_kl1e-2_v1 ex6 ex6.ini,methods/nicolaides.ini -problem.kappa_light 1e-2 -problem.velocity_scale 1
 msgfem_saddle_point_kl1e-2_v1 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.kappa_light 1e-2 -problem.velocity_scale 1
