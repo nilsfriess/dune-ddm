@@ -12,7 +12,11 @@ endif()
 
 set(DDM_EXTERN_DIR ${CMAKE_CURRENT_LIST_DIR})
 set(DDM_DEPS_PREFIX ${CMAKE_BINARY_DIR}/extern/install)
-cmake_host_system_information(RESULT DDM_DEPS_JOBS QUERY NUMBER_OF_LOGICAL_CORES)
+# Number of parallel jobs for building the dependencies. Defaults to all logical cores of the host; set it (e.g.
+# -DDDM_DEPS_JOBS=8) on shared machines like cluster login nodes, or to the cores of a batch job.
+if(NOT DDM_DEPS_JOBS)
+  cmake_host_system_information(RESULT DDM_DEPS_JOBS QUERY NUMBER_OF_LOGICAL_CORES)
+endif()
 
 # ddm_build_dependency(<name> <source_dir> <cache>)
 #
