@@ -25,6 +25,17 @@ public:
   Solver(const Solver&) = delete;
   Solver& operator=(const Solver&) = delete;
 
+  // Statistics of the last solve() with a single right-hand side. Iterative solvers set them, the others keep the
+  // defaults.
+  struct Result {
+    int iterations = 0;
+    bool converged = true;
+    double reduction = 0; ///< reduction of the residual norm, in the norm the solver uses
+    double rate = 0;      ///< mean reduction per iteration
+    double elapsed = 0;   ///< in seconds
+  };
+  const Result& last_result() const { return result_; }
+
   // Solves A x = b, x is used as the initial guess
   void solve(const Vec<T>& b, Vec<T>& x)
   {
@@ -136,6 +147,8 @@ protected:
     if (!this->mat()->sequential() && this->mat()->communication()->rank() != 0) verbosity_ = 0;
   }
 
+  void set_result(const Result& result) { result_ = result; }
+
 private:
   // Also used for the transposed solves, which is only correct because the matrix is square (see the constructor)
   void check_solve_args(const MultiVec<T>& b, const MultiVec<T>& x, std::string_view op) const
@@ -181,6 +194,7 @@ private:
   std::shared_ptr<Prec<T>> P_;
 
   bool info_; // Call info() on each solve
+  Result result_;
 
   // Solver parameter that (probably) every solver needs
   double reduction_;

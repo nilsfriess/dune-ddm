@@ -36,6 +36,7 @@ private:
     Vec<T> bcopy = b; // Dune solvers don't take b as const, so we have to copy here...
     Dune::InverseOperatorResult res;
     solver->apply(x, bcopy, res);
+    this->set_result({.iterations = res.iterations, .converged = res.converged, .reduction = res.reduction, .rate = res.conv_rate, .elapsed = res.elapsed});
   }
 
   void do_info() const override

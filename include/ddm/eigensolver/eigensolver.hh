@@ -143,9 +143,11 @@ protected:
 
   // Sets up S = (A - sigma B)^{-1}, or its replacement if one was set with set_shift_invert(), and returns it. The solver
   // for A - sigma B is created with create_subproblem_solver() from the subtrees "solver" and "prec" of config. Called
-  // once per solve(), S lives as long as the returned function.
+  // once per solve(), S lives as long as the returned function. Timed as the event "Eigensolver"/"factorize" (which
+  // lies inside "Eigensolver"/"solve").
   ShiftInvert make_shift_invert(const Dune::ParameterTree& config, typename Vec<T>::real_type sigma) const
   {
+    Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Eigensolver", "factorize")};
     if (shift_invert_) return shift_invert_(sigma);
     auto shifted = std::make_shared<const Mat<T>>(Dune::ParameterTree{}, add(*A_, T(-sigma), *B_), nullptr);
     std::shared_ptr<Solver<T>> solver = create_subproblem_solver<T>(config.sub("solver"), config.sub("prec"), std::move(shifted));

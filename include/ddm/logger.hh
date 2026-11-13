@@ -26,16 +26,20 @@
 #include <deque>
 #include <dune/common/parallel/mpitraits.hh>
 #include <format>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <mpi.h>
 #include <mutex>
+#include <optional>
 #include <ostream>
 #include <print>
 #include <ratio>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <sys/resource.h>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -460,6 +464,172 @@ public:
     event->times_called++;
   }
 
+  /** Barriers between the phases of a computation (e.g. the setup steps of a preconditioner), off by default.
+   *
+   *  With barriers, a phase starts on all ranks at the same time, so the maximum over the ranks of an event that covers
+   *  a whole phase is its wall-clock time, and the phases add up to the total time. Without them, a rank that finishes a
+   *  phase early starts the next one, and the waiting shows up in whichever collective operation comes next. Code that
+   *  wants such a barrier calls phase_barrier(), which does nothing unless barriers are enabled.
+   */
+  void set_phase_barriers(bool enabled) { phase_barriers_ = enabled; }
+  bool phase_barriers() const { return phase_barriers_; }
+
+  //! MPI_Barrier(comm) if phase barriers are enabled (see set_phase_barriers()), otherwise nothing. Collective
+  void phase_barrier(MPI_Comm comm) const
+  {
+    if (phase_barriers_) MPI_Barrier(comm);
+  }
+
+  /** Records a value of this rank under a name, e.g. the size of the subdomain or of the local coarse basis. Calling it
+   *  again with the same name overwrites the value. The values of all ranks are written by write_json().
+   */
+  void set_stat(const std::string& name, double value)
+  {
+    for (auto& [n, v] : stats_)
+      if (n == name) {
+        v = value;
+        return;
+      }
+    stats_.emplace_back(name, value);
+  }
+
+  /** Writes the total time and number of calls of every event and the values of set_stat() of every rank to a JSON file
+   *  (on rank 0 of comm), together with the peak memory (maximum resident set size) of every rank:
+   *
+   *    { "ranks": P, "meta": meta,
+   *      "events": { "Family/event": { "time": [ t_0, ..., t_{P-1} ], "calls": [ ... ] }, ... },
+   *      "stats": { "name": [ v_0, ..., v_{P-1} ], ... } }
+   *
+   *  Times are in seconds. An event or stat that a rank does not have is 0 (events) or null (stats) for that rank. Unlike
+   *  report(), this does not require that all ranks registered the same events in the same order. meta must be a valid
+   *  JSON value (e.g. an object with the configuration of the run), it is only used on rank 0. Collective.
+   */
+  void write_json(MPI_Comm comm, const std::string& filename, const std::string& meta = "{}") const
+  {
+    int rank = 0;
+    int size = 0;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+
+    // Every rank describes its events and stats in one string, one per line: "e\t<name>\t<ns>\t<calls>" or
+    // "s\t<name>\t<value>". Names contain no tabs or newlines.
+    std::ostringstream local;
+    local.precision(17);
+    for (const auto& family : families)
+      for (const auto& event : family.events)
+        if (event.times_called > 0) local << "e\t" << family.name << '/' << event.name << '\t' << event.total_time.count() << '\t' << event.times_called << '\n';
+    for (const auto& [name, value] : stats_) local << "s\t" << name << '\t' << value << '\n';
+    local << "s\tmemory/max rss [MB]\t" << max_rss_mb() << '\n';
+    const auto local_str = local.str();
+
+    const int local_len = static_cast<int>(local_str.size());
+    std::vector<int> lens(rank == 0 ? size : 0);
+    MPI_Gather(&local_len, 1, MPI_INT, lens.data(), 1, MPI_INT, 0, comm);
+    std::vector<int> displs(rank == 0 ? size : 0);
+    std::string all;
+    if (rank == 0) {
+      for (int p = 1; p < size; ++p) displs[p] = displs[p - 1] + lens[p - 1];
+      all.resize(static_cast<std::size_t>(displs.back() + lens.back()));
+    }
+    MPI_Gatherv(local_str.data(), local_len, MPI_CHAR, all.data(), lens.data(), displs.data(), MPI_CHAR, 0, comm);
+    if (rank != 0) return;
+
+    // Parse the lines of every rank, keeping the names in the order in which they first appear
+    struct EventData {
+      std::vector<double> time;
+      std::vector<std::size_t> calls;
+    };
+    std::vector<std::pair<std::string, EventData>> events;
+    std::vector<std::pair<std::string, std::vector<std::optional<double>>>> stats;
+    const auto find = [](auto& list, const std::string& name) -> auto& {
+      for (auto& [n, d] : list)
+        if (n == name) return d;
+      return list.emplace_back(name, typename std::remove_reference_t<decltype(list)>::value_type::second_type{}).second;
+    };
+    for (int p = 0; p < size; ++p) {
+      std::istringstream in(all.substr(static_cast<std::size_t>(displs[p]), static_cast<std::size_t>(lens[p])));
+      std::string line;
+      while (std::getline(in, line)) {
+        std::vector<std::string> fields;
+        std::size_t start = 0;
+        for (auto tab = line.find('\t'); tab != std::string::npos; tab = line.find('\t', start)) {
+          fields.push_back(line.substr(start, tab - start));
+          start = tab + 1;
+        }
+        fields.push_back(line.substr(start));
+        if (fields[0] == "e") {
+          auto& d = find(events, fields[1]);
+          d.time.resize(static_cast<std::size_t>(size), 0.0);
+          d.calls.resize(static_cast<std::size_t>(size), 0);
+          d.time[p] = static_cast<double>(std::stoull(fields[2])) * 1e-9;
+          d.calls[p] = std::stoull(fields[3]);
+        }
+        else {
+          auto& d = find(stats, fields[1]);
+          d.resize(static_cast<std::size_t>(size));
+          d[p] = std::stod(fields[2]);
+        }
+      }
+    }
+
+    std::ofstream out(filename);
+    if (!out) {
+      logger::error("Logger: could not open {} for writing", filename);
+      return;
+    }
+    out.precision(9);
+    const auto write_list = [&](const auto& values, auto&& write_value) {
+      out << '[';
+      for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) out << ", ";
+        write_value(values[i]);
+      }
+      out << ']';
+    };
+    out << "{\n  \"ranks\": " << size << ",\n  \"meta\": " << meta << ",\n  \"events\": {";
+    for (std::size_t i = 0; i < events.size(); ++i) {
+      const auto& [name, d] = events[i];
+      out << (i == 0 ? "\n" : ",\n") << "    " << json_string(name) << ": {\"time\": ";
+      write_list(d.time, [&](double t) { out << t; });
+      out << ", \"calls\": ";
+      write_list(d.calls, [&](std::size_t c) { out << c; });
+      out << '}';
+    }
+    out << "\n  },\n  \"stats\": {";
+    for (std::size_t i = 0; i < stats.size(); ++i) {
+      const auto& [name, values] = stats[i];
+      out << (i == 0 ? "\n" : ",\n") << "    " << json_string(name) << ": ";
+      write_list(values, [&](const std::optional<double>& v) {
+        if (v) out << *v;
+        else out << "null";
+      });
+    }
+    out << "\n  }\n}\n";
+  }
+
+  //! s as a JSON string literal, with quotes, backslashes and control characters escaped
+  static std::string json_string(std::string_view s)
+  {
+    std::string result = "\"";
+    for (const char c : s) {
+      if (c == '"' || c == '\\') {
+        result += '\\';
+        result += c;
+      }
+      else if (static_cast<unsigned char>(c) < 0x20) result += std::format("\\u{:04x}", static_cast<int>(c));
+      else result += c;
+    }
+    return result + '"';
+  }
+
+  //! The peak memory (maximum resident set size) of this process so far, in MB
+  static double max_rss_mb()
+  {
+    rusage usage{};
+    getrusage(RUSAGE_SELF, &usage);
+    return static_cast<double>(usage.ru_maxrss) / 1024.0; // ru_maxrss is in kB on Linux
+  }
+
   /**
    * Create the logging report
    * @param comm An MPI communicator
@@ -556,6 +726,9 @@ private:
 
   // Storage for families with stable pointers (deque never invalidates pointers to existing elements)
   std::deque<Family> families;
+
+  bool phase_barriers_ = false;                          ///< see set_phase_barriers()
+  std::vector<std::pair<std::string, double>> stats_;    ///< see set_stat(), in the order of the first call
 };
 
 /**

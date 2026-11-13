@@ -48,7 +48,13 @@ public:
       , res_(this->mat()->create_range_vector())
       , apply_event_(Logger::get().registerOrGetEvent("Two-level Schwarz", "apply"))
   {
-    Logger::get().startEvent(Logger::get().registerOrGetEvent("Two-level Schwarz", "coarse space"));
+    // The fine level is complete, including the factorisation of the subdomain matrices. With phase barriers (see
+    // Logger::set_phase_barriers()), the coarse space and the coarse correction start on all ranks at the same time.
+    auto& logger = Logger::get();
+    const MPI_Comm comm = schwarz_.get_overlap()->comm->communication_pattern().communicator();
+    logger.phase_barrier(comm);
+
+    logger.startEvent(logger.registerOrGetEvent("Two-level Schwarz", "coarse space"));
     const auto coarse_space_type = config.get("coarse_space_type", "nicolaides");
     if (coarse_space_type == "nicolaides") coarse_space_ = nicolaides_coarse_space<T>(schwarz_.get_overlap(), *schwarz_.get_pou(), *this->mat(), schwarz_.get_overlapping_mat()->local());
     else if (coarse_space_type == "geneo")
@@ -60,10 +66,13 @@ public:
       coarse_space_ = ring_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat(),
                                            schwarz_.eliminates_boundary() ? schwarz_.get_subdomain_solver() : nullptr, coarse_space_type == "msgfem_ring");
     else DDM_CHECK(false, "TwoLevelSchwarzPrec: unknown coarse space type {}", coarse_space_type);
-    Logger::get().endEvent(Logger::get().registerOrGetEvent("Two-level Schwarz", "coarse space"));
+    logger.endEvent(logger.registerOrGetEvent("Two-level Schwarz", "coarse space"));
+    logger.set_stat("Coarse space/basis size", static_cast<double>(coarse_space_->basis->cols()));
+    logger.phase_barrier(comm);
 
     coarse_correction_ = std::make_unique<CoarseCorrection<T>>(config.sub("coarse"), this->mat(), schwarz_.get_overlapping_mat()->local(), coarse_space_);
-    Logger::get().endEvent(setup_event_);
+    logger.phase_barrier(comm);
+    logger.endEvent(setup_event_);
   }
 
   // On a single rank, the matrix is sequential, and so is the preconditioner
@@ -106,13 +115,6 @@ private:
 
   void do_apply(Vec<T>& z, const Vec<T>& r) override
   {
-    // The fine-level subdomain solver is set up on its first use, count that as setup and not as apply time
-    if (!fine_solver_set_up_) {
-      Logger::ScopedLog sl{setup_event_};
-      schwarz_.get_subdomain_solver();
-      fine_solver_set_up_ = true;
-    }
-
     Logger::ScopedLog sl{apply_event_};
 
     // Both apply() overwrite their output completely
@@ -168,8 +170,6 @@ private:
 
   Vec<T> tmp_; ///< the coarse correction in apply()
   Vec<T> res_; ///< the residual of the fine-level correction in apply() (deflated only)
-
-  bool fine_solver_set_up_ = false; ///< false until the first apply(), which sets up the fine-level subdomain solver
 
   Logger::Event* apply_event_;
 };

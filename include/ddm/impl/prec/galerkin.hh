@@ -212,6 +212,7 @@ public:
       , cs_(std::move(cs))
       , apply_event_(Logger::get().registerOrGetEvent("Coarse correction", "apply"))
       , coarse_solve_event_(Logger::get().registerOrGetEvent("Coarse correction", "coarse solve"))
+      , factorize_event_(Logger::get().registerOrGetEvent("Coarse correction", "factorize"))
   {
     Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Coarse correction", "setup")};
     const auto& V = *cs_->basis;
@@ -356,6 +357,9 @@ private:
     A0_local->assemble();
 
     auto A0 = std::make_shared<const Mat<T>>(config.sub("mat"), A0_local, nullptr);
+    Logger::get().set_stat("Coarse correction/coarse dofs", static_cast<double>(n0));
+    Logger::get().set_stat("Coarse correction/coarse nnz", static_cast<double>(pattern.nnz()));
+    Logger::ScopedLog sl{factorize_event_};
     solver_ = create_subproblem_solver<T>(config.sub("solver"), config.sub("prec"), A0);
     d0_.emplace(A0->create_range_vector());
     x0_.emplace(A0->create_domain_vector());
@@ -407,5 +411,6 @@ private:
 
   Logger::Event* apply_event_;
   Logger::Event* coarse_solve_event_; ///< only used on rank 0
+  Logger::Event* factorize_event_;    ///< only used on rank 0
 };
 } // namespace ddm
