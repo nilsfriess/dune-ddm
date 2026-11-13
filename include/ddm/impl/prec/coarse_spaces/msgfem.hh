@@ -4,6 +4,7 @@
 #include "ddm/coarse_space.hh"
 #include "ddm/eigensolver/eigensolver.hh"
 #include "ddm/index.hh"
+#include "ddm/logger.hh"
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/multivec/multivec.hh"
@@ -82,6 +83,7 @@ std::shared_ptr<CoarseSpace<T>> msgfem_coarse_space(const Dune::ParameterTree& c
     for (Index i = 0; i < std::ssize(ring_layer); ++i)
       if (ring_layer[i] == 0) ring_indices.push_back(i);
     const auto ring = Region::from_indices(std::ssize(ring_layer), std::move(ring_indices));
+    Logger::get().set_stat("Coarse space/ring dofs", static_cast<double>(ring.size()));
 
     NeumannAssembler<T> na_ring(A_sym, ovlp, ring);
     auto A_ring = na_ring.matrix(Dune::ParameterTree{});
