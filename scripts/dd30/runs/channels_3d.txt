@@ -1,0 +1,45 @@
+# Channels pilot with ex6 on 64 ranks: 64^3 elements, the channels coefficient (16 rods per slice of width 1/32, i.e.
+# 2 elements, in a background with kappa 1), all methods for four contrasts and two velocities. With kappa_background
+# 1, velocity 1 is still diffusion dominated (max |b| h / kappa ~ 0.05); velocity 100 makes the background convection
+# dominated (~5). Small local runs (16^3 elements, 8 ranks): RAS 14/19/69/96 iterations for kappa_channel 1/1e2/1e4/1e6,
+# MS-GFEM 3-4 throughout
+ras_ch_k1_v1 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1 -problem.velocity_scale 1
+nicolaides_ch_k1_v1 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.kappa_channel 1 -problem.velocity_scale 1
+msgfem_ring_ch_k1_v1 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.kappa_channel 1 -problem.velocity_scale 1
+msgfem_ch_k1_v1 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1 -problem.velocity_scale 1
+msgfem_saddle_point_ch_k1_v1 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1 -problem.velocity_scale 1
+ras_ch_k1e2_v1 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1e2 -problem.velocity_scale 1
+nicolaides_ch_k1e2_v1 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.kappa_channel 1e2 -problem.velocity_scale 1
+msgfem_ring_ch_k1e2_v1 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.kappa_channel 1e2 -problem.velocity_scale 1
+msgfem_ch_k1e2_v1 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1e2 -problem.velocity_scale 1
+msgfem_saddle_point_ch_k1e2_v1 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1e2 -problem.velocity_scale 1
+ras_ch_k1e4_v1 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1e4 -problem.velocity_scale 1
+nicolaides_ch_k1e4_v1 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.kappa_channel 1e4 -problem.velocity_scale 1
+msgfem_ring_ch_k1e4_v1 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.kappa_channel 1e4 -problem.velocity_scale 1
+msgfem_ch_k1e4_v1 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1e4 -problem.velocity_scale 1
+msgfem_saddle_point_ch_k1e4_v1 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1e4 -problem.velocity_scale 1
+ras_ch_k1e6_v1 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 1
+nicolaides_ch_k1e6_v1 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 1
+msgfem_ring_ch_k1e6_v1 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 1
+msgfem_ch_k1e6_v1 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 1
+msgfem_saddle_point_ch_k1e6_v1 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 1
+ras_ch_k1_v100 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1 -problem.velocity_scale 100
+nicolaides_ch_k1_v100 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.kappa_channel 1 -problem.velocity_scale 100
+msgfem_ring_ch_k1_v100 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.kappa_channel 1 -problem.velocity_scale 100
+msgfem_ch_k1_v100 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1 -problem.velocity_scale 100
+msgfem_saddle_point_ch_k1_v100 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1 -problem.velocity_scale 100
+ras_ch_k1e2_v100 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1e2 -problem.velocity_scale 100
+nicolaides_ch_k1e2_v100 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.kappa_channel 1e2 -problem.velocity_scale 100
+msgfem_ring_ch_k1e2_v100 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.kappa_channel 1e2 -problem.velocity_scale 100
+msgfem_ch_k1e2_v100 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1e2 -problem.velocity_scale 100
+msgfem_saddle_point_ch_k1e2_v100 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1e2 -problem.velocity_scale 100
+ras_ch_k1e4_v100 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1e4 -problem.velocity_scale 100
+nicolaides_ch_k1e4_v100 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.kappa_channel 1e4 -problem.velocity_scale 100
+msgfem_ring_ch_k1e4_v100 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.kappa_channel 1e4 -problem.velocity_scale 100
+msgfem_ch_k1e4_v100 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1e4 -problem.velocity_scale 100
+msgfem_saddle_point_ch_k1e4_v100 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1e4 -problem.velocity_scale 100
+ras_ch_k1e6_v100 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100
+nicolaides_ch_k1e6_v100 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100
+msgfem_ring_ch_k1e6_v100 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100
+msgfem_ch_k1e6_v100 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100
+msgfem_saddle_point_ch_k1e6_v100 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100
