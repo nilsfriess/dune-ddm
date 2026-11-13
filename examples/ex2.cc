@@ -6,6 +6,10 @@
 // right sides the outflow boundary. The diffusion coefficient is a checkerboard of 8 x 8 squares, alternating between 1
 // and 1e-6.
 //
+// To vary the difficulty, problem.velocity_scale (default 1) scales b, and with it the Peclet number |b| / kappa of
+// every square, and problem.kappa_dark (default 1e-6) sets the coefficient of the dark squares (with 1, the diffusion
+// is homogeneous and the Peclet number of the whole problem is 1.2 * velocity_scale).
+//
 // As in ex3, PDELab provides the function space, the local operator (ConvectionDiffusionDG) and the grid operator,
 // assemble_jacobian() and assemble_residual() in assembly.hh assemble into a ddm::Mat and a ddm::Vec with the grid loop
 // of the grid operator. The function space includes UGGrid's ghost elements, so that the faces between two ranks can
@@ -50,12 +54,12 @@
 #include <vector>
 
 namespace {
-// Checkerboard of squares with side checker_size, the square at (0, 0) has kappa_light
-constexpr double kappa_dark = 1e-6;
+// Checkerboard of squares with side checker_size, the square at (0, 0) has kappa_light, the others alternate with
+// kappa_dark
 constexpr double kappa_light = 1;
 constexpr double checker_size = 0.125;
 
-double kappa(const Dune::FieldVector<double, 2>& x)
+double kappa(const Dune::FieldVector<double, 2>& x, double kappa_dark)
 {
   const auto i = static_cast<int>(std::floor((x[0] + 1) / checker_size));
   const auto j = static_cast<int>(std::floor((x[1] + 1) / checker_size));
@@ -69,8 +73,10 @@ class Parameters : public Dune::PDELab::ConvectionDiffusionModelProblem<GV, RF> 
 public:
   using Traits = typename Dune::PDELab::ConvectionDiffusionModelProblem<GV, RF>::Traits;
 
-  explicit Parameters(bool convection)
+  Parameters(bool convection, double velocity_scale, double kappa_dark)
       : convection_(convection)
+      , velocity_scale_(velocity_scale)
+      , kappa_dark_(kappa_dark)
   {
   }
 
@@ -78,7 +84,7 @@ public:
   typename Traits::PermTensorType A(const typename Traits::ElementType& e, const typename Traits::DomainType& x) const
   {
     typename Traits::PermTensorType K(0.0);
-    const auto k = kappa(e.geometry().global(x));
+    const auto k = kappa(e.geometry().global(x), kappa_dark_);
     for (std::size_t i = 0; i < Traits::dimDomain; ++i) K[i][i] = k;
     return K;
   }
@@ -86,7 +92,7 @@ public:
   typename Traits::RangeType b(const typename Traits::ElementType&, const typename Traits::DomainType&) const
   {
     if (!convection_) return typename Traits::RangeType(0.0);
-    return {2. / 3, 1};
+    return {velocity_scale_ * 2. / 3, velocity_scale_};
   }
 
   typename Traits::RangeFieldType f(const typename Traits::ElementType&, const typename Traits::DomainType&) const
@@ -110,6 +116,8 @@ public:
 
 private:
   bool convection_;
+  double velocity_scale_;
+  double kappa_dark_;
 };
 
 void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
@@ -136,9 +144,15 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   GFS gfs(es, fem);
   gfs.name("u");
 
+  const auto velocity_scale = config.get("problem.velocity_scale", 1.);
+  const auto kappa_dark = config.get("problem.kappa_dark", 1e-6);
+  if (gv.comm().rank() == 0)
+    std::cout << "Velocity scale " << velocity_scale << ", kappa " << kappa_light << " / " << kappa_dark << ", Peclet number |b| / kappa " << 1.2 * velocity_scale / kappa_light << " / "
+              << 1.2 * velocity_scale / kappa_dark << std::endl;
+
   using Params = Parameters<ES, RF>;
-  Params params(true);
-  Params params_sym(false);
+  Params params(true, velocity_scale, kappa_dark);
+  Params params_sym(false, velocity_scale, kappa_dark);
   using LOP = Dune::PDELab::ConvectionDiffusionDG<Params, FEM>;
   // Penalty factor of the interior penalty terms. The standard coercivity estimate on this grid needs alpha > 3/4 for Q1
   // and alpha > 1 for Q2 (because of the boundary faces), so PDELab's default of 1 leaves little or no margin.
@@ -188,7 +202,7 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   add_to_writer(gfs.name(), x);
   // addCellData() with all arguments, the short form is ambiguous for SubsamplingVTKWriter
   std::vector<double> kappas(gv.size(0));
-  for (const auto& e : elements(gv)) kappas[gv.indexSet().index(e)] = kappa(e.geometry().center());
+  for (const auto& e : elements(gv)) kappas[gv.indexSet().index(e)] = kappa(e.geometry().center(), kappa_dark);
   writer.addCellData(kappas, "kappa", 1, Dune::VTK::Precision::float32);
   std::vector<int> ranks(gv.size(0), gv.comm().rank());
   writer.addCellData(ranks, "Rank", 1, Dune::VTK::Precision::int32);
