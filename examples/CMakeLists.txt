@@ -29,4 +29,9 @@ if (${dune-pdelab_FOUND})
    target_link_libraries(ex5 PUBLIC duneddm)
    target_link_dune_default_libraries(ex5)
    target_compile_definitions(ex5 PRIVATE DDM_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
+
+   # 3d convection-diffusion example with a swirling flow and a high-contrast coefficient
+   add_executable(ex6 ex6.cc)
+   target_link_libraries(ex6 PUBLIC duneddm)
+   target_link_dune_default_libraries(ex6)
 endif()
