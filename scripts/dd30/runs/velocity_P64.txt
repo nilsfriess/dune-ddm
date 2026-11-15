@@ -1,0 +1,19 @@
+# Velocity sweep on the channels problem (64 ranks, 64^3 elements, contrast 1e6, background 1) with Delta-GenEO as a
+# robust reference that is not MS-GFEM: GenEO only sees the symmetric part (the diffusion), MS-GFEM's harmonic
+# functions see the convection. All coarse spaces with nev 40 from ex6.ini (enough for both MS-GFEM variants here;
+# the ring variant needs more, see threshold_P64.txt). RAS at velocities 1 and 100 is in weak_3d_P64.txt. Local
+# runs (16^3 elements, 8 ranks): GenEO 6 / 44 iterations at velocity 1 / 1000, MS-GFEM 3 / 5
+geneo_ch_k1e6_v1_P64 ex6 ex6.ini,methods/geneo.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 1
+msgfem_ch_k1e6_v1_P64 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 1
+msgfem_saddle_point_ch_k1e6_v1_P64 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 1
+geneo_ch_k1e6_v100_P64 ex6 ex6.ini,methods/geneo.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 100
+msgfem_ch_k1e6_v100_P64 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 100
+msgfem_saddle_point_ch_k1e6_v100_P64 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 100
+geneo_ch_k1e6_v1000_P64 ex6 ex6.ini,methods/geneo.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 1000
+msgfem_ch_k1e6_v1000_P64 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 1000
+msgfem_saddle_point_ch_k1e6_v1000_P64 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 1000
+ras_ch_k1e6_v1000_P64 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 1000
+geneo_ch_k1e6_v10000_P64 ex6 ex6.ini,methods/geneo.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 10000
+msgfem_ch_k1e6_v10000_P64 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 10000
+msgfem_saddle_point_ch_k1e6_v10000_P64 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 10000
+ras_ch_k1e6_v10000_P64 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1e6 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -problem.velocity_scale 10000
