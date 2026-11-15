@@ -1,0 +1,15 @@
+# Weak scaling on the channels problem (ex6, coefficient channels, kappa_channel 1e6, background 1) with 512 ranks:
+# 32^3 cells, refined twice, i.e. 16^3 elements per subdomain, at velocities 1 and 100 (see channels_3d.txt).
+# GMRES may take up to 1000 iterations, so that the one-level methods can show their growth with the number of
+# subdomains. Submitted with 16 ranks per node (8 ranks: CORES_PER_RANK=4, so that the ranks share the memory
+# bandwidth as on the other nodes).
+ras_ch_k1e6_v1_P512 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 1 -grid.cells "32 32 32" -solver.maxit 1000 -solver.restart 1000
+nicolaides_ch_k1e6_v1_P512 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 1 -grid.cells "32 32 32" -solver.maxit 1000 -solver.restart 1000
+msgfem_ring_ch_k1e6_v1_P512 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 1 -grid.cells "32 32 32" -solver.maxit 1000 -solver.restart 1000
+msgfem_ch_k1e6_v1_P512 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 1 -grid.cells "32 32 32" -solver.maxit 1000 -solver.restart 1000
+msgfem_saddle_point_ch_k1e6_v1_P512 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 1 -grid.cells "32 32 32" -solver.maxit 1000 -solver.restart 1000
+ras_ch_k1e6_v100_P512 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100 -grid.cells "32 32 32" -solver.maxit 1000 -solver.restart 1000
+nicolaides_ch_k1e6_v100_P512 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100 -grid.cells "32 32 32" -solver.maxit 1000 -solver.restart 1000
+msgfem_ring_ch_k1e6_v100_P512 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100 -grid.cells "32 32 32" -solver.maxit 1000 -solver.restart 1000
+msgfem_ch_k1e6_v100_P512 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100 -grid.cells "32 32 32" -solver.maxit 1000 -solver.restart 1000
+msgfem_saddle_point_ch_k1e6_v100_P512 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100 -grid.cells "32 32 32" -solver.maxit 1000 -solver.restart 1000
