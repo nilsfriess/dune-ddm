@@ -13,6 +13,7 @@ if (${dune-pdelab_FOUND})
    add_executable(ex2 ex2.cc)
    target_link_libraries(ex2 PUBLIC duneddm)
    target_link_dune_default_libraries(ex2)
+   target_compile_definitions(ex2 PRIVATE DDM_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
 
    # 2d diffusion example with DG
    add_executable(ex3 ex3.cc)

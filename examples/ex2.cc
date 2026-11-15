@@ -1,14 +1,18 @@
-// Convection-diffusion in 2D: -div(kappa grad u) + div(b u) = 1 on (-1, 1)^2, u = 0 on the boundary. Interior penalty
-// DG (SIPG for the diffusion, upwinding for the convection) with Q1 elements on a structured grid of squares.
+// Convection-diffusion in 2D: -div(kappa grad u) + div(b u) = 0 on the unit square, with u = 1 on the left side, u = 0
+// on the bottom side and outflow conditions on the top and right sides. Interior penalty DG (SIPG for the diffusion,
+// upwinding for the convection) with Q1 elements on a structured grid of squares.
 //
 // The coefficients are those of the example in Section 5.1 in arXiv:2509.17531. The velocity is the constant
 // b = (2/3, 1) towards the top right, so the left and bottom sides are the inflow boundary and the top and
-// right sides the outflow boundary. The diffusion coefficient is a checkerboard of 8 x 8 squares, alternating between 1
-// and 1e-6.
+// right sides the outflow boundary. The diffusion coefficient (problem.coefficient) is
+// - checkerboard (default): 8 x 8 squares, alternating between 1 and problem.kappa_dark (default 1e-6), or
+// - file: read from problem.kappa_file, an .ini file in the format of velocity_reader.hh that covers the unit square,
+//   e.g. the channels in a random background of scripts/dd30/make_kappa_2d.py (default data/kappa_channels_2d.ini).
 //
 // To vary the difficulty, problem.velocity_scale (default 1) scales b, and with it the Peclet number |b| / kappa of
-// every square, and problem.kappa_dark (default 1e-6) sets the coefficient of the dark squares (with 1, the diffusion
-// is homogeneous and the Peclet number of the whole problem is 1.2 * velocity_scale).
+// every square, and problem.kappa_dark sets the coefficient of the dark squares (with 1, the diffusion is homogeneous
+// and the Peclet number of the whole problem is 1.2 * velocity_scale). With velocity_scale = 0, the problem is purely
+// elliptic.
 //
 // As in ex3, PDELab provides the function space, the local operator (ConvectionDiffusionDG) and the grid operator,
 // assemble_jacobian() and assemble_residual() in assembly.hh assemble into a ddm::Mat and a ddm::Vec with the grid loop
@@ -28,6 +32,7 @@
 #include "ddm/debug/vec_sink.hh"
 #include "examples/assembly.hh"
 #include "examples/pdelab_communication.hh"
+#include "examples/velocity_reader.hh"
 #include "examples/run.hh"
 
 #include <algorithm>
@@ -58,22 +63,48 @@
 #include <format>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace {
-// Checkerboard of squares with side checker_size, the square at (0, 0) has kappa_light, the others alternate with
-// kappa_dark
-constexpr double kappa_light = 1;
-constexpr double checker_size = 0.125;
+// The diffusion coefficient, see the header
+struct Coefficient {
+  // Checkerboard of squares with side checker_size, the square at (0, 0) has kappa_light, the others alternate with
+  // kappa_dark
+  static constexpr double kappa_light = 1;
+  static constexpr double checker_size = 0.125;
 
-double kappa(const Dune::FieldVector<double, 2>& x, double kappa_dark)
-{
-  const auto i = static_cast<int>(std::floor((x[0] + 1) / checker_size));
-  const auto j = static_cast<int>(std::floor((x[1] + 1) / checker_size));
-  return (i + j) % 2 == 0 ? kappa_light : kappa_dark;
-}
+  explicit Coefficient(const Dune::ParameterTree& config)
+      : kappa_dark(config.get("problem.kappa_dark", 1e-6))
+  {
+    const auto type = config.get("problem.coefficient", std::string("checkerboard"));
+    DDM_CHECK(type == "checkerboard" || type == "file", "ex2: unknown problem.coefficient `{}`, known: checkerboard, file", type);
+    if (type == "file") {
+      kappa_file = config.get("problem.kappa_file", std::string(DDM_DATA_DIR "/kappa_channels_2d.ini"));
+      field = ddm::examples::read_velocity_field(kappa_file);
+      DDM_CHECK(std::abs(field->nx * field->dx - 1) < 1e-12 && std::abs(field->nz * field->dz - 1) < 1e-12, "ex2: {} must cover the unit square, it covers {} x {}", kappa_file,
+                field->nx * field->dx, field->nz * field->dz);
+    }
+  }
+
+  // x is the element centre (see Parameters::A())
+  double operator()(const Dune::FieldVector<double, 2>& x) const
+  {
+    if (field) return (*field)(x);
+    const auto i = static_cast<int>(std::floor((x[0] + 1) / checker_size));
+    const auto j = static_cast<int>(std::floor((x[1] + 1) / checker_size));
+    return (i + j) % 2 == 0 ? kappa_light : kappa_dark;
+  }
+
+  double min() const { return field ? *std::ranges::min_element(field->data) : std::min(kappa_light, kappa_dark); }
+  double max() const { return field ? *std::ranges::max_element(field->data) : std::max(kappa_light, kappa_dark); }
+
+  double kappa_dark;
+  std::string kappa_file;
+  std::optional<ddm::examples::VelocityField> field;
+};
 
 // Without convection, these are the parameters of the diffusion-only problem, whose matrix is attached to the matrix of
 // the full problem. The boundary is Dirichlet on the bottom and left boundary, outflow otherwise.
@@ -82,10 +113,10 @@ class Parameters : public Dune::PDELab::ConvectionDiffusionModelProblem<GV, RF> 
 public:
   using Traits = typename Dune::PDELab::ConvectionDiffusionModelProblem<GV, RF>::Traits;
 
-  Parameters(bool convection, double velocity_scale, double kappa_dark)
+  Parameters(bool convection, double velocity_scale, const Coefficient& kappa)
       : convection_(convection)
       , velocity_scale_(velocity_scale)
-      , kappa_dark_(kappa_dark)
+      , kappa_(kappa)
   {
   }
 
@@ -93,7 +124,7 @@ public:
   typename Traits::PermTensorType A(const typename Traits::ElementType& e, const typename Traits::DomainType& x) const
   {
     typename Traits::PermTensorType K(0.0);
-    const auto k = kappa(e.geometry().global(x), kappa_dark_);
+    const auto k = kappa_(e.geometry().global(x));
     for (std::size_t i = 0; i < Traits::dimDomain; ++i) K[i][i] = k;
     return K;
   }
@@ -126,7 +157,7 @@ public:
 private:
   bool convection_;
   double velocity_scale_;
-  double kappa_dark_;
+  const Coefficient& kappa_;
 };
 
 void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
@@ -154,14 +185,14 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   gfs.name("u");
 
   const auto velocity_scale = config.get("problem.velocity_scale", 1.);
-  const auto kappa_dark = config.get("problem.kappa_dark", 1e-6);
+  const Coefficient kappa(config);
   if (gv.comm().rank() == 0)
-    std::cout << "Velocity scale " << velocity_scale << ", kappa " << kappa_light << " / " << kappa_dark << ", Peclet number |b| / kappa " << 1.2 * velocity_scale / kappa_light << " / "
-              << 1.2 * velocity_scale / kappa_dark << std::endl;
+    std::cout << "Velocity scale " << velocity_scale << ", kappa from " << kappa.min() << " to " << kappa.max() << (kappa.field ? " from " + kappa.kappa_file : std::string(" (checkerboard)"))
+              << ", Peclet number |b| / kappa up to " << 1.2 * velocity_scale / kappa.min() << std::endl;
 
   using Params = Parameters<ES, RF>;
-  Params params(true, velocity_scale, kappa_dark);
-  Params params_sym(false, velocity_scale, kappa_dark);
+  Params params(true, velocity_scale, kappa);
+  Params params_sym(false, velocity_scale, kappa);
   using LOP = Dune::PDELab::ConvectionDiffusionDG<Params, FEM>;
   // Penalty factor of the interior penalty terms. The standard coercivity estimate on this grid needs alpha > 3/4 for Q1
   // and alpha > 1 for Q2 (because of the boundary faces), so PDELab's default of 1 leaves little or no margin.
@@ -217,14 +248,14 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
 
   const auto dofs = A->communication()->count_owners();
   if (gv.comm().rank() == 0) std::cout << "Dofs: " << dofs << ", ranks: " << gv.comm().size() << std::endl;
-  ddm::examples::write_results(config, *solver, {{"dofs", std::to_string(dofs)}, {"peclet max", std::format("{:.6e}", 1.2 * velocity_scale / std::min(kappa_light, kappa_dark))}});
+  ddm::examples::write_results(config, *solver, {{"dofs", std::to_string(dofs)}, {"peclet max", std::format("{:.6e}", 1.2 * velocity_scale / kappa.min())}});
 
   // VTK output of the solution and the diffusion coefficient
   if (!config.get("output.vtk", true)) return;
   add_to_writer(gfs.name(), x);
   // addCellData() with all arguments, the short form is ambiguous for SubsamplingVTKWriter
   std::vector<double> kappas(gv.size(0));
-  for (const auto& e : elements(gv)) kappas[gv.indexSet().index(e)] = kappa(e.geometry().center(), kappa_dark);
+  for (const auto& e : elements(gv)) kappas[gv.indexSet().index(e)] = kappa(e.geometry().center());
   writer.addCellData(kappas, "kappa", 1, Dune::VTK::Precision::float32);
   std::vector<int> ranks(gv.size(0), gv.comm().rank());
   writer.addCellData(ranks, "Rank", 1, Dune::VTK::Precision::int32);
