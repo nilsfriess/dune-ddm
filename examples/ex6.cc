@@ -22,6 +22,17 @@
 //   x = j / channels along y in odd slices. The rods do not touch each other. With channel_width = 1 / (2 channels),
 //   the rods need at least 2 channels elements per direction, and their edges lie on element faces for multiples of
 //   that.
+// - skyscrapers: vertical columns with a square cross section of side skyscraper_width in a background with
+//   kappa_background, skyscrapers per direction (at x, y = i / skyscrapers), standing on the bottom face. Every column
+//   has its own height (1/8, 2/8, ..., 1) and its own coefficient kappa_background (kappa_high / kappa_background)^(l/3)
+//   with l = 1, 2, 3 (e.g. 1e2, 1e4, 1e6), both pseudo-random from seed. A skyline of several contrasts, with columns
+//   that cross subdomains vertically or end inside of them.
+// - random: the cube is cut into voxels^3 voxels, each with kappa_high with probability `probability` and
+//   kappa_background otherwise (pseudo-random from seed, independent of the partition). DG only couples voxels through
+//   faces, so near the site percolation threshold of the cubic lattice (about 0.31) the high-contrast voxels form
+//   irregular clusters of all sizes that cross many subdomain boundaries.
+//
+// With velocity_scale = 0, the problem is purely elliptic (and symmetric).
 //
 // Boundary conditions: the bottom face (z = 0) is the inflow boundary, with the Dirichlet data u = exp(-|x - x_s|^2 /
 // (2 w^2)), a Gaussian spot of width w = spot_width around x_s = spot (default off the axis, so that the spot is carried
@@ -48,6 +59,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <ddm/logger.hh>
 #include <ddm/mat/mat.hh>
 #include <ddm/prec/prec.hh>
@@ -93,17 +105,50 @@ struct Problem {
       , kappa_background(config.get("problem.kappa_background", 1.))
       , channels(config.get("problem.channels", 16))
       , channel_width(config.get("problem.channel_width", 1. / 32))
+      , kappa_high(config.get("problem.kappa_high", 1e6))
+      , skyscrapers(config.get("problem.skyscrapers", 16))
+      , skyscraper_width(config.get("problem.skyscraper_width", 1. / 32))
+      , voxels(config.get("problem.voxels", 32))
+      , probability(config.get("problem.probability", 0.3))
+      , seed(config.get("problem.seed", 1u))
       , spot(config.get("problem.spot", Point{0.5, 0.25, 0.}))
       , spot_width(config.get("problem.spot_width", 0.06))
   {
-    if (coefficient != "checkerboard" && coefficient != "channels") DUNE_THROW(Dune::Exception, std::format("Unknown problem.coefficient `{}`, known: checkerboard, channels", coefficient));
+    if (coefficient != "checkerboard" && coefficient != "channels" && coefficient != "skyscrapers" && coefficient != "random")
+      DUNE_THROW(Dune::Exception, std::format("Unknown problem.coefficient `{}`, known: checkerboard, channels, skyscrapers, random", coefficient));
+    if (coefficient == "skyscrapers" && !(skyscraper_width > 0 && skyscraper_width < 1. / skyscrapers))
+      DUNE_THROW(Dune::Exception, std::format("problem.skyscraper_width must lie in (0, 1 / skyscrapers), got {} with {} skyscrapers", skyscraper_width, skyscrapers));
     if (coefficient == "channels" && !(channel_width > 0 && channel_width < 1. / channels))
       DUNE_THROW(Dune::Exception, std::format("problem.channel_width must lie in (0, 1 / channels), got {} with {} channels", channel_width, channels));
+  }
+
+  // A pseudo-random number in [0, 1) for the key, the same on all ranks (splitmix64)
+  double uniform(std::uint64_t key) const
+  {
+    std::uint64_t z = key + 0x9e3779b97f4a7c15ull * (static_cast<std::uint64_t>(seed) + 1);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    z ^= z >> 31;
+    return static_cast<double>(z >> 11) * 0x1.0p-53;
   }
 
   // x is the element centre (see Parameters::A())
   double kappa(const Point& x) const
   {
+    const auto index = [](double t, int n) { return std::clamp(static_cast<int>(std::floor(t * n)), 0, n - 1); };
+    if (coefficient == "skyscrapers") {
+      const auto in_column = [&](double t) { return t * skyscrapers - std::floor(t * skyscrapers) < skyscraper_width * skyscrapers; };
+      if (!in_column(x[0]) || !in_column(x[1])) return kappa_background;
+      const auto key = static_cast<std::uint64_t>(index(x[0], skyscrapers)) * skyscrapers + index(x[1], skyscrapers);
+      const double height = (1 + std::floor(8 * uniform(2 * key))) / 8;
+      if (x[2] > height) return kappa_background;
+      const double level = 1 + std::floor(3 * uniform(2 * key + 1));
+      return kappa_background * std::pow(kappa_high / kappa_background, level / 3);
+    }
+    if (coefficient == "random") {
+      const auto key = (static_cast<std::uint64_t>(index(x[0], voxels)) * voxels + index(x[1], voxels)) * voxels + index(x[2], voxels);
+      return uniform(key) < probability ? kappa_high : kappa_background;
+    }
     if (coefficient == "channels") {
       // Is t in the lower channel_width of its slice of thickness 1 / channels?
       const auto in_band = [&](double t) { return t * channels - std::floor(t * channels) < channel_width * channels; };
@@ -130,11 +175,18 @@ struct Problem {
     return std::exp(-d.two_norm2() / (2 * spot_width * spot_width));
   }
 
-  double kappa_min() const { return coefficient == "channels" ? std::min(kappa_channel, kappa_background) : std::min(kappa_light, kappa_dark); }
+  double kappa_min() const
+  {
+    if (coefficient == "channels") return std::min(kappa_channel, kappa_background);
+    if (coefficient == "skyscrapers" || coefficient == "random") return std::min(kappa_high, kappa_background);
+    return std::min(kappa_light, kappa_dark);
+  }
 
   std::string describe() const
   {
     if (coefficient == "channels") return std::format("kappa {} in {} channels of width {} per slice, {} elsewhere", kappa_channel, channels, channel_width, kappa_background);
+    if (coefficient == "skyscrapers") return std::format("{}^2 skyscrapers of width {} with kappa up to {}, {} elsewhere (seed {})", skyscrapers, skyscraper_width, kappa_high, kappa_background, seed);
+    if (coefficient == "random") return std::format("kappa {} in {}^3 voxels with probability {}, {} elsewhere (seed {})", kappa_high, voxels, probability, kappa_background, seed);
     return std::format("kappa {} / {} on {}^3 checkers", kappa_light, kappa_dark, checkers);
   }
 
@@ -151,6 +203,12 @@ struct Problem {
   double kappa_background;
   int channels;
   double channel_width;
+  double kappa_high;
+  int skyscrapers;
+  double skyscraper_width;
+  int voxels;
+  double probability;
+  unsigned int seed;
   Point spot;
   double spot_width;
 };
