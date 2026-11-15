@@ -1,0 +1,15 @@
+# 2D elliptic problem (ex2 with velocity_scale 0) on 64 ranks: 1024^2 elements (128^2 per subdomain), the coefficient
+# of scripts/dd30/make_kappa_2d.py (12 meandering channels with kappa 1e6 in a Matern background with kappa 0.1..10).
+# All methods with nev 20 (ex2.ini); GenEO, MS-GFEM (projected, the same eigenproblem as two_sided and saddle_point
+# here) and the ring variant also with nev 60 and the eigenvalues printed, to show the gaps and choose round
+# thresholds. Locally (256^2, 16 ranks): RAS 56, GenEO 8 (53 Lanczos operator applications), MS-GFEM 4 (10)
+ras_ell2d_P64 ex2 ex2.ini,methods/ras.ini -problem.coefficient file -problem.velocity_scale 0 -grid.cells "256 256" -grid.refine 2 -solver.maxit 1000 -solver.restart 1000
+nicolaides_ell2d_P64 ex2 ex2.ini,methods/nicolaides.ini -problem.coefficient file -problem.velocity_scale 0 -grid.cells "256 256" -grid.refine 2 -solver.maxit 1000 -solver.restart 1000
+geneo_ell2d_P64 ex2 ex2.ini,methods/geneo.ini -problem.coefficient file -problem.velocity_scale 0 -grid.cells "256 256" -grid.refine 2 -solver.maxit 1000 -solver.restart 1000
+msgfem_projected_ell2d_P64 ex2 ex2.ini,methods/msgfem_projected.ini -problem.coefficient file -problem.velocity_scale 0 -grid.cells "256 256" -grid.refine 2 -solver.maxit 1000 -solver.restart 1000
+msgfem_ell2d_P64 ex2 ex2.ini,methods/msgfem.ini -problem.coefficient file -problem.velocity_scale 0 -grid.cells "256 256" -grid.refine 2 -solver.maxit 1000 -solver.restart 1000
+msgfem_ring_ell2d_P64 ex2 ex2.ini,methods/msgfem_ring.ini -problem.coefficient file -problem.velocity_scale 0 -grid.cells "256 256" -grid.refine 2 -solver.maxit 1000 -solver.restart 1000
+msgfem_saddle_point_ell2d_P64 ex2 ex2.ini,methods/msgfem_saddle_point.ini -problem.coefficient file -problem.velocity_scale 0 -grid.cells "256 256" -grid.refine 2 -solver.maxit 1000 -solver.restart 1000
+geneo_ell2d_P64_nev60_eigs ex2 ex2.ini,methods/geneo.ini -problem.coefficient file -problem.velocity_scale 0 -grid.cells "256 256" -grid.refine 2 -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.nev 60 -prec.coarse_space.eigensolver.print_eigenvalues true
+msgfem_projected_ell2d_P64_nev60_eigs ex2 ex2.ini,methods/msgfem_projected.ini -problem.coefficient file -problem.velocity_scale 0 -grid.cells "256 256" -grid.refine 2 -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.nev 60 -prec.coarse_space.eigensolver.print_eigenvalues true
+msgfem_ring_ell2d_P64_nev60_eigs ex2 ex2.ini,methods/msgfem_ring.ini -problem.coefficient file -problem.velocity_scale 0 -grid.cells "256 256" -grid.refine 2 -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.nev 60 -prec.coarse_space.eigensolver.print_eigenvalues true
