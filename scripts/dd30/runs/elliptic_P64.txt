@@ -1,0 +1,33 @@
+# Purely elliptic problems (ex6 with velocity_scale 0) on 64 ranks, 64^3 elements, contrast 1e6, ex6.ini geometries:
+# skyscrapers (16^2 columns of width 1/32, heights 1/8..1, kappa 1e2/1e4/1e6), random (32^3 voxels, probability
+# 0.3) and channels. Is GenEO's eigenproblem more expensive than MS-GFEM's although it has no constraint? Locally
+# (16^3 elements, 8 ranks) GenEO needed 53-97 Lanczos operator applications and 15-30 restarts, MS-GFEM 12-18 and
+# 1-3, because of the gaps in MS-GFEM's spectrum. All coarse spaces with nev 40; for symmetric problems projected,
+# two_sided and saddle_point solve the same eigenproblem. The nev 80 runs print the spectra of GenEO and MS-GFEM
+ras_ell_sky_P64 ex6 ex6.ini,methods/ras.ini -problem.coefficient skyscrapers -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+nicolaides_ell_sky_P64 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient skyscrapers -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+geneo_ell_sky_P64 ex6 ex6.ini,methods/geneo.ini -problem.coefficient skyscrapers -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+msgfem_projected_ell_sky_P64 ex6 ex6.ini,methods/msgfem_projected.ini -problem.coefficient skyscrapers -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+msgfem_ell_sky_P64 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient skyscrapers -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+msgfem_ring_ell_sky_P64 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient skyscrapers -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+msgfem_saddle_point_ell_sky_P64 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient skyscrapers -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+geneo_ell_sky_P64_nev80_eigs ex6 ex6.ini,methods/geneo.ini -problem.coefficient skyscrapers -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.nev 80 -prec.coarse_space.eigensolver.print_eigenvalues true
+msgfem_projected_ell_sky_P64_nev80_eigs ex6 ex6.ini,methods/msgfem_projected.ini -problem.coefficient skyscrapers -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.nev 80 -prec.coarse_space.eigensolver.print_eigenvalues true
+ras_ell_rnd_P64 ex6 ex6.ini,methods/ras.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+nicolaides_ell_rnd_P64 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+geneo_ell_rnd_P64 ex6 ex6.ini,methods/geneo.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+msgfem_projected_ell_rnd_P64 ex6 ex6.ini,methods/msgfem_projected.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+msgfem_ell_rnd_P64 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+msgfem_ring_ell_rnd_P64 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+msgfem_saddle_point_ell_rnd_P64 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+geneo_ell_rnd_P64_nev80_eigs ex6 ex6.ini,methods/geneo.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.nev 80 -prec.coarse_space.eigensolver.print_eigenvalues true
+msgfem_projected_ell_rnd_P64_nev80_eigs ex6 ex6.ini,methods/msgfem_projected.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.nev 80 -prec.coarse_space.eigensolver.print_eigenvalues true
+ras_ell_ch_P64 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+nicolaides_ell_ch_P64 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+geneo_ell_ch_P64 ex6 ex6.ini,methods/geneo.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+msgfem_projected_ell_ch_P64 ex6 ex6.ini,methods/msgfem_projected.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+msgfem_ell_ch_P64 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+msgfem_ring_ell_ch_P64 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+msgfem_saddle_point_ell_ch_P64 ex6 ex6.ini,methods/msgfem_saddle_point.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
+geneo_ell_ch_P64_nev80_eigs ex6 ex6.ini,methods/geneo.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.nev 80 -prec.coarse_space.eigensolver.print_eigenvalues true
+msgfem_projected_ell_ch_P64_nev80_eigs ex6 ex6.ini,methods/msgfem_projected.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.nev 80 -prec.coarse_space.eigensolver.print_eigenvalues true
