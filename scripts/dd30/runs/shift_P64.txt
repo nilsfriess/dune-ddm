@@ -1,0 +1,16 @@
+# Shift of the eigensolver for the MS-GFEM variants whose projection lies outside of the shifted solve (two_sided,
+# projected, ring): in elliptic_P64.txt (shift -1e-3) they needed 67 / 103 / 86 iterations on the random coefficient
+# where saddle_point (exact shift-invert) needed 21, although for a symmetric problem all solve the same eigenproblem.
+# The high-contrast modes have eigenvalues ~1e-6, far below the shift. Same runs with shifts -1e-6 and -1e-9
+msgfem_ell_ch_P64_shift1e-6 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.shift -1e-6
+msgfem_projected_ell_ch_P64_shift1e-6 ex6 ex6.ini,methods/msgfem_projected.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.shift -1e-6
+msgfem_ring_ell_ch_P64_shift1e-6 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.shift -1e-6
+msgfem_ell_ch_P64_shift1e-9 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.shift -1e-9
+msgfem_projected_ell_ch_P64_shift1e-9 ex6 ex6.ini,methods/msgfem_projected.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.shift -1e-9
+msgfem_ring_ell_ch_P64_shift1e-9 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient channels -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.shift -1e-9
+msgfem_ell_rnd_P64_shift1e-6 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.shift -1e-6
+msgfem_projected_ell_rnd_P64_shift1e-6 ex6 ex6.ini,methods/msgfem_projected.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.shift -1e-6
+msgfem_ring_ell_rnd_P64_shift1e-6 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.shift -1e-6
+msgfem_ell_rnd_P64_shift1e-9 ex6 ex6.ini,methods/msgfem.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.shift -1e-9
+msgfem_projected_ell_rnd_P64_shift1e-9 ex6 ex6.ini,methods/msgfem_projected.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.shift -1e-9
+msgfem_ring_ell_rnd_P64_shift1e-9 ex6 ex6.ini,methods/msgfem_ring.ini -problem.coefficient random -problem.velocity_scale 0 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.shift -1e-9
