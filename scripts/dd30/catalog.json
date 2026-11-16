@@ -17,7 +17,7 @@
     "weak2d_P256": {"group": "weak", "status": "current", "note": "2D weak scaling, 256 subdomains (ran on o-nodes)"},
 
     "size3d_ldlt_P64": {"group": "size", "status": "current", "note": "3D size ladder of the two new variants (eta = omega, ring), 12^3..24^3 elements per subdomain, mtype -2; geneo_sz3_c12 (mtype 2) hung without aborting"},
-    "size3d_rest_P64": {"group": "size", "status": "pending", "note": "3D size ladder, the rest: GenEO 12^3..24^3 with mtype -2, saddle point 20^3/24^3, RAS 24^3 (running)"},
+    "size3d_rest_P64": {"group": "size", "status": "current", "note": "3D size ladder, the rest: GenEO 12^3..24^3 with mtype -2, saddle point 20^3/24^3, RAS 24^3"},
     "size3d_P64":      {"group": "size", "status": "partly superseded", "note": "First 3D size ladder (mtype 2): RAS 12-20^3, saddle point 12/16^3 and all methods at 16^3 are fine; the GenEO and new-variant runs that hung are redone in size3d_ldlt/rest; hit the time limit at 20^3"},
     "size2d_P16":      {"group": "size", "status": "current", "note": "2D size ladder (16 subdomains, 64^2..512^2 elements per subdomain); GenEO and saddle point OOM at 512^2, redone in size2d_deferred_P16"},
     "size2d_deferred_P16": {"group": "size", "status": "current", "note": "GenEO and saddle point at 256^2/512^2 with the deferred fine factorisation (3320310): same times, 512^2 now fits"},
