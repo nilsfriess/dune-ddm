@@ -22,7 +22,7 @@
     "size2d_P16":      {"group": "size", "status": "current", "note": "2D size ladder (16 subdomains, 64^2..512^2 elements per subdomain); GenEO and saddle point OOM at 512^2, redone in size2d_deferred_P16"},
     "size2d_deferred_P16": {"group": "size", "status": "current", "note": "GenEO and saddle point at 256^2/512^2 with the deferred fine factorisation (3320310): same times, 512^2 now fits"},
 
-    "velocity3d_P64": {"group": "geneo", "status": "pending", "note": "3D velocity sweep 1..1e4 on the channels with the current settings (threshold 0.5, shift -1e-9, mtype -2), all methods incl. RAS and the ring; replaces velocity_P64"},
+    "velocity3d_P64": {"group": "geneo", "status": "current", "note": "3D velocity sweep 1..1e4 on the channels with the current settings (threshold 0.5, shift -1e-9, mtype -2), all methods incl. RAS and the ring; replaces velocity_P64"},
     "spectra_P64":    {"group": "geneo", "status": "pending", "talk": true, "note": "Spectra (printed in the logs) of GenEO and the MS-GFEM variants with the current settings: 2D elliptic nev 60, 3D skyscrapers/random/channels nev 80; replaces the MS-GFEM spectra of elliptic2d_P64 / elliptic_P64 (shift -1e-3)"},
     "elliptic2d_P64": {"group": "geneo", "status": "partly superseded", "note": "2D elliptic, 64 subdomains, nev 20/60 with the spectra printed. GenEO rows fine; the MS-GFEM rows ran at shift -1e-3 (flagged), their spectra are redone in spectra_P64"},
     "elliptic_P64":   {"group": "geneo", "status": "partly superseded", "note": "3D elliptic (skyscrapers, random, channels), nev 40/80, Lanczos counts and spectra; GenEO and saddle point rows are fine, the new variants ran at shift -1e-3 (flagged): for random/channels use shift_P64 (-1e-9), spectra in spectra_P64"},
