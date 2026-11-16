@@ -306,7 +306,12 @@ th { color:var(--muted); font-weight:600; cursor:pointer; position:sticky; top:0
 td.name, th:first-child, td:first-child { text-align:left; } td.empty { color:var(--muted); text-align:center; }
 .series td:first-child { font-weight:600; }
 ul.failed { color:var(--bad); font-size:13px; margin:4px 0 8px; }
-.purpose { margin:6px 0; } .notes { white-space:pre-wrap; font-family:ui-monospace, monospace; font-size:12px; color:var(--muted); }
+.purpose { margin:6px 0; }
+details.section { background:none; border:none; padding:0; margin:32px 0 0; }
+details.section > summary { list-style:none; border-bottom:2px solid var(--accent); padding-bottom:4px; }
+details.section > summary::before { content:"▸ "; color:var(--accent); } details.section[open] > summary::before { content:"▾ "; }
+details.section > summary h2 { display:inline; border:none; margin:0; padding:0; }
+h3.part { font-size:16px; margin-top:24px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; } .notes { white-space:pre-wrap; font-family:ui-monospace, monospace; font-size:12px; color:var(--muted); }
 """
 
 JS = """
@@ -353,58 +358,82 @@ def build(results):
            "<span class='flag'>not-conv</span> GMRES did not converge. Methods: new η=ω / η=ring = two_sided with inner_product "
            "subdomain / ring; saddle point = the baseline MS-GFEM eigenproblem.</p>"]
 
-    # Series, grouped like the experiments
     groups = catalog["groups"]
-    out.append("<h2>Series (figures of the talk)</h2>")
-    for g in groups:
-        ss = [s for s in catalog.get("series", []) if s["group"] == g["id"]]
-        if not ss:
-            continue
-        out.append(f"<h3>{html.escape(g['title'])}</h3>")
-        for s in ss:
-            methods, xs, points = series_table(s, exps)
-            out.append(f"<p class='purpose'><b>{html.escape(s['title'])}</b><br><span class='muted'>{html.escape(s.get('note', ''))} "
-                       f"Sources, first wins: {', '.join(s['dirs'])}.</span></p>")
-            if not methods:
-                out.append("<p class='muted'>No runs yet.</p>")
-                continue
-            t = ["<div class='scroll'><table class='series'><thead><tr><th>" + html.escape(s.get("x_label", s["x"])) + "</th>" +
-                 "".join(f"<th>{html.escape(fmt(x, 0) if isinstance(x, float) else str(x))}</th>" for x in xs) + "</tr></thead><tbody>"]
-            for m in methods:
-                t.append(f"<tr><td>{html.escape(m)}</td>" + "".join(cell(points.get((m, x))) for x in xs) + "</tr>")
-            t.append("</tbody></table></div>")
-            out.append("".join(t))
+    all_series = catalog.get("series", [])
 
-    # Experiments by group
-    out.append("<h2>Experiments</h2>")
-    listed = set()
-    for g in groups + [{"id": None, "title": "Uncatalogued (add to catalog.json)"}]:
-        if g["id"] is None:
-            names = [n for n in exps if n not in cat_exps]
-        else:  # in the order of the catalog
-            names = [n for n, c in cat_exps.items() if c.get("group") == g["id"] and n in exps]
-        if not names:
-            continue
-        out.append(f"<h3>{html.escape(g['title'])}</h3>")
-        if g.get("note"):
-            out.append(f"<p class='muted'>{html.escape(g['note'])}</p>")
-        for n in names:
-            listed.add(n)
-            e, c = exps[n], cat_exps.get(n, {})
-            ok = sum(r["status"] == "ok" for r in e["rows"])
-            bad = sum(r["status"] not in ("ok", "not run") for r in e["rows"])
-            todo = sum(r["status"] == "not run" for r in e["rows"])
-            counts = f"{ok} ok" + (f", <span class='flag'>{bad} failed</span>" if bad else "") + (f", {todo} not run" if todo else "")
-            out.append(f"<details><summary><b>{html.escape(n)}</b> {badge(c.get('status', '?'))} <small>{counts}</small> — "
-                       f"{html.escape(c.get('note', ''))}</summary>")
-            links = [f"<a href='raw/{n}/'>folder</a>"]
-            if e["runs_file"]:
-                links.append(f"<a href='raw/{n}/{e['runs_file'].name}'>runs file</a>")
-            links += [f"<a href='raw/{n}/{j.name}'>{j.name}</a>" for j in e["jobs"]]
-            out.append(f"<p class='purpose'>{html.escape(e['purpose'])}</p><p><small>{' · '.join(links)} · commit {e['commit']}</small></p>")
-            if e["notes"]:
-                out.append(f"<div class='notes'>{html.escape(chr(10).join(e['notes']))}</div>")
-            out.append(f"<div class='scroll'>{run_table(e)}</div></details>")
+    def render_series(ss):
+        for g in groups:
+            in_group = [x for x in ss if x["group"] == g["id"]]
+            if not in_group:
+                continue
+            out.append(f"<h3>{html.escape(g['title'])}</h3>")
+            for sr in in_group:
+                methods, xs, points = series_table(sr, exps)
+                out.append(f"<p class='purpose'><b>{html.escape(sr['title'])}</b><br><span class='muted'>{html.escape(sr.get('note', ''))} "
+                           f"Sources, first wins: {', '.join(sr['dirs'])}.</span></p>")
+                if not methods:
+                    out.append("<p class='muted'>No runs yet.</p>")
+                    continue
+                t = ["<div class='scroll'><table class='series'><thead><tr><th>" + html.escape(sr.get("x_label", sr["x"])) + "</th>" +
+                     "".join(f"<th>{html.escape(fmt(x, 0) if isinstance(x, float) else str(x))}</th>" for x in xs) + "</tr></thead><tbody>"]
+                for m in methods:
+                    t.append(f"<tr><td>{html.escape(m)}</td>" + "".join(cell(points.get((m, x))) for x in xs) + "</tr>")
+                t.append("</tbody></table></div>")
+                out.append("".join(t))
+
+    def render_experiment(n):
+        e, c = exps[n], cat_exps.get(n, {})
+        ok = sum(r["status"] == "ok" for r in e["rows"])
+        bad = sum(r["status"] not in ("ok", "not run") for r in e["rows"])
+        todo = sum(r["status"] == "not run" for r in e["rows"])
+        counts = f"{ok} ok" + (f", <span class='flag'>{bad} failed</span>" if bad else "") + (f", {todo} not run" if todo else "")
+        out.append(f"<details><summary><b>{html.escape(n)}</b> {badge(c.get('status', '?'))} <small>{counts}</small> — "
+                   f"{html.escape(c.get('note', ''))}</summary>")
+        links = [f"<a href='raw/{n}/'>folder</a>"]
+        if e["runs_file"]:
+            links.append(f"<a href='raw/{n}/{e['runs_file'].name}'>runs file</a>")
+        links += [f"<a href='raw/{n}/{j.name}'>{j.name}</a>" for j in e["jobs"]]
+        out.append(f"<p class='purpose'>{html.escape(e['purpose'])}</p><p><small>{' · '.join(links)} · commit {e['commit']}</small></p>")
+        if e["notes"]:
+            out.append(f"<div class='notes'>{html.escape(chr(10).join(e['notes']))}</div>")
+        out.append(f"<div class='scroll'>{run_table(e)}</div></details>")
+
+    def render_experiments(names, by_group):
+        if not by_group:
+            for n in names:
+                render_experiment(n)
+            return
+        for g in groups + [{"id": None, "title": "Uncatalogued (add to catalog.json)"}]:
+            in_group = [n for n in names if cat_exps.get(n, {}).get("group") == g["id"]]
+            if not in_group:
+                continue
+            out.append(f"<h3>{html.escape(g['title'])}</h3>")
+            if g.get("note"):
+                out.append(f"<p class='muted'>{html.escape(g['note'])}</p>")
+            for n in in_group:
+                render_experiment(n)
+
+    # Talk: the series marked talk and the experiments they use (or marked talk themselves), in catalog order
+    talk_series = [x for x in all_series if x.get("talk")]
+    used = {d for x in talk_series for d in x["dirs"]}
+    order = list(cat_exps) + [n for n in exps if n not in cat_exps]
+    talk_exps = [n for n in order if n in exps and (n in used or cat_exps.get(n, {}).get("talk"))]
+    other_exps = [n for n in order if n in exps and n not in talk_exps]
+
+    out.append("<h2>Talk</h2><p class='muted'>What will probably go into the talk, without the backup slides "
+               "(<code>\"talk\": true</code> in catalog.json).</p>")
+    render_series(talk_series)
+    out.append("<h3>Experiments behind these figures</h3>")
+    render_experiments(talk_exps, by_group=False)
+
+    other_series = [x for x in all_series if not x.get("talk")]
+    out.append(f"<details class='section'><summary><h2>Other</h2> <small>{len(other_series)} series (backup, older versions) and "
+               f"{len(other_exps)} experiments (backup, checks, pilots, superseded, abandoned)</small></summary>")
+    out.append("<h3 class='part'>Series</h3>")
+    render_series(other_series)
+    out.append("<h3 class='part'>Experiments</h3>")
+    render_experiments(other_exps, by_group=True)
+    out.append("</details>")
     out.append(f"<script>{JS}</script></main></body></html>")
     (results / "index.html").write_text("\n".join(out))
     missing = [n for n in cat_exps if n not in exps]
