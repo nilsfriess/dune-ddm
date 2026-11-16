@@ -23,13 +23,13 @@
     "size2d_deferred_P16": {"group": "size", "status": "current", "note": "GenEO and saddle point at 256^2/512^2 with the deferred fine factorisation (3320310): same times, 512^2 now fits"},
 
     "velocity3d_P64": {"group": "geneo", "status": "current", "note": "3D velocity sweep 1..1e4 on the channels with the current settings (threshold 0.5, shift -1e-9, mtype -2), all methods incl. RAS and the ring; replaces velocity_P64"},
-    "spectra_P64":    {"group": "geneo", "status": "pending", "talk": true, "note": "Spectra (printed in the logs) of GenEO and the MS-GFEM variants with the current settings: 2D elliptic nev 60, 3D skyscrapers/random/channels nev 80; replaces the MS-GFEM spectra of elliptic2d_P64 / elliptic_P64 (shift -1e-3)"},
+    "spectra_P64":    {"group": "geneo", "status": "current", "talk": true, "note": "Spectra (printed in the logs) of GenEO and the MS-GFEM variants with the current settings: 2D elliptic nev 60, 3D skyscrapers/random/channels nev 80; replaces the MS-GFEM spectra of elliptic2d_P64 / elliptic_P64 (shift -1e-3)"},
     "elliptic2d_P64": {"group": "geneo", "status": "partly superseded", "note": "2D elliptic, 64 subdomains, nev 20/60 with the spectra printed. GenEO rows fine; the MS-GFEM rows ran at shift -1e-3 (flagged), their spectra are redone in spectra_P64"},
     "elliptic_P64":   {"group": "geneo", "status": "partly superseded", "note": "3D elliptic (skyscrapers, random, channels), nev 40/80, Lanczos counts and spectra; GenEO and saddle point rows are fine, the new variants ran at shift -1e-3 (flagged): for random/channels use shift_P64 (-1e-9), spectra in spectra_P64"},
     "velocity_P64":   {"group": "geneo", "status": "superseded", "note": "First velocity sweep (nev 40, the new variants at shift -1e-3, flagged): GenEO 10 -> 139 iterations; replaced by velocity3d_P64"},
     "shift_P64":      {"group": "geneo", "status": "check", "note": "The new variants on the elliptic random/channels problems at shifts -1e-6 and -1e-9: with -1e-9 they match the saddle point (21-22 / 8 iterations), the ring needs -1e-9 on the channels"},
 
-    "contrast3d_P64":  {"group": "backup", "status": "pending", "note": "3D contrast sweep 1..1e8 (velocity 1) with the current settings; the 1e6 point is velocity3d_P64 at v 1; replaces the channels_3d pilot"},
+    "contrast3d_P64":  {"group": "backup", "status": "current", "note": "3D contrast sweep 1..1e8 (velocity 1) with the current settings; the 1e6 point is velocity3d_P64 at v 1; replaces the channels_3d pilot"},
     "sweeps2d_P64":    {"group": "backup", "status": "current", "note": "2D, 64 subdomains: contrast 1e2..1e8, velocity 1..1000, Lanczos tolerance 1e-2..1e-4; all spectral methods 6-12 iterations, RAS 147-196"},
     "tolerance3d_P64": {"group": "backup", "status": "current", "note": "3D channels, Lanczos tolerance 1e-2..1e-4: always 10 iterations, 1e-2 saves ~10%"},
     "check_shift_P64": {"group": "backup", "status": "current", "note": "Checks with the shift -1e-9: the checkerboard velocity gap is gone, the ring really has more small eigenvalues (nev 80 spectra), threshold 0.5 at 64 subdomains"},
