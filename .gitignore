@@ -64,4 +64,4 @@ scalascacc
 
 # Velocity models downloaded by data/download_models.sh
 data/marmousi_vp.bin
-data/kappa_channels_2d.bin
+data/kappa_channels_2d*.bin

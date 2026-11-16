@@ -14,7 +14,8 @@ The field is written on a 2000^2 grid over the domain of ex2, the unit square, i
 (raw little-endian float32, sample ix at row iz from the top at index ix * nz + iz), as <out>.bin with <out>.ini.
 Needs gstools (e.g. python3 -m venv ~/.venvs/dd30 && ~/.venvs/dd30/bin/pip install gstools matplotlib).
 
-Usage: make_kappa_2d.py [out (default data/kappa_channels_2d)] [--png preview.png]
+Usage: make_kappa_2d.py [out (default data/kappa_channels_2d)] [--png preview.png] [--kappa-channel 1e6]
+(the background does not depend on --kappa-channel, so fields with different contrasts differ only in the channels)
 """
 import sys
 from pathlib import Path
@@ -41,9 +42,11 @@ def channel_centres(t, rng):
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    opt = lambda name: sys.argv[sys.argv.index(name) + 1] if name in sys.argv else None
+    png = opt("--png")
+    kappa_channel = float(opt("--kappa-channel") or KAPPA_CHANNEL)
+    args = [a for a in args if a not in (png, opt("--kappa-channel"))]
     out = Path(args[0] if args else "data/kappa_channels_2d")
-    png = sys.argv[sys.argv.index("--png") + 1] if "--png" in sys.argv else None
-    if png in args: args.remove(png)
 
     t = (np.arange(N) + 0.5) / N  # sample centres in [0, 1]
     g = gs.SRF(gs.Matern(dim=2, var=1, len_scale=ELL, nu=NU), seed=BG_SEED, mode_no=2000).structured([t, t])
@@ -55,7 +58,7 @@ def main():
     print(f"smallest gap between channels: {min(gaps):.4f} of the domain ({min(gaps) * 128:.2f} elements of a 128^2 mesh)")
     Y = t[None, :]
     for yc in centres:
-        logk[np.abs(Y - yc[:, None]) < WIDTH / 2] = np.log10(KAPPA_CHANNEL)
+        logk[np.abs(Y - yc[:, None]) < WIDTH / 2] = np.log10(kappa_channel)
     kappa = (10.0 ** logk).astype("<f4")
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -64,7 +67,7 @@ def main():
         "# Coefficient of the 2D DD30 experiments for ex2 (problem.coefficient = file), written by\n"
         "# scripts/dd30/make_kappa_2d.py (the data file is not in the repository, run the script to create it):\n"
         f"# background 10^(0.5 clip(g, -2, 2)) with g Matern (nu {NU}, correlation length {ELL} of the domain, seed {BG_SEED}),\n"
-        f"# {CHANNELS} meandering channels with kappa {KAPPA_CHANNEL:g} and width {WIDTH} of the domain (seed {CH_SEED}).\n"
+        f"# {CHANNELS} meandering channels with kappa {kappa_channel:g} and width {WIDTH} of the domain (seed {CH_SEED}).\n"
         "# Raw little-endian float32 over the unit square, sample ix at row iz from the top at index ix * nz + iz.\n"
         f"file = {out.with_suffix('.bin').name}\nnx = {N}\nnz = {N}\ndx = {1 / N}\ndz = {1 / N}\n")
     print(f"wrote {out.with_suffix('.bin')} and {out.with_suffix('.ini')}: kappa in [{kappa.min():.3g}, {kappa.max():.3g}]")
