@@ -13,6 +13,8 @@ module load compiler/gnu/14.1 mpi/openmpi/4.1 numlib/mkl/2022.2 lib/boost/1.80.0
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 export PMIX_MCA_psec=native PMIX_MCA_gds=hash
 echo "Job $SLURM_JOB_ID on $SLURM_JOB_NUM_NODES nodes ($SLURM_JOB_NODELIST), $SLURM_NTASKS ranks with $SLURM_CPUS_PER_TASK cores each, $(date)"
+# The CPU models of the nodes, since the partitions mix node types (timings of different types are not comparable)
+srun --ntasks-per-node=1 --ntasks="$SLURM_JOB_NUM_NODES" bash -c 'echo "$(hostname): $(lscpu | grep -m1 "Model name" | sed "s/.*: *//")"' < /dev/null 2>&1 | sort | uniq -c | sed 's/^/  /'
 first=true
 while read -r -u 3 name example inis options; do
   [[ -z "$name" || "$name" == \#* ]] && continue
