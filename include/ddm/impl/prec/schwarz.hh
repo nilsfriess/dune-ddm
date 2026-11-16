@@ -25,7 +25,11 @@ namespace ddm {
  *
  *  The overlapping subdomains are built from the index set of the matrix's communication, extended along the pattern
  *  of the local matrix. A_i^{-1} is applied by a sequential solver, so it is inexact unless that solver is exact. The
- *  solver is set up (e.g. A_i is factorised) in the constructor, timed as the event "Schwarz"/"factorize".
+ *  solver is set up (e.g. A_i is factorised) in the constructor, or with defer_factorization on the first call of
+ *  setup_solver(), get_subdomain_solver() or apply(). The owner can then choose when the factorisation lives in memory:
+ *  TwoLevelSchwarzPrec only sets it up after a coarse space that does not need it (e.g. GenEO), so that it does not add
+ *  to the peak memory of the eigensolver. The setup is timed as the event "Schwarz"/"factorize", and also counts as
+ *  "Schwarz"/"setup", which therefore always contains the factorisation.
  *
  *  With eliminate_boundary, the subdomain problems have homogeneous Dirichlet conditions on the outermost layer of the
  *  overlapping index set: A_i gets identity rows there (only the rows, so A_i can also be used for harmonic extensions)
@@ -45,9 +49,10 @@ template <class T>
 class SchwarzPrec final : public Prec<T> {
 public:
   // Collective
-  SchwarzPrec(const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A)
+  SchwarzPrec(const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, bool defer_factorization = false)
       : Prec<T>(std::move(A))
       , config_(config)
+      , defer_factorization_(defer_factorization)
       , restricted_(parse_variant(config.get("variant", "additive")))
       , layers_(config.get("overlap", 1))
       , eliminate_boundary_(config.get("eliminate_boundary", true) && layers_ >= 1)
@@ -57,7 +62,6 @@ public:
       , setup_event_(Logger::get().registerOrGetEvent("Schwarz", "setup"))
       , factorize_event_(Logger::get().registerOrGetEvent("Schwarz", "factorize"))
   {
-    Logger::ScopedLog sl{setup_event_};
     DDM_CHECK(!restricted_ || layers_ >= 1, "schwarz: the restricted variant needs an overlap of at least 1, got {}", layers_);
     do_update();
   }
@@ -74,8 +78,22 @@ public:
   // Get the partition of unity on the overlapping index set (nullptr with overlap 0)
   std::shared_ptr<const Vec<T>> get_pou() const { return pou_; }
 
-  // Get the subdomain solver object
-  std::shared_ptr<Solver<T>> get_subdomain_solver() const { return solver_; }
+  // Get the subdomain solver object, sets it up if that has not happened yet (see setup_solver())
+  std::shared_ptr<Solver<T>> get_subdomain_solver()
+  {
+    setup_solver();
+    return solver_;
+  }
+
+  // Sets up the subdomain solver (e.g. factorises A_i) if that has not happened yet. Not collective, the subdomain
+  // solver is sequential
+  void setup_solver()
+  {
+    if (solver_) return;
+    Logger::ScopedLog setup{setup_event_};
+    Logger::ScopedLog factorize{factorize_event_};
+    solver_ = create_subproblem_solver<T>(config_.sub("subdomain_solver"), config_.sub("subdomain_prec"), A_sub_);
+  }
 
   // True if the outermost layer is eliminated (see eliminate_boundary), i.e. the subdomain solver also computes harmonic
   // extensions from that layer
@@ -98,6 +116,7 @@ private:
   // Collective
   void do_apply(Vec<T>& z, const Vec<T>& r) override
   {
+    setup_solver(); // before the apply event starts, so a deferred setup is not counted as apply time
     Logger::ScopedLog sl{apply_event_};
 
     // r is consistent, so the owners of the overlap indices have the right values
@@ -117,8 +136,16 @@ private:
     z.copy_n_from(*x_, ovlp_->n_original);
   }
 
-  // Collective. The overlapping index set is kept, the subdomain matrix is rebuilt and its solver is set up again
-  void do_update() override { setup_subdomain(); }
+  // Collective. The overlapping index set is kept, the subdomain matrix is rebuilt and its solver is set up again (with
+  // defer_factorization only on its next use)
+  void do_update() override
+  {
+    {
+      Logger::ScopedLog sl{setup_event_};
+      setup_subdomain();
+    }
+    if (!defer_factorization_) setup_solver();
+  }
 
   void do_info() const override
   {
@@ -130,7 +157,8 @@ private:
       logger::info("Subdomain solver info");
       {
         logger::increase_indent();
-        solver_->info();
+        if (solver_) solver_->info();
+        else logger::info("Not set up yet");
         logger::decrease_indent();
       }
       logger::decrease_indent();
@@ -156,10 +184,7 @@ private:
     }
     A_sub_ = std::make_shared<const Mat<T>>(config_.sub("subdomain_mat"), std::move(A_ovlp), nullptr);
     Logger::get().set_stat("Schwarz/subdomain dofs", static_cast<double>(A_sub_->rows()));
-    {
-      Logger::ScopedLog sl{factorize_event_};
-      solver_ = create_subproblem_solver<T>(config_.sub("subdomain_solver"), config_.sub("subdomain_prec"), A_sub_);
-    }
+    solver_.reset(); // belongs to the old subdomain matrix, see setup_solver()
     d_.emplace(A_sub_->create_range_vector());
     x_.emplace(A_sub_->create_domain_vector());
     if (layers_ >= 1) {
@@ -178,13 +203,14 @@ private:
   }
 
   Dune::ParameterTree config_;
+  bool defer_factorization_;
   bool restricted_;
   int layers_;
   bool eliminate_boundary_;
   std::shared_ptr<const Overlap> ovlp_;
 
   std::shared_ptr<const Mat<T>> A_sub_;
-  std::shared_ptr<Solver<T>> solver_;   ///< solver for A_sub_
+  std::shared_ptr<Solver<T>> solver_;   ///< solver for A_sub_, nullptr until setup_solver()
   std::shared_ptr<const Vec<T>> pou_;  ///< partition of unity on the overlapping index set
   std::optional<Vec<T>> d_;             ///< defect on the overlapping subdomain
   std::optional<Vec<T>> x_;             ///< correction on the overlapping subdomain

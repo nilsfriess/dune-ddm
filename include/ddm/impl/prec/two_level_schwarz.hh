@@ -43,28 +43,38 @@ public:
       : Prec<T>(std::move(A))
       , setup_event_(start_setup_event())
       , deflated_(parse_coarse_mode(config.get("coarse_mode", "additive")))
-      , schwarz_(fine_config(config), this->mat())
+      , schwarz_(fine_config(config), this->mat(), /*defer_factorization=*/true)
       , tmp_(this->mat()->create_domain_vector())
       , res_(this->mat()->create_range_vector())
       , apply_event_(Logger::get().registerOrGetEvent("Two-level Schwarz", "apply"))
   {
-    // The fine level is complete, including the factorisation of the subdomain matrices. With phase barriers (see
-    // Logger::set_phase_barriers()), the coarse space and the coarse correction start on all ranks at the same time.
+    // The fine level is set up except for the factorisation of the subdomain matrices. It is done before the coarse
+    // space if the coarse space uses the subdomain solver (harmonic extensions from the outermost layer), otherwise
+    // only after the coarse correction: then the factorisation does not add to the peak memory of the coarse space
+    // (e.g. the factorisations of GenEO's or the saddle point method's eigensolver), as if it were done on the first
+    // apply, but is still timed as part of the setup. With phase barriers (see Logger::set_phase_barriers()), the
+    // factorisation, the coarse space and the coarse correction start on all ranks at the same time.
     auto& logger = Logger::get();
     const MPI_Comm comm = schwarz_.get_overlap()->comm->communication_pattern().communicator();
     logger.phase_barrier(comm);
 
-    logger.startEvent(logger.registerOrGetEvent("Two-level Schwarz", "coarse space"));
     const auto coarse_space_type = config.get("coarse_space_type", "nicolaides");
+    const bool needs_fine_solver = schwarz_.eliminates_boundary() && coarse_space_uses_fine_solver(coarse_space_type, config.sub("coarse_space"));
+    if (needs_fine_solver) {
+      schwarz_.setup_solver();
+      logger.phase_barrier(comm);
+    }
+    const auto fine_solver = needs_fine_solver ? schwarz_.get_subdomain_solver() : nullptr;
+
+    logger.startEvent(logger.registerOrGetEvent("Two-level Schwarz", "coarse space"));
     if (coarse_space_type == "nicolaides") coarse_space_ = nicolaides_coarse_space<T>(schwarz_.get_overlap(), *schwarz_.get_pou(), *this->mat(), schwarz_.get_overlapping_mat()->local());
     else if (coarse_space_type == "geneo")
       coarse_space_ = geneo_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat()->local());
     else if (coarse_space_type == "msgfem")
-      coarse_space_ = msgfem_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat(),
-                                             schwarz_.eliminates_boundary() ? schwarz_.get_subdomain_solver() : nullptr);
+      coarse_space_ = msgfem_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat(), fine_solver);
     else if (coarse_space_type == "geneo_ring" || coarse_space_type == "msgfem_ring")
-      coarse_space_ = ring_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat(),
-                                           schwarz_.eliminates_boundary() ? schwarz_.get_subdomain_solver() : nullptr, coarse_space_type == "msgfem_ring");
+      coarse_space_ = ring_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat(), fine_solver,
+                                           coarse_space_type == "msgfem_ring");
     else DDM_CHECK(false, "TwoLevelSchwarzPrec: unknown coarse space type {}", coarse_space_type);
     logger.endEvent(logger.registerOrGetEvent("Two-level Schwarz", "coarse space"));
     logger.set_stat("Coarse space/basis size", static_cast<double>(coarse_space_->basis->cols()));
@@ -72,6 +82,11 @@ public:
 
     coarse_correction_ = std::make_unique<CoarseCorrection<T>>(config.sub("coarse"), this->mat(), schwarz_.get_overlapping_mat()->local(), coarse_space_);
     logger.phase_barrier(comm);
+
+    if (!needs_fine_solver) {
+      schwarz_.setup_solver();
+      logger.phase_barrier(comm);
+    }
     logger.endEvent(setup_event_);
   }
 
@@ -89,6 +104,16 @@ private:
     auto* event = Logger::get().registerOrGetEvent("Two-level Schwarz", "setup");
     Logger::get().startEvent(event);
     return event;
+  }
+
+  // True if the coarse space uses the fine-level subdomain solver (with eliminate_boundary it computes the harmonic
+  // extensions from the outermost layer): MS-GFEM with every method except saddle_point, and the ring coarse spaces
+  // with the extension from_boundary. Must match the uses in msgfem_coarse_space() and ring_coarse_space().
+  static bool coarse_space_uses_fine_solver(const std::string& type, const Dune::ParameterTree& config)
+  {
+    if (type == "msgfem") return config.get("method", std::string("saddle_point")) != "saddle_point";
+    if (type == "geneo_ring" || type == "msgfem_ring") return config.get("extension", std::string("from_boundary")) == "from_boundary";
+    return false;
   }
 
   static bool parse_coarse_mode(const std::string& mode)
