@@ -344,7 +344,8 @@ def build(results):
            f"<title>DD30 results</title><style>{CSS}</style></head><body><main>",
            "<h1>DD30 results</h1>",
            f"<p class='muted'>Built {datetime.now():%Y-%m-%d %H:%M} from {len(exps)} experiments in <code>raw/</code>: {n_ok} runs ok, "
-           f"{n_fail} failed, {n_todo} not run (yet). All runs in one table: <a href='runs.csv'>runs.csv</a>. "
+           f"{n_fail} failed, {n_todo} not run (yet). All runs in one table: <a href='runs.csv'>runs.csv</a>; quick plots: <code>explore.ipynb</code> "
+           f"(VS Code with the kernel Python (dd30), or <code>~/.venvs/dd30/bin/jupyter lab</code> in this folder). "
            f"Rebuild: <code>scripts/dd30/sync_results.sh</code> in dune-ddm.</p>",
            "<p class='muted'>Cells: GMRES iterations · time to solution (setup + solve); hover for the breakdown, click for the JSON. "
            "Flags: <span class='flag'>shift-1e-3</span> (or another value) eigenproblem perturbed by the shift: two-sided/projected/ring "
