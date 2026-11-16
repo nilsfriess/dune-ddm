@@ -9,7 +9,9 @@
 #include <ddm/solver/solver.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/common/parametertreeparser.hh>
+#include <exception>
 #include <format>
+#include <iostream>
 #include <mpi.h>
 #include <sstream>
 #include <string>
@@ -45,13 +47,16 @@ inline Dune::ParameterTree read_config(int argc, char** argv)
 
 /** Times a phase of a run as the event "Run"/name, from a phase barrier before it to a phase barrier after it (see
  *  Logger::phase_barrier()). With barriers, the time is the same on all ranks: the wall-clock time of the phase, until
- *  the slowest rank has finished it. Collective.
+ *  the slowest rank has finished it. Collective, except when the phase ends by an exception: then the closing barrier is
+ *  skipped, since the other ranks may wait in a different collective (a rank that throws in the setup while the others
+ *  wait in a barrier of the preconditioner deadlocks otherwise and the error message is never printed).
  */
 class TimedPhase {
 public:
   TimedPhase(const std::string& name, MPI_Comm comm = MPI_COMM_WORLD)
       : event_(Logger::get().registerOrGetEvent("Run", name))
       , comm_(comm)
+      , uncaught_(std::uncaught_exceptions())
   {
     Logger::get().phase_barrier(comm_);
     Logger::get().startEvent(event_);
@@ -59,7 +64,7 @@ public:
 
   ~TimedPhase()
   {
-    Logger::get().phase_barrier(comm_);
+    if (std::uncaught_exceptions() == uncaught_) Logger::get().phase_barrier(comm_);
     Logger::get().endEvent(event_);
   }
 
@@ -69,7 +74,22 @@ public:
 private:
   Logger::Event* event_;
   MPI_Comm comm_;
+  int uncaught_;
 };
+
+/** For the catch block of main(): prints the error with the rank and aborts all ranks. Returning from main() instead
+ *  would hang in MPI_Finalize() (and the job until its time limit) whenever the other ranks did not throw as well.
+ */
+inline int abort_on_error(const std::exception& e)
+{
+  int initialized = 0;
+  MPI_Initialized(&initialized);
+  int rank = 0;
+  if (initialized) MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  std::cerr << "rank " << rank << ": " << e.what() << std::endl;
+  if (initialized) MPI_Abort(MPI_COMM_WORLD, 1);
+  return 1;
+}
 
 namespace detail {
 inline void flatten(const Dune::ParameterTree& tree, const std::string& prefix, std::vector<std::pair<std::string, std::string>>& out)
