@@ -4,7 +4,8 @@ iteration count and the time to solution split into phases.
 
 Phases (the times of the setup phases are wall-clock times if the runs used timing.barriers, which put a barrier
 between them; they are then the maximum over the ranks and add up to the setup time):
-  fine     the fine level: overlapping subdomains and the factorisation of the subdomain matrices (needed by every method)
+  fine     the fine level: overlapping subdomains and the factorisation of the subdomain matrices (needed by every method;
+           Schwarz/setup contains the factorisation also when TwoLevelSchwarzPrec defers it to after the coarse space)
   space    the coarse space (MS-GFEM: the local eigenproblems), split on the rank where it took longest into
              neumann   assembly of the Neumann matrices
              eig_fact  factorisation for the shift-invert solves (saddle point matrix, Neumann matrix or ring matrix)
