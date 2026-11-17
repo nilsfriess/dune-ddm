@@ -27,7 +27,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from summarize import summarize  # noqa: E402
 
-METHOD_ORDER = ["RAS", "Nicolaides", "GenEO", "saddle point", "new η=ω", "new η=ring", "projected", "basis", "msgfem_ring", "geneo_ring", "?"]
+METHOD_ORDER = ["RAS", "Nicolaides", "GenEO", "saddle point", "new η=ω", "new η=ring", "projected", "MS-GFEM-ring (from_ring)", "MS-GFEM-ring (from_boundary)", "basis", "msgfem_ring", "geneo_ring", "?"]
 NUM_COLS = ["setup", "fine", "space", "neumann", "eig_fact", "eig_iter", "other", "coarse", "solve", "total"]
 CSV_COLS = ["experiment", "run", "status", "method", "ranks", "dofs", "cells", "refine", "coefficient", "contrast", "velocity",
             "nev", "threshold", "ncv", "nev_max", "tolerance", "blocksize", "shift", "mtype", "its", "conv", "dim", "sub_dofs",
@@ -49,6 +49,8 @@ def method_label(cfg):
         if m == "two_sided":
             return "new η=ring" if cfg.get("prec.coarse_space.inner_product") == "ring" else "new η=ω"
         return m
+    if t == "msgfem_ring":  # the MS-GFEM-ring method of arXiv:2507.12226
+        return f"MS-GFEM-ring ({cfg.get('prec.coarse_space.extension', 'from_boundary')})"
     return t
 
 
