@@ -18,6 +18,9 @@ case $toolchain in
     DDM_CC=$LLVM_BIN_DIR/clang
     DDM_CXX=$LLVM_BIN_DIR/clang++
     DDM_FLAGS="--gcc-install-dir=$(dirname "$(g++ -print-libgcc-file-name)")"
+    # clang 22 links position-independent executables by default, gfortran 14.2 does not compile for them: without
+    # -fPIC the Fortran objects of the bundled STRUMPACK do not link with clang++ (its FortranCInterface check fails)
+    export FFLAGS="-fPIC"
     ;;
   gcc14)
     module load compiler/gnu/14.2 mpi/openmpi/5.0-gnu-14.2 numlib/mkl/2025.0
