@@ -29,7 +29,7 @@
     "size2d_P16":      {"group": "size", "status": "current", "note": "2D size ladder (16 subdomains, 64^2..512^2 elements per subdomain); GenEO and saddle point OOM at 512^2, redone in size2d_deferred_P16"},
     "size2d_deferred_P16": {"group": "size", "status": "current", "note": "GenEO and saddle point at 256^2/512^2 with the deferred fine factorisation (3320310): same times, 512^2 now fits"},
     "size3d_rep_P64":  {"group": "size", "status": "current", "note": "Uniform repetition of the whole 3D size ladder (current build, mtype -2 everywhere): within 1 % of the first runs"},
-    "ringmethod_size3d_P64":  {"group": "size", "status": "pending", "note": "MS-GFEM-ring, both extensions, in the 3D size ladder (12^3..24^3, velocity 1)"},
+    "ringmethod_size3d_P64":  {"group": "size", "status": "current", "note": "MS-GFEM-ring, both extensions, in the 3D size ladder (12^3..24^3, velocity 1)"},
 
     "velocity3d_P64": {"group": "geneo", "status": "current", "note": "3D velocity sweep 1..1e4 on the channels with the current settings (threshold 0.5, shift -1e-9, mtype -2), all methods incl. RAS and the ring; replaces velocity_P64"},
     "velocity3d_P216": {"group": "geneo", "status": "current", "note": "Velocity 1e3/1e4 at 216 subdomains: RAS 254 -> 418 / 171 -> 286 iterations from 64 to 216 subdomains, GenEO stays at 47 / 93, MS-GFEM 11-16; the two-sided variants take ~3x more eigenvectors at 1e4 (threshold 0.5), the saddle point not"},
