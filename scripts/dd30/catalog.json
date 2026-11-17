@@ -15,6 +15,9 @@
     "weak3d_rep_P8":   {"group": "weak", "status": "current", "note": "Repetition (2x) of the velocity 100 runs of weak3d_P8 with the current build and mtype -2: same iterations, times within 3 % of the original"},
     "weak3d_rep_P64":  {"group": "weak", "status": "current", "note": "Repetition (2x) of the velocity 100 runs of weak3d_P64 with the current build and mtype -2: same iterations, times within 3 %"},
     "weak3d_rep_P216": {"group": "weak", "status": "current", "note": "Repetition (2x) of the velocity 100 runs of weak3d_P216 (slide 1) with the current build and mtype -2: same iterations, times within 5 %"},
+    "ringmethod_weak3d_P8":   {"group": "weak", "status": "pending", "note": "MS-GFEM-ring (arXiv:2507.12226, methods/ring_method.ini), extension from_ring and from_boundary, velocity 100, 8 subdomains"},
+    "ringmethod_weak3d_P64":  {"group": "weak", "status": "pending", "note": "MS-GFEM-ring, both extensions, velocity 100, 64 subdomains"},
+    "ringmethod_weak3d_P216": {"group": "weak", "status": "pending", "note": "MS-GFEM-ring, both extensions, velocity 100, 216 subdomains"},
     "weak2d_P16":  {"group": "weak", "status": "current", "note": "2D weak scaling, elliptic (meandering channels, 128^2 elements per subdomain, threshold 0.5), 16 subdomains"},
     "weak2d_P64":  {"group": "weak", "status": "current", "note": "2D weak scaling, 64 subdomains"},
     "weak2d_P256": {"group": "weak", "status": "current", "note": "2D weak scaling, 256 subdomains (ran on o-nodes)"},
@@ -25,6 +28,7 @@
     "size2d_P16":      {"group": "size", "status": "current", "note": "2D size ladder (16 subdomains, 64^2..512^2 elements per subdomain); GenEO and saddle point OOM at 512^2, redone in size2d_deferred_P16"},
     "size2d_deferred_P16": {"group": "size", "status": "current", "note": "GenEO and saddle point at 256^2/512^2 with the deferred fine factorisation (3320310): same times, 512^2 now fits"},
     "size3d_rep_P64":  {"group": "size", "status": "current", "note": "Uniform repetition of the whole 3D size ladder (current build, mtype -2 everywhere): within 1 % of the first runs"},
+    "ringmethod_size3d_P64":  {"group": "size", "status": "pending", "note": "MS-GFEM-ring, both extensions, in the 3D size ladder (12^3..24^3, velocity 1)"},
 
     "velocity3d_P64": {"group": "geneo", "status": "current", "note": "3D velocity sweep 1..1e4 on the channels with the current settings (threshold 0.5, shift -1e-9, mtype -2), all methods incl. RAS and the ring; replaces velocity_P64"},
     "velocity3d_P216": {"group": "geneo", "status": "current", "note": "Velocity 1e3/1e4 at 216 subdomains: RAS 254 -> 418 / 171 -> 286 iterations from 64 to 216 subdomains, GenEO stays at 47 / 93, MS-GFEM 11-16; the two-sided variants take ~3x more eigenvectors at 1e4 (threshold 0.5), the saddle point not"},
@@ -51,13 +55,13 @@
     "smoke":       {"group": "old", "status": "smoke", "note": "Smoke test of the helix setup (one node, 16 ranks)"}
   },
   "series": [
-    {"id": "weak3d_v100", "group": "weak", "talk": true, "title": "3D weak scaling, velocity 100 (convection-dominated background)", "dirs": ["weak3d_rep_P8", "weak3d_rep_P64", "weak3d_rep_P216", "weak3d_P512", "weak3d_P8", "weak3d_P64", "weak3d_P216"], "x": "ranks", "x_label": "subdomains", "filter": {"velocity": "100"},
+    {"id": "weak3d_v100", "group": "weak", "talk": true, "title": "3D weak scaling, velocity 100 (convection-dominated background)", "dirs": ["weak3d_rep_P8", "weak3d_rep_P64", "weak3d_rep_P216", "weak3d_P512", "weak3d_P8", "weak3d_P64", "weak3d_P216", "ringmethod_weak3d_P8", "ringmethod_weak3d_P64", "ringmethod_weak3d_P216"], "x": "ranks", "x_label": "subdomains", "filter": {"velocity": "100"},
      "note": "Convection-diffusion: the background (kappa 1) is convection-dominated (mesh Peclet ~5), the channels (contrast 1e6) are not. Fixed in space, 16^3 elements per subdomain, threshold 0.5. All points with the current build and mtype -2: 8..216 from the repetitions (run r1; r1, r2 and the original mtype 2 runs agree within 5 %, same iterations), 512 from weak3d_P512. Slide 1 (cost of robustness) is its 216 or 512 point."},
     {"id": "weak3d_v1", "group": "weak", "title": "3D weak scaling, velocity 1 (diffusion-dominated)", "dirs": ["weak3d_P8", "weak3d_P64", "weak3d_P216", "weak3d_P512"], "x": "ranks", "x_label": "subdomains", "filter": {"velocity": "1"},
      "note": "As the velocity 100 series, but diffusion-dominated everywhere (mesh Peclet ~0.05 in the background)."},
     {"id": "weak2d", "group": "weak", "talk": true, "title": "2D weak scaling, elliptic", "dirs": ["weak2d_P16", "weak2d_P64", "weak2d_P256"], "x": "ranks", "x_label": "subdomains",
      "note": "Meandering channels (1e6) in a Matern background, fixed in space, 128^2 elements per subdomain, threshold 0.5."},
-    {"id": "size3d", "group": "size", "talk": true, "title": "3D: cost against subdomain size (64 subdomains)", "dirs": ["size3d_rep_P64", "size3d_rest_P64", "size3d_ldlt_P64", "size3d_P64"], "x": "cells", "x_label": "n (n^3 elements per subdomain)",
+    {"id": "size3d", "group": "size", "talk": true, "title": "3D: cost against subdomain size (64 subdomains)", "dirs": ["size3d_rep_P64", "size3d_rest_P64", "size3d_ldlt_P64", "size3d_P64", "ringmethod_size3d_P64"], "x": "cells", "x_label": "n (n^3 elements per subdomain)",
      "note": "Channels, contrast 1e6, velocity 1, threshold 0.5, 8 ranks per node. From the uniform repetition (current build, mtype -2), which agrees with the first runs within 1 %."},
     {"id": "size2d", "group": "size", "talk": true, "title": "2D: cost against subdomain size (16 subdomains)", "dirs": ["size2d_deferred_P16", "size2d_P16"], "x": "cells", "x_label": "n (n^2 elements per subdomain)",
      "note": "Elliptic meandering channels, threshold 0.5, overlap 8."},
