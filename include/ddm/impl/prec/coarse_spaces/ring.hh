@@ -28,19 +28,16 @@ namespace ddm {
 namespace detail {
 // Projects the columns of V (on the overlapping subdomain) onto H, a space of harmonic functions on the region r and
 // numbered by it: on r, every column is replaced by the function in H with its values on the boundary of H. The rows
-// outside of r are not changed.
+// outside of r are not changed. All columns in one solve, so that a direct solver can treat them as a block of
+// right-hand sides (e.g. PARDISO with nrhs = V.cols(); solvers without that fall back to one column at a time).
 template <class T>
 void project_rows(const HarmonicSpace<T>& H, const Region& r, MultiVec<T>& V)
 {
   auto X = H.constraint_matrix().local().create_domain_multivector(V.cols());
+  auto Y = H.constraint_matrix().local().create_domain_multivector(V.cols());
   V.pack_rows(r.indices(), *X);
-  auto y = H.constraint_matrix().create_domain_vector();
-  for (Index j = 0; j < X->cols(); ++j) {
-    auto x = column(*X, j);
-    H.project(x, y);
-    x = y;
-  }
-  V.unpack_rows(*X, r.indices(), 0);
+  H.project(*X, *Y);
+  V.unpack_rows(*Y, r.indices(), 0);
 }
 
 /* The from_ring extension of ring_coarse_space(), with layer the layers of the ring (see ring_layers()): keeps the
