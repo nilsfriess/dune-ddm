@@ -11,15 +11,16 @@
 # job on a compute node of the partition cpu (AMD EPYC 9454, like the login node, so -march=native fits both):
 #
 #   sbatch scripts/dd30/build_kit.sh llvm22 ex2 ex6
-#   sbatch scripts/dd30/build_kit.sh gcc14 ex2 ex6
+#   sbatch -p dev_cpu -t 00:30:00 --exclusive -c 192 scripts/dd30/build_kit.sh gcc14 ex2 ex6   # a whole node, starts sooner
 #
 # The toolchains are described in env_kit.sh. The login node only has one core, so build there only small changes
 # (bash scripts/dd30/build_kit.sh llvm22 ex6). All parallel builds, including the bundled dependencies during the
-# configuration, use the CPUs of the job (64 hyperthreads = 32 cores).
+# configuration, use one job per core of the job (Slurm counts hyperthreads: -c 64 are 32 cores). A build that hits
+# the time limit continues where it stopped when submitted again.
 set -euo pipefail
 toolchain=$1
 shift
-jobs=${SLURM_CPUS_PER_TASK:-1}
+jobs=$(( ${SLURM_CPUS_PER_TASK:-2} / 2 ))
 repo=~/dune-ddm-talk
 source "$repo/scripts/dd30/env_kit.sh" "$toolchain"
 module list 2>&1
