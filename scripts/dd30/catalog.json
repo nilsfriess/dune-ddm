@@ -9,6 +9,11 @@
     {"id": "old", "title": "Pilots, superseded and abandoned", "note": "Kept for reference; do not use their numbers in the talk without checking the flags and notes."}
   ],
   "experiments": {
+    "kit_weak3d_P8": {"group": "kit", "status": "pending", "note": "3D weak scaling on KIT, velocity 100, 8 subdomains, all methods + MS-GFEM-ring (threshold 0.01); 1 node(s), 8 ranks per node, 1 core per rank (partition dev_cpu)"},
+    "kit_weak3d_P64": {"group": "kit", "status": "pending", "note": "3D weak scaling on KIT, velocity 100, 64 subdomains, all methods + MS-GFEM-ring (threshold 0.01); 2 node(s), 32 ranks per node, 1 core per rank (partition dev_cpu)"},
+    "kit_weak3d_P216": {"group": "kit", "status": "pending", "note": "3D weak scaling on KIT, velocity 100, 216 subdomains, all methods + MS-GFEM-ring (threshold 0.01); 5 node(s), 44 ranks per node, 1 core per rank"},
+    "kit_weak3d_P512": {"group": "kit", "status": "pending", "note": "3D weak scaling on KIT, velocity 100, 512 subdomains, all methods + MS-GFEM-ring (threshold 0.01); 11 node(s), 47 ranks per node, 1 core per rank"},
+    "kit_weak3d_P1000": {"group": "kit", "status": "pending", "note": "3D weak scaling on KIT, velocity 100, 1000 subdomains, all methods + MS-GFEM-ring (threshold 0.01); 20 node(s), 50 ranks per node, 1 core per rank"},
     "kit_check_P8_gcc14":   {"group": "kit", "status": "current", "note": "The runs of weak3d_rep_P8 (r1) and ringmethod_weak3d_P8 (threshold 0.01) on KIT with GCC 14.2, 8 ranks with 4 cores each (as on Helix), partition dev_cpu. Same iterations and coarse dimensions as Helix in all 7 runs; setup 5-15 % faster, GMRES 12-20 % slower: single right-hand-side PARDISO solves ~30 % slower (MKL 2025.0 on EPYC 9454 vs MKL 2022.2 on EPYC 7513), block solves and factorisations faster"},
     "kit_check_P64_gcc14":  {"group": "kit", "status": "pending", "note": "The runs of weak3d_rep_P64 (r1), ringmethod_weak3d_P64 (threshold 0.01) and weak2d_P64 on KIT with GCC 14.2, 16 ranks per node with 4 cores each (as on Helix)"},
     "weak3d_P8":   {"group": "weak", "status": "current", "note": "3D weak scaling, 8 subdomains (channels fixed in space, contrast 1e6, 16^3 elements per subdomain, threshold 0.5, velocity 1 and 100)"},
@@ -62,6 +67,8 @@
     "smoke":       {"group": "old", "status": "smoke", "note": "Smoke test of the helix setup (one node, 16 ranks)"}
   },
   "series": [
+    {"id": "kit_weak3d_v100", "group": "kit", "title": "KIT: 3D weak scaling up to 1000 subdomains, velocity 100", "dirs": ["kit_weak3d_P8", "kit_weak3d_P64", "kit_weak3d_P216", "kit_weak3d_P512", "kit_weak3d_P1000"], "x": "ranks", "x_label": "subdomains",
+     "note": "As weak3d_v100 (16^3 elements per subdomain, threshold 0.5, MS-GFEM-ring 0.01), all on KIT (AMD EPYC 9454, GCC 14.2, MKL 2025.0) with one core per rank; 8, 32, 44, 47, 50 ranks per node (the 1920 cores per user allow at most 50 at 1000 subdomains). Not comparable in time with the Helix series."},
     {"id": "weak3d_v100", "group": "weak", "talk": true, "title": "3D weak scaling, velocity 100 (convection-dominated background)", "dirs": ["weak3d_rep_P8", "weak3d_rep_P64", "weak3d_rep_P216", "weak3d_P512", "weak3d_P8", "weak3d_P64", "weak3d_P216", "ringmethod_weak3d_P8", "ringmethod_weak3d_P64", "ringmethod_weak3d_P216", "ringmethod_weak3d_P512"], "name_re": "^(?!ringmethod_f[rb]_(ws3|sz3))", "x": "ranks", "x_label": "subdomains", "filter": {"velocity": "100"},
      "note": "Convection-diffusion: the background (kappa 1) is convection-dominated (mesh Peclet ~5), the channels (contrast 1e6) are not. Fixed in space, 16^3 elements per subdomain, threshold 0.5. All points with the current build and mtype -2: 8..216 from the repetitions (run r1; r1, r2 and the original mtype 2 runs agree within 5 %, same iterations), 512 from weak3d_P512. Slide 1 (cost of robustness) is its 216 or 512 point."},
     {"id": "weak3d_v1", "group": "weak", "title": "3D weak scaling, velocity 1 (diffusion-dominated)", "dirs": ["weak3d_P8", "weak3d_P64", "weak3d_P216", "weak3d_P512"], "x": "ranks", "x_label": "subdomains", "filter": {"velocity": "1"},
