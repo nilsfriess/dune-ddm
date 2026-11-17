@@ -5,9 +5,14 @@
     {"id": "size", "title": "Cost against subdomain size (slide 8)"},
     {"id": "geneo", "title": "Why not GenEO? (slide 9: spectra, convection)"},
     {"id": "backup", "title": "Backup: contrast, velocity, eigensolver tolerance, thresholds, shift"},
+    {"id": "kit", "title": "KIT (bwUniCluster 3.0, AMD EPYC 9454): checks against Helix", "note": "Not comparable in time with the Helix runs (AMD EPYC 7513): different CPU, compiler and MKL. Compare with compare_runs.py."},
     {"id": "old", "title": "Pilots, superseded and abandoned", "note": "Kept for reference; do not use their numbers in the talk without checking the flags and notes."}
   ],
   "experiments": {
+    "kit_check_P8_llvm22":  {"group": "kit", "status": "pending", "note": "The runs of weak3d_rep_P8 (r1) and ringmethod_weak3d_P8 (threshold 0.01) on KIT with clang 22, 8 ranks with 4 cores each (as on Helix), partition dev_cpu"},
+    "kit_check_P8_gcc14":   {"group": "kit", "status": "pending", "note": "As kit_check_P8_llvm22 with GCC 14.2"},
+    "kit_check_P64_llvm22": {"group": "kit", "status": "pending", "note": "The runs of weak3d_rep_P64 (r1), ringmethod_weak3d_P64 (threshold 0.01) and weak2d_P64 on KIT with clang 22, 16 ranks per node with 4 cores each (as on Helix)"},
+    "kit_check_P64_gcc14":  {"group": "kit", "status": "pending", "note": "As kit_check_P64_llvm22 with GCC 14.2"},
     "weak3d_P8":   {"group": "weak", "status": "current", "note": "3D weak scaling, 8 subdomains (channels fixed in space, contrast 1e6, 16^3 elements per subdomain, threshold 0.5, velocity 1 and 100)"},
     "weak3d_P64":  {"group": "weak", "status": "current", "note": "3D weak scaling, 64 subdomains; also the tolerance 1e-5 point of tolerance3d_P64"},
     "weak3d_P216": {"group": "weak", "status": "current", "note": "3D weak scaling, 216 subdomains"},

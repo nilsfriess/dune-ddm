@@ -59,5 +59,8 @@ args=(--job-name="dd30_$(basename "$out")" --partition="$partition" --nodes="$no
 [ -n "${DEPEND:-}" ] && args+=(--dependency="afterok:$DEPEND")
 echo "sbatch ${args[*]} $repo/scripts/dd30/job_kit.sh $out $runs_copy"
 if [ "${DRY_RUN:-0}" != 1 ]; then
-  RUN_TIMEOUT=${RUN_TIMEOUT:-60} sbatch "${args[@]}" "$repo/scripts/dd30/job_kit.sh" "$out" "$runs_copy"
+  RUN_TIMEOUT=${RUN_TIMEOUT:-60} sbatch "${args[@]}" "$repo/scripts/dd30/job_kit.sh" "$out" "$runs_copy" \
+    || { rm -f "$runs_copy"; exit 1; }  # no runs copy of a job that does not exist
+else
+  rm -f "$runs_copy"
 fi
