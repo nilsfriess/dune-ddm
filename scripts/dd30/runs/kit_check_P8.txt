@@ -1,5 +1,5 @@
 # Check of the KIT setup (bwUniCluster 3.0, AMD EPYC 9454) against Helix (AMD EPYC 7513): the same runs as on Helix, 8
-# subdomains on one node (partition dev_cpu), with both toolchains of env_kit.sh. Compare with weak3d_rep_P8 (run r1)
+# subdomains on one node (partition dev_cpu), with GCC 14.2 (env_kit.sh). Compare with weak3d_rep_P8 (run r1)
 # and ringmethod_weak3d_P8 (threshold 0.01): iterations and coarse dimensions should agree, the times differ by the CPU.
 ras_ws3_v100_P8_r1 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100 -grid.cells "8 8 8" -solver.maxit 1000 -solver.restart 1000
 nicolaides_ws3_v100_P8_r1 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100 -grid.cells "8 8 8" -solver.maxit 1000 -solver.restart 1000

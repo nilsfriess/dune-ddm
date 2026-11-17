@@ -1,6 +1,6 @@
 # Check of the KIT setup against Helix at 64 subdomains, with the layout of Helix (RANKS_PER_NODE=16,
 # CORES_PER_RANK=4, i.e. 4 nodes): the velocity 100 runs of weak3d_rep_P64 (run r1), the MS-GFEM-ring method of
-# ringmethod_weak3d_P64 (threshold 0.01) and the 2D weak scaling point weak2d_P64 (ex2). With both toolchains.
+# ringmethod_weak3d_P64 (threshold 0.01) and the 2D weak scaling point weak2d_P64 (ex2). With GCC 14.2.
 ras_ws3_v100_P64_r1 ex6 ex6.ini,methods/ras.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
 nicolaides_ws3_v100_P64_r1 ex6 ex6.ini,methods/nicolaides.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000
 geneo_ws3_v100_P64_r1 ex6 ex6.ini,methods/geneo.ini -problem.coefficient channels -problem.kappa_channel 1e6 -problem.velocity_scale 100 -grid.cells "16 16 16" -solver.maxit 1000 -solver.restart 1000 -prec.coarse_space.eigensolver.threshold 0.5 -prec.coarse_space.eigensolver.nev 8 -prec.coarse_space.eigensolver.ncv 64 -prec.coarse_space.eigensolver.nev_max 600
