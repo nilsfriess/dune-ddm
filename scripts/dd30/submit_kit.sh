@@ -52,8 +52,9 @@ cp "$runs" "$runs_copy"
 [ -f "$out/commit" ] || git -C "$repo" rev-parse HEAD > "$out/commit"
 
 # Slurm counts hyperthreads: a rank gets 2 * CORES_PER_RANK of them, i.e. CORES_PER_RANK whole cores
+# --exclusive without --mem gets the whole memory of the nodes (2000 MB per hyperthread); --mem=0 is rejected here
 args=(--job-name="dd30_$(basename "$out")" --partition="$partition" --nodes="$nodes" --ntasks="$ranks"
-      --ntasks-per-node="$per_node" --cpus-per-task="$(( 2 * cores ))" --time="$time_limit" --exclusive --mem=0
+      --ntasks-per-node="$per_node" --cpus-per-task="$(( 2 * cores ))" --time="$time_limit" --exclusive
       --output="$out/job_%j.out")
 [ -n "${DEPEND:-}" ] && args+=(--dependency="afterok:$DEPEND")
 echo "sbatch ${args[*]} $repo/scripts/dd30/job_kit.sh $out $runs_copy"
