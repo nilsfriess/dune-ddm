@@ -11,7 +11,7 @@
 # job on a compute node of the partition cpu (AMD EPYC 9454, like the login node, so -march=native fits both):
 #
 #   sbatch scripts/dd30/build_kit.sh llvm22 ex2 ex6
-#   sbatch -p dev_cpu -t 00:30:00 --exclusive -c 192 scripts/dd30/build_kit.sh gcc14 ex2 ex6   # a whole node, starts sooner
+#   sbatch -p dev_cpu -t 00:30:00 --exclusive -c 192 --mem=376000 scripts/dd30/build_kit.sh gcc14 ex2 ex6  # whole node, sooner
 #
 # The toolchains are described in env_kit.sh. The login node only has one core, so build there only small changes
 # (bash scripts/dd30/build_kit.sh llvm22 ex6). All parallel builds, including the bundled dependencies during the
