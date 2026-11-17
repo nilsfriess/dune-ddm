@@ -15,7 +15,7 @@
     "weak3d_rep_P8":   {"group": "weak", "status": "current", "note": "Repetition (2x) of the velocity 100 runs of weak3d_P8 with the current build and mtype -2: same iterations, times within 3 % of the original"},
     "weak3d_rep_P64":  {"group": "weak", "status": "current", "note": "Repetition (2x) of the velocity 100 runs of weak3d_P64 with the current build and mtype -2: same iterations, times within 3 %"},
     "weak3d_rep_P216": {"group": "weak", "status": "current", "note": "Repetition (2x) of the velocity 100 runs of weak3d_P216 (slide 1) with the current build and mtype -2: same iterations, times within 5 %"},
-    "ringmethod_weak3d_P8":   {"group": "weak", "status": "pending", "note": "MS-GFEM-ring (arXiv:2507.12226, methods/ring_method.ini), extension from_ring and from_boundary, velocity 100, 8 subdomains"},
+    "ringmethod_weak3d_P8":   {"group": "weak", "status": "pending", "note": "MS-GFEM-ring (arXiv:2507.12226, methods/ring_method.ini), extension from_ring and from_boundary, velocity 100, 8 subdomains; with b9e3cda (PARDISO, block extension)"},
     "ringmethod_weak3d_P64":  {"group": "weak", "status": "pending", "note": "MS-GFEM-ring, both extensions, velocity 100, 64 subdomains"},
     "ringmethod_weak3d_P216": {"group": "weak", "status": "pending", "note": "MS-GFEM-ring, both extensions, velocity 100, 216 subdomains"},
     "ringmethod_weak3d_P512": {"group": "weak", "status": "pending", "note": "MS-GFEM-ring, both extensions, velocity 100, 512 subdomains (32 nodes)"},
@@ -53,6 +53,9 @@
     "weak_P64":    {"group": "old", "status": "superseded", "note": "First 3D weak scaling, 64 subdomains (nev 40/80, shift -1e-3); its nev 80 spectra showed the ring's extra small eigenvalues"},
     "weak_P8s":    {"group": "old", "status": "abandoned", "note": "Weak scaling with the channels scaled with the subdomains: dropped (user decision 2026-11-15: fixed problem)"},
     "weak_P512":   {"group": "old", "status": "abandoned", "note": "Old 512-subdomain job, cancelled before it ran: its ini and executable copies were stale (see NOTE)"},
+    "ringmethod_weak3d_P8_umfpack":  {"group": "old", "status": "superseded", "note": "MS-GFEM-ring before b9e3cda: extension from_ring with UMFPACK and one solve per eigenvector; rerun in ringmethod_weak3d_P8"},
+    "ringmethod_weak3d_P64_umfpack": {"group": "old", "status": "superseded", "note": "MS-GFEM-ring before b9e3cda (UMFPACK extension, one solve per eigenvector); rerun in ringmethod_weak3d_P64"},
+    "ringmethod_size3d_P64_umfpack": {"group": "old", "status": "superseded", "note": "MS-GFEM-ring size ladder before b9e3cda (UMFPACK extension, one solve per eigenvector); rerun in ringmethod_size3d_P64"},
     "smoke":       {"group": "old", "status": "smoke", "note": "Smoke test of the helix setup (one node, 16 ranks)"}
   },
   "series": [
