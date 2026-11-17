@@ -18,6 +18,7 @@
     "ringmethod_weak3d_P8":   {"group": "weak", "status": "pending", "note": "MS-GFEM-ring (arXiv:2507.12226, methods/ring_method.ini), extension from_ring and from_boundary, velocity 100, 8 subdomains"},
     "ringmethod_weak3d_P64":  {"group": "weak", "status": "pending", "note": "MS-GFEM-ring, both extensions, velocity 100, 64 subdomains"},
     "ringmethod_weak3d_P216": {"group": "weak", "status": "pending", "note": "MS-GFEM-ring, both extensions, velocity 100, 216 subdomains"},
+    "ringmethod_weak3d_P512": {"group": "weak", "status": "pending", "note": "MS-GFEM-ring, both extensions, velocity 100, 512 subdomains (32 nodes)"},
     "weak2d_P16":  {"group": "weak", "status": "current", "note": "2D weak scaling, elliptic (meandering channels, 128^2 elements per subdomain, threshold 0.5), 16 subdomains"},
     "weak2d_P64":  {"group": "weak", "status": "current", "note": "2D weak scaling, 64 subdomains"},
     "weak2d_P256": {"group": "weak", "status": "current", "note": "2D weak scaling, 256 subdomains (ran on o-nodes)"},
@@ -55,7 +56,7 @@
     "smoke":       {"group": "old", "status": "smoke", "note": "Smoke test of the helix setup (one node, 16 ranks)"}
   },
   "series": [
-    {"id": "weak3d_v100", "group": "weak", "talk": true, "title": "3D weak scaling, velocity 100 (convection-dominated background)", "dirs": ["weak3d_rep_P8", "weak3d_rep_P64", "weak3d_rep_P216", "weak3d_P512", "weak3d_P8", "weak3d_P64", "weak3d_P216", "ringmethod_weak3d_P8", "ringmethod_weak3d_P64", "ringmethod_weak3d_P216"], "x": "ranks", "x_label": "subdomains", "filter": {"velocity": "100"},
+    {"id": "weak3d_v100", "group": "weak", "talk": true, "title": "3D weak scaling, velocity 100 (convection-dominated background)", "dirs": ["weak3d_rep_P8", "weak3d_rep_P64", "weak3d_rep_P216", "weak3d_P512", "weak3d_P8", "weak3d_P64", "weak3d_P216", "ringmethod_weak3d_P8", "ringmethod_weak3d_P64", "ringmethod_weak3d_P216", "ringmethod_weak3d_P512"], "x": "ranks", "x_label": "subdomains", "filter": {"velocity": "100"},
      "note": "Convection-diffusion: the background (kappa 1) is convection-dominated (mesh Peclet ~5), the channels (contrast 1e6) are not. Fixed in space, 16^3 elements per subdomain, threshold 0.5. All points with the current build and mtype -2: 8..216 from the repetitions (run r1; r1, r2 and the original mtype 2 runs agree within 5 %, same iterations), 512 from weak3d_P512. Slide 1 (cost of robustness) is its 216 or 512 point."},
     {"id": "weak3d_v1", "group": "weak", "title": "3D weak scaling, velocity 1 (diffusion-dominated)", "dirs": ["weak3d_P8", "weak3d_P64", "weak3d_P216", "weak3d_P512"], "x": "ranks", "x_label": "subdomains", "filter": {"velocity": "1"},
      "note": "As the velocity 100 series, but diffusion-dominated everywhere (mesh Peclet ~0.05 in the background)."},
