@@ -9,7 +9,7 @@
     {"id": "old", "title": "Pilots, superseded and abandoned", "note": "Kept for reference; do not use their numbers in the talk without checking the flags and notes."}
   ],
   "experiments": {
-    "kit_check_P8_gcc14":   {"group": "kit", "status": "pending", "note": "The runs of weak3d_rep_P8 (r1) and ringmethod_weak3d_P8 (threshold 0.01) on KIT with GCC 14.2, 8 ranks with 4 cores each (as on Helix), partition dev_cpu"},
+    "kit_check_P8_gcc14":   {"group": "kit", "status": "current", "note": "The runs of weak3d_rep_P8 (r1) and ringmethod_weak3d_P8 (threshold 0.01) on KIT with GCC 14.2, 8 ranks with 4 cores each (as on Helix), partition dev_cpu. Same iterations and coarse dimensions as Helix in all 7 runs; setup 5-15 % faster, GMRES 12-20 % slower: single right-hand-side PARDISO solves ~30 % slower (MKL 2025.0 on EPYC 9454 vs MKL 2022.2 on EPYC 7513), block solves and factorisations faster"},
     "kit_check_P64_gcc14":  {"group": "kit", "status": "pending", "note": "The runs of weak3d_rep_P64 (r1), ringmethod_weak3d_P64 (threshold 0.01) and weak2d_P64 on KIT with GCC 14.2, 16 ranks per node with 4 cores each (as on Helix)"},
     "weak3d_P8":   {"group": "weak", "status": "current", "note": "3D weak scaling, 8 subdomains (channels fixed in space, contrast 1e6, 16^3 elements per subdomain, threshold 0.5, velocity 1 and 100)"},
     "weak3d_P64":  {"group": "weak", "status": "current", "note": "3D weak scaling, 64 subdomains; also the tolerance 1e-5 point of tolerance3d_P64"},
