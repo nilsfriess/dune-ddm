@@ -3,7 +3,7 @@
 # Run on a login node of the cluster from anywhere.
 #
 # Usage: scripts/dd30/submit_kit.sh <out_dir> <ranks> <time limit> <runs file>
-#   e.g. scripts/dd30/submit_kit.sh ~/dd30/kit_check_P64_llvm22 64 01:00:00 scripts/dd30/runs/kit_check_P64.txt
+#   e.g. scripts/dd30/submit_kit.sh ~/dd30/kit_check_P64_gcc14 64 01:00:00 scripts/dd30/runs/kit_check_P64.txt
 #
 # The runs file is the same as for submit_helix.sh. Before submitting, the executables (build-<toolchain>/examples/ex2,
 # ex6), the ini files, the runs file, the commit and env_kit.sh are copied into <out_dir>, unless they are already
@@ -13,7 +13,7 @@
 # Nodes of the partition cpu: 2 x 48-core AMD EPYC 9454 (Slurm counts 192 hyperthreads), 384 GB. The job uses
 # RANKS_PER_NODE ranks per node (default 24), each bound to CORES_PER_RANK cores (default 96 / RANKS_PER_NODE), with
 # whole nodes (--exclusive). At most 3840 hyperthreads (20 nodes) per user at a time.
-# Environment: TOOLCHAIN (llvm22 | gcc14, default llvm22), PARTITION (default cpu; dev_cpu: at most 2 nodes and 30
+# Environment: TOOLCHAIN (see env_kit.sh, default gcc14), PARTITION (default cpu; dev_cpu: at most 2 nodes and 30
 # min), RANKS_PER_NODE, CORES_PER_RANK, RUN_TIMEOUT (time limit of a single run in minutes, default 60), DEPEND,
 # DRY_RUN.
 set -euo pipefail
@@ -23,7 +23,7 @@ out=$(realpath -m "$1")
 ranks=$2
 time_limit=$3
 runs=$(realpath "$4")
-toolchain=${TOOLCHAIN:-llvm22}
+toolchain=${TOOLCHAIN:-gcc14}
 build="$repo/build-$toolchain"
 per_node=${RANKS_PER_NODE:-24}
 [ "$ranks" -lt "$per_node" ] && per_node=$ranks

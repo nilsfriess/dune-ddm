@@ -3,7 +3,7 @@
 iterations, the coarse dimension and the time of each phase (see summarize.py) relative to the reference.
 
 Usage: compare_runs.py <reference dirs, comma separated> <dir>...   (runs are matched by the name of their JSON file)
-  e.g. compare_runs.py raw/weak3d_rep_P8,raw/ringmethod_weak3d_P8 raw/kit_check_P8_llvm22 raw/kit_check_P8_gcc14
+  e.g. compare_runs.py raw/weak3d_rep_P8,raw/ringmethod_weak3d_P8 raw/kit_check_P8_gcc14
 
 Flags what would be unexpected: iterations that differ by more than 1, coarse dimensions that differ by more than
 2 %, and a phase whose time ratio to the reference is more than 25 % away from the median ratio of that phase in the
