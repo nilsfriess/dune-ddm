@@ -20,6 +20,7 @@
     "weak3d_P64":  {"group": "weak", "status": "current", "note": "3D weak scaling, 64 subdomains; also the tolerance 1e-5 point of tolerance3d_P64"},
     "weak3d_P216": {"group": "weak", "status": "current", "note": "3D weak scaling, 216 subdomains"},
     "weak3d_P512": {"group": "weak", "status": "current", "note": "3D weak scaling, 512 subdomains (32 nodes); ini copies switched to mtype -2 before the start, see the commit note"},
+    "weak3d_P1000": {"group": "weak", "status": "pending", "note": "1000 subdomains on Helix (32 nodes, 32 ranks per node with 2 cores each, unlike the 16 x 4 of the series): iterations, coarse dimensions and feasibility; times not comparable with 8..512"},
     "weak3d_rep_P8":   {"group": "weak", "status": "current", "note": "Repetition (2x) of the velocity 100 runs of weak3d_P8 with the current build and mtype -2: same iterations, times within 3 % of the original"},
     "weak3d_rep_P64":  {"group": "weak", "status": "current", "note": "Repetition (2x) of the velocity 100 runs of weak3d_P64 with the current build and mtype -2: same iterations, times within 3 %"},
     "weak3d_rep_P216": {"group": "weak", "status": "current", "note": "Repetition (2x) of the velocity 100 runs of weak3d_P216 (slide 1) with the current build and mtype -2: same iterations, times within 5 %"},
