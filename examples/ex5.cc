@@ -26,6 +26,10 @@
 //
 // As in ex4, the eigenproblems of MsGFEM use the k-weighted energy form int grad(u) grad(v) + k^2 V^2 u v.
 //
+// The options are read from the ini files in -config and the command line, see read_config() in run.hh. With
+// output.json, the configuration, the iteration count and the timings of all ranks are written to that file, and with
+// output.vtk = false (default true) no VTK file is written.
+//
 // Example: mpirun -np 4 ./ex5 -problem.frequency 1 -grid.cells "240 42" -prec.type tlschwarz -prec.coarse_space_type msgfem
 
 #include "ddm/debug/vec_sink.hh"
@@ -35,6 +39,7 @@
 #include "ddm/vec/vec.hh"
 #include "examples/assembly.hh"
 #include "examples/pdelab_communication.hh"
+#include "examples/run.hh"
 #include "examples/velocity_reader.hh"
 
 #include <algorithm>
@@ -278,10 +283,11 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   const auto refine = config.get("grid.refine", 0);
   grid->globalRefine(refine);
 
+  const auto c_min = *std::ranges::min_element(params.velocity.data) / 1000;
+  const auto h = std::max(params.upper[0] / cells[0], params.upper[1] / cells[1]) / (1 << refine);
+  const auto elements_per_wavelength = c_min / params.frequency / h;
   if (gv.comm().rank() == 0) {
-    const auto c_min = *std::ranges::min_element(params.velocity.data) / 1000;
-    const auto h = std::max(params.upper[0] / cells[0], params.upper[1] / cells[1]) / (1 << refine);
-    std::cout << "Frequency " << params.frequency << " Hz, " << c_min / params.frequency / h << " elements per shortest wavelength, source at "
+    std::cout << "Frequency " << params.frequency << " Hz, " << elements_per_wavelength << " elements per shortest wavelength, source at "
               << params.source << " (velocity " << params.c(params.source) << " km/s, width " << params.source_width << " km)"
               << (params.free_surface ? ", free surface at the top" : "") << "\n";
   }
@@ -353,15 +359,31 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   ddm::debug::VecSink<RF> sink(config.get("debug_rank", 0), add_to_writer);
 
   // Now the problem is fully assembled and we can setup the preconditioner and solver and solve it
-  auto P = ddm::create_prec<RF>(config.sub("prec"), A);
-  auto solver = ddm::create_solver<RF>(config.sub("solver"), A, P);
+  std::shared_ptr<ddm::Prec<RF>> P;
+  std::shared_ptr<ddm::Solver<RF>> solver;
+  {
+    ddm::examples::TimedPhase phase("setup");
+    P = ddm::create_prec<RF>(config.sub("prec"), A);
+    solver = ddm::create_solver<RF>(config.sub("solver"), A, P);
+  }
   auto d = A->create_domain_vector();
-  solver->solve(r, d);
+  {
+    ddm::examples::TimedPhase phase("solve");
+    solver->solve(r, d);
+  }
   auto x = A->create_domain_vector();
   ddm::examples::copy(x0, x);
   x -= d;
 
+  const auto dofs = A->communication()->count_owners();
+  if (gv.comm().rank() == 0) std::cout << "Dofs: " << dofs << ", ranks: " << gv.comm().size() << std::endl;
+  ddm::examples::write_results(config, *solver,
+                               {{"dofs", std::to_string(dofs)},
+                                {"elements per wavelength", std::format("{:.6e}", elements_per_wavelength)},
+                                {"free surface", params.free_surface ? "true" : "false"}});
+
   // VTK output of the solution and of the velocity at the element centres
+  if (!config.get("output.vtk", true)) return;
   add_to_writer(gfs.name(), x, true);
   std::vector<double> velocity(gv.size(0));
   for (const auto& e : elements(gv)) velocity[gv.indexSet().index(e)] = params.c(e.geometry().center());
@@ -377,14 +399,11 @@ int main(int argc, char** argv)
 {
   try {
     const auto& helper = Dune::MPIHelper::instance(argc, argv);
-    Dune::ParameterTree config;
-    Dune::ParameterTreeParser::readOptions(argc, argv, config);
-
+    const auto config = ddm::examples::read_config(argc, argv);
     run(config, helper);
     Logger::get().report(MPI_COMM_WORLD);
   }
   catch (std::exception& e) {
-    std::cout << e.what() << "\n";
-    return 1;
+    return ddm::examples::abort_on_error(e);
   }
 }
