@@ -17,12 +17,16 @@
 //
 // With "-solver.verbosity 1", the solver shows the number of iterations. Run the example again with
 // "-prec.coarse_space_type nicolaides". With this coarse space, the number of iterations is much larger.
+//
+// To see the first n coarse basis functions of the subdomain of rank k in the VTK file, add
+// "-debug_rank k -prec.coarse.save_vectors n".
 
 #include "examples/assembly.hh"
 #include "examples/pdelab_communication.hh"
 
 #include <array>
 #include <cmath>
+#include <ddm/debug/vec_sink.hh>
 #include <ddm/logger.hh>
 #include <ddm/prec/prec.hh>
 #include <ddm/solver/solver.hh>
@@ -41,28 +45,32 @@
 #pragma GCC diagnostic pop
 #include <exception>
 #include <iostream>
+#include <memory>
+#include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
 namespace {
 // Parameters for the diffusion equation with variable coefficient; Homogeneous Dirichlet conditions everywhere,
-// source term f = 1 everywhere. The coefficient has 8 horizontal strips of height 1/8. Each strip has one channel
-// in the middle. A channel is 1/32 high and goes from x = 1/8 to x = 7/8. kappa is kappa_max in the channels and
-// 1 in all other parts of the domain.
+// source term f = 1 everywhere. The coefficient has n horizontal strips of height 1/n (option -problem.channels,
+// default 8). Each strip has one channel in the middle. A channel is 1/(4n) high and goes from x = 1/8 to x = 7/8.
+// kappa is kappa_max in the channels and 1 in all other parts of the domain.
 template <class GV, class RF>
 class Parameters : public Dune::PDELab::ConvectionDiffusionModelProblem<GV, RF> {
 public:
   double kappa(const Dune::FieldVector<double, 2>& x) const
   {
-    const double y = 8 * x[1] - std::floor(8 * x[1]); // The position in the strip, from 0 to 1
+    const double y = channels_ * x[1] - std::floor(channels_ * x[1]); // The position in the strip, from 0 to 1
     const bool in_channel = 1. / 8 < x[0] && x[0] < 7. / 8 && 3. / 8 < y && y < 5. / 8;
     return in_channel ? kappa_max_ : 1;
   }
 
   using Traits = typename Dune::PDELab::ConvectionDiffusionModelProblem<GV, RF>::Traits;
 
-  explicit Parameters(double kappa_max)
+  Parameters(double kappa_max, int channels)
       : kappa_max_(kappa_max)
+      , channels_(channels)
   {
   }
 
@@ -86,6 +94,7 @@ public:
 
 private:
   double kappa_max_;
+  int channels_;
 };
 
 void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
@@ -124,7 +133,7 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   // The grid operator connects the function space, the constraints and the local operator. The functions in assembly.hh
   // use the grid operator only for its loop over the elements and faces.
   using Params = Parameters<ES, RF>;
-  Params params(config.get("problem.kappa_max", 1e6));
+  Params params(config.get("problem.kappa_max", 1e6), config.get("problem.channels", 8));
   using LOP = Dune::PDELab::ConvectionDiffusionFEM<Params, FEM>;
   LOP lop(params);
 
@@ -148,6 +157,18 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   auto A = ddm::examples::assemble_jacobian(config, go, x0, comm);
   auto r = ddm::examples::assemble_residual(go, x0, *A);
 
+  // Make the VTK writer before the preconditioner, because the preconditioner can pass vectors to the debug sink, for
+  // example the coarse basis functions of the subdomain of rank -debug_rank with -prec.coarse.save_vectors n.
+  using DGF = Dune::PDELab::DiscreteGridFunction<GFS, X>;
+  Dune::VTKWriter writer(gv);
+  const auto add_to_writer = [&](std::string_view name, const ddm::Vec<RF>& v) {
+    auto u = std::make_shared<X>(gfs, 0.0);
+    ddm::examples::copy(v, *u);
+    auto dgf = std::make_shared<DGF>(Dune::stackobject_to_shared_ptr(gfs), u);
+    writer.addVertexData(std::make_shared<Dune::PDELab::VTKGridFunctionAdapter<DGF>>(dgf, std::string(name)));
+  };
+  ddm::debug::VecSink<RF> sink(config.get("debug_rank", 0), add_to_writer);
+
   // Step 3: Make the preconditioner and the solver. create_prec() uses the options that start with "prec.", and
   // create_solver() uses the options that start with "solver.". The solver starts with d = 0.
   auto P = ddm::create_prec<RF>(config.sub("prec"), A);
@@ -161,7 +182,6 @@ void run(const Dune::ParameterTree& config, const Dune::MPIHelper& helper)
   ddm::examples::copy(d, d_pdelab);
   X x = x0;
   x -= d_pdelab;
-  Dune::VTKWriter writer(gv);
   Dune::PDELab::addSolutionToVTKWriter(writer, gfs, x);
   std::vector<double> kappas(gv.size(0));
   for (const auto& e : elements(gv)) kappas[gv.indexSet().index(e)] = params.kappa(e.geometry().center());
