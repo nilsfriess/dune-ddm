@@ -346,6 +346,20 @@ public:
     do_unpack_rows(buffer, idx, first_col);
   }
 
+  // X(idx[k], c) += buffer(k, c) with X = *this, i.e. like unpack_rows(), but adds the rows of buffer instead of
+  // overwriting. The indices must be distinct
+  void add_rows(const MultiVec& buffer, std::span<const Index> idx)
+  {
+    check_usable("add_rows()");
+    buffer.check_usable("add_rows()");
+    DDM_CHECK(!buffer.overlaps(*this), "multivector: add_rows() requires a distinct buffer");
+    DDM_CHECK(buffer.rows() == static_cast<Index>(idx.size()) && buffer.cols() == cols(), "multivector: add_rows() of a {}x{} buffer into {} rows of a {}x{} multivector", buffer.rows(), buffer.cols(),
+              idx.size(), rows(), cols());
+    DDM_CHECK(buffer.backend() == backend(), "multivector: add_rows() backend mismatch, multivector is {}, buffer is {}", to_string(backend()), to_string(buffer.backend()));
+    for (auto i : idx) DDM_CHECK(0 <= i && i < rows(), "multivector: add_rows() row {} out of range for {} rows", i, rows());
+    do_add_rows(buffer, idx);
+  }
+
   // Multiplies row i of every column by d(i, 0), i.e. *this = diag(d) * *this for a multivector d with one column (e.g.
   // the multivector of a Vec)
   void scale_rows(const MultiVec& d)
@@ -412,6 +426,7 @@ private:
   virtual void do_mult_in_place(const MultiVec& M) = 0;
   virtual void do_pack_rows(std::span<const Index> idx, MultiVec& buffer) const = 0;
   virtual void do_unpack_rows(const MultiVec& buffer, std::span<const Index> idx, Index first_col) = 0;
+  virtual void do_add_rows(const MultiVec& buffer, std::span<const Index> idx) = 0;
   virtual void do_scale_rows(const MultiVec& d) = 0;
 
   // The default works through host views, backends that keep their data elsewhere can override this to avoid the

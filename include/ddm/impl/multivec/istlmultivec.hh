@@ -225,6 +225,17 @@ private:
       for (std::size_t k = 0; k < k_max; ++k) data_[(first + c) * n + idx[k]] = b[c * k_max + k];
   }
 
+  void do_add_rows(const MultiVec<T>& buffer, std::span<const Index> idx) override
+  {
+    const auto b = as_istl(buffer).data();
+    const std::size_t n = this->rows();
+    const std::size_t k_max = idx.size();
+    const std::size_t m = this->cols();
+
+    for (std::size_t c = 0; c < m; ++c)
+      for (std::size_t k = 0; k < k_max; ++k) data_[c * n + idx[k]] += b[c * k_max + k];
+  }
+
   void do_scale_rows(const MultiVec<T>& d) override
   {
     const auto d_istl = as_istl(d).data();
