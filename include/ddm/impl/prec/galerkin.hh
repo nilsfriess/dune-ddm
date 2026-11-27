@@ -14,6 +14,7 @@
 #include "ddm/solver/solver.hh"
 #include "ddm/vec/host_view.hh"
 
+#include <algorithm>
 #include <dune/common/parallel/mpitraits.hh>
 #include <dune/common/parametertree.hh>
 #include <dune/istl/solvercategory.hh>
@@ -47,30 +48,99 @@ struct CoarseRows {
 inline constexpr int neighbour_info_tag = 110;
 inline constexpr int neighbour_data_tag = 111;
 
-// The columns of NeighbourBasis::columns that belong to the basis of one rank
-struct NeighbourBasisBlock {
-  Index first;         ///< first column of the block
-  Index end;           ///< one past the last column of the block
-  Index global_offset; ///< global number of the first basis vector of the block's rank
+// The basis of a neighbouring rank, on the indices it shares with us
+template <class T>
+struct NeighbourRows {
+  Index m;                           ///< number of basis vectors of the neighbour
+  Index global_offset;               ///< global number of the neighbour's first basis vector
+  std::vector<Index> indices;        ///< the shared indices, in our numbering
+  std::unique_ptr<MultiVec<T>> rows; ///< row k holds the neighbour's basis vectors at indices[k]
 };
 
 template <class T>
 struct NeighbourBasis {
-  std::shared_ptr<MultiVec<T>> columns;      ///< the blocks R_ij V_j side by side, one row per index of the overlapping index set
-  std::map<int, NeighbourBasisBlock> blocks; ///< by rank, including our own block (R_ii V_i = V_i)
+  Index global_offset;                   ///< global number of our first basis vector
+  std::map<int, NeighbourRows<T>> peers; ///< by rank
 };
 
-/** Returns the basis vectors of all subdomains that intersect ours, restricted to our subdomain: block j is R_ij V_j,
- *  i.e. the basis of rank j on the indices both hold, zero elsewhere. Our own basis V is one of the blocks. Also
+// Finds the indices idx (of the overlapping index set, in any order) that lie in the block. For each of them, adds its
+// row in the block to block_rows and its position in idx to positions.
+template <class T>
+void find_in_block(const typename CoarseSpace<T>::Block& block, std::span<const Index> idx, std::vector<Index>& block_rows, std::vector<Index>& positions)
+{
+  block_rows.clear();
+  positions.clear();
+  for (Index p = 0; p < std::ssize(idx); ++p) {
+    if (block.covers_all()) {
+      block_rows.push_back(idx[p]);
+      positions.push_back(p);
+      continue;
+    }
+    const auto it = std::ranges::lower_bound(block.indices, idx[p]);
+    if (it != block.indices.end() && *it == idx[p]) {
+      block_rows.push_back(static_cast<Index>(it - block.indices.begin()));
+      positions.push_back(p);
+    }
+  }
+}
+
+// Finds the indices that two blocks have in common: their rows in block a and in block b
+template <class T>
+void find_common(const typename CoarseSpace<T>::Block& a, const typename CoarseSpace<T>::Block& b, std::vector<Index>& rows_a, std::vector<Index>& rows_b)
+{
+  rows_a.clear();
+  rows_b.clear();
+  if (a.covers_all() || b.covers_all()) { // then a and b are the same block, the only one
+    rows_a.resize(a.vectors->rows());
+    std::iota(rows_a.begin(), rows_a.end(), Index{0});
+    rows_b = rows_a;
+    return;
+  }
+  // Both index lists are ascending
+  for (std::size_t i = 0, k = 0; i < a.indices.size() && k < b.indices.size();) {
+    if (a.indices[i] < b.indices[k]) ++i;
+    else if (b.indices[k] < a.indices[i]) ++k;
+    else {
+      rows_a.push_back(static_cast<Index>(i++));
+      rows_b.push_back(static_cast<Index>(k++));
+    }
+  }
+}
+
+// dst(dst_rows[k], first_col + c) = src(src_rows[k], c) for all k and all columns c of src
+template <class T>
+void copy_rows(const MultiVec<T>& src, std::span<const Index> src_rows, MultiVec<T>& dst, std::span<const Index> dst_rows, Index first_col)
+{
+  if (src_rows.empty() || src.cols() == 0) return;
+  auto tmp = src.create_multivector(std::ssize(src_rows), src.cols());
+  src.pack_rows(src_rows, *tmp);
+  dst.unpack_rows(*tmp, dst_rows, first_col);
+}
+
+// The rows idx (of the overlapping index set, in any order) of the basis of the rank, i.e. of all blocks extended by
+// zero and side by side
+template <class T>
+std::unique_ptr<MultiVec<T>> basis_rows(const CoarseSpace<T>& cs, std::span<const Index> idx)
+{
+  auto result = cs.blocks[0].vectors->create_multivector(std::ssize(idx), cs.size());
+  std::vector<Index> block_rows;
+  std::vector<Index> positions;
+  Index first_col = 0;
+  for (const auto& block : cs.blocks) {
+    find_in_block<T>(block, idx, block_rows, positions);
+    copy_rows(*block.vectors, block_rows, *result, positions, first_col);
+    first_col += block.vectors->cols();
+  }
+  return result;
+}
+
+/** Returns the bases of our neighbours on the indices they share with us, i.e. R_ij V_j for every neighbour j. Also
  *  determines where the basis of each rank starts in the global numbering of the coarse basis. Collective.
- *
- *  comm is the communication of the overlapping index set the basis is defined on.
  */
 template <class T>
-NeighbourBasis<T> neighbour_basis(const Communication& comm, const MultiVec<T>& V)
+NeighbourBasis<T> neighbour_basis(const CoarseSpace<T>& cs)
 {
-  DDM_CHECK(V.rows() == static_cast<Index>(comm.roots().size()), "neighbour_basis: basis has {} rows, but the index set has size {}", V.rows(), comm.roots().size());
-
+  const auto& comm = *cs.overlap->comm;
   const auto& pattern = comm.communication_pattern();
   const auto& shared = pattern.reduction_indices();
   MPI_Comm mpi_comm = pattern.communicator();
@@ -81,13 +151,11 @@ NeighbourBasis<T> neighbour_basis(const Communication& comm, const MultiVec<T>& 
     Index m;
     Index global_offset;
   };
-  std::map<int, Info> infos;
-
-  auto& mine = infos[rank];
-  mine.m = V.cols();
+  Info mine{cs.size(), 0};
   MPI_Exscan(&mine.m, &mine.global_offset, 1, Dune::MPITraits<Index>::getType(), MPI_SUM, mpi_comm);
   if (rank == 0) mine.global_offset = 0; // MPI_Exscan leaves the result on rank 0 undefined
 
+  std::map<int, Info> infos;
   std::vector<MPI_Request> reqs;
   for (const auto& [peer, _] : shared) {
     MPI_Irecv(&infos[peer], sizeof(Info), MPI_BYTE, peer, neighbour_info_tag, mpi_comm, &reqs.emplace_back());
@@ -96,106 +164,120 @@ NeighbourBasis<T> neighbour_basis(const Communication& comm, const MultiVec<T>& 
   MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
   reqs.clear();
 
-  // The blocks, side by side in the order of the ranks
-  NeighbourBasis<T> result;
-  Index cols = 0;
-  for (const auto& [block_rank, info] : infos) {
-    result.blocks[block_rank] = {cols, cols + info.m, info.global_offset};
-    cols += info.m;
-  }
-  result.columns = V.create_multivector(V.rows(), cols);
-
-  // Our own block is V itself
-  std::vector<Index> all(V.rows());
-  std::iota(all.begin(), all.end(), Index{0});
-  result.columns->unpack_rows(V, all, result.blocks.at(rank).first);
-
-  // Send the rows of V each neighbour shares with us, receive the rows of their bases we share with them. The buffers
-  // live on the backend of V, the messages go through host views of them.
+  // Send the rows of our basis each neighbour shares with us, receive the rows of their bases we share with them. The
+  // buffers live on the backend of the basis, the messages go through host views of them.
   // TODO(20261126-093234): Exchange the neighbour basis without going through host views
-  struct Buffers {
-    std::vector<Index> send_idx;
-    std::vector<Index> recv_idx;
-    std::unique_ptr<MultiVec<T>> send;
-    std::unique_ptr<MultiVec<T>> recv;
-  };
-  std::map<int, Buffers> buffers;
+  NeighbourBasis<T> result;
+  result.global_offset = mine.global_offset;
+  std::map<int, std::unique_ptr<MultiVec<T>>> send;
   for (const auto& [peer, indices] : shared) {
-    auto& buffer = buffers[peer];
-    buffer.send_idx.assign(indices.send_idx.begin(), indices.send_idx.end());
-    buffer.recv_idx.assign(indices.recv_idx.begin(), indices.recv_idx.end());
-    buffer.send = V.create_multivector(static_cast<Index>(buffer.send_idx.size()), V.cols());
-    buffer.recv = V.create_multivector(static_cast<Index>(buffer.recv_idx.size()), infos.at(peer).m);
-    V.pack_rows(buffer.send_idx, *buffer.send);
+    const std::vector<Index> send_idx(indices.send_idx.begin(), indices.send_idx.end());
+    send[peer] = basis_rows(cs, send_idx);
+
+    auto& nb = result.peers[peer];
+    nb.m = infos.at(peer).m;
+    nb.global_offset = infos.at(peer).global_offset;
+    nb.indices.assign(indices.recv_idx.begin(), indices.recv_idx.end());
+    nb.rows = cs.blocks[0].vectors->create_multivector(std::ssize(nb.indices), nb.m);
   }
 
   {
     const auto mpi_type = Dune::MPITraits<T>::getType();
     std::vector<MultiVecHostView<const T>> send_views;
     std::vector<MultiVecHostView<T>> recv_views;
-    for (auto& [peer, buffer] : buffers) {
-      auto& recv = recv_views.emplace_back(buffer.recv->host_view(write));
+    for (auto& [peer, nb] : result.peers) {
+      auto& recv = recv_views.emplace_back(nb.rows->host_view(write));
       MPI_Irecv(recv.data(), static_cast<int>(recv.size()), mpi_type, peer, neighbour_data_tag, mpi_comm, &reqs.emplace_back());
-      const auto& send = send_views.emplace_back(std::as_const(*buffer.send).host_view(read));
-      MPI_Isend(send.data(), static_cast<int>(send.size()), mpi_type, peer, neighbour_data_tag, mpi_comm, &reqs.emplace_back());
+      const auto& out = send_views.emplace_back(std::as_const(*send.at(peer)).host_view(read));
+      MPI_Isend(out.data(), static_cast<int>(out.size()), mpi_type, peer, neighbour_data_tag, mpi_comm, &reqs.emplace_back());
     }
     MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(), MPI_STATUSES_IGNORE);
   } // the views are released here, so the received data is part of the buffers
-
-  // Each neighbour's rows go to the rows we share with it, in the columns of its block
-  for (const auto& [peer, buffer] : buffers) result.columns->unpack_rows(*buffer.recv, buffer.recv_idx, result.blocks.at(peer).first);
   return result;
 }
 
-/** Returns our block row of the coarse matrix A_0 = R_0 A R_0^T, where R_0^T = [R_1^T V_1, ..., R_N^T V_N] contains the
- *  basis vectors of all subdomains, extended by zero. A_ovlp is the restriction A_i = R_i A R_i^T of the global matrix to
- *  the overlapping index set of the coarse space. Collective.
+/** Returns our rows of the coarse matrix A_0 = R_0 A R_0^T, where R_0^T contains the basis vectors of all ranks,
+ *  extended by zero. Collective.
  *
- *  The block of our row that belongs to subdomain j is
+ *  Our basis comes in blocks (see CoarseSpace), and so do our rows. Block j holds the vectors W_j on its indices, and
+ *  A_blocks[j] is the matrix on these indices (the restriction of A, e.g. the matrix of the local subdomain). The rows
+ *  of block j are
  *
- *    (A_0)_ij = V_i^H R_i A R_j^T V_j = V_i^H A_i R_ij V_j,  with R_ij = R_i R_j^T,
+ *    W_j^H A_j [C_k ...],
  *
- *  i.e. it only needs our overlapping matrix and the basis of subdomain j restricted to our subdomain. The second
- *  equality holds because the basis V_i vanishes on the outermost layer of the overlap: only the rows of A_i on that
- *  layer miss columns of A (the ones outside our subdomain), and V_i^H removes exactly these rows. The result is only
- *  correct for such a basis.
+ *  where each C_k is a group of basis vectors (a block of ours or the basis of a neighbouring rank) restricted to the
+ *  indices of block j. Only groups that share indices with block j are used: the others give zero. This only needs the
+ *  matrix on the indices of block j, because W_j vanishes on the outermost layer of its indices: only the rows of A_j
+ *  on that layer miss columns of A, and W_j^H removes exactly these rows. The result is only correct for such a basis.
  *
- *  The coarse basis vectors are numbered globally rank by rank, so ours are first_row, ..., first_row + m_i - 1 (m_i =
- *  number of our basis vectors). The result has a single row block with the rows of A_0 with these numbers, restricted
- *  to the columns of the subdomains that intersect ours (all other entries of these rows are zero): values is a dense
- *  m_i x M multivector, where M is the number of basis vectors of these subdomains (including ours), and cols[c] is the
- *  global number of column c of values. The columns are sorted by rank, and within a rank by basis vector, so cols is
- *  increasing.
+ *  The coarse basis vectors are numbered globally rank by rank, and within a rank block by block. Row block j holds
+ *  the rows of the vectors of block j; values is dense, and cols[c] is the global number of its column c.
  */
 template <class T>
-CoarseRows<T> coarse_matrix_rows(const LocalMat<T>& A_ovlp, const CoarseSpace<T>& cs)
+CoarseRows<T> coarse_matrix_rows(std::span<const LocalMat<T>* const> A_blocks, const CoarseSpace<T>& cs)
 {
-  DDM_CHECK(cs.blocks.size() == 1 && cs.blocks[0].covers_all(), "coarse_matrix_rows: only a single block that covers all indices is supported so far");
-  const auto& V = *cs.blocks[0].vectors;
-  const auto& ovlp = *cs.overlap;
-  DDM_CHECK(A_ovlp.rows() == V.rows() && A_ovlp.cols() == V.rows(), "coarse_matrix_rows: matrix is {}x{}, but the basis has {} rows", A_ovlp.rows(), A_ovlp.cols(), V.rows());
+  DDM_CHECK(A_blocks.size() == cs.blocks.size(), "coarse_matrix_rows: {} matrices for {} blocks", A_blocks.size(), cs.blocks.size());
+  const auto neighbours = neighbour_basis(cs);
 
-  // The bases of all subdomains that intersect ours, restricted to our subdomain: one block R_ij V_j per subdomain j,
-  // side by side. Our own basis V_i is one of the blocks, so the products below compute the whole block row at once.
-  const auto neighbours = neighbour_basis(*ovlp.comm, V);
+  // The global number of the first vector of each of our blocks
+  std::vector<Index> block_offset(cs.blocks.size());
+  Index offset = neighbours.global_offset;
+  for (std::size_t k = 0; k < cs.blocks.size(); ++k) {
+    block_offset[k] = offset;
+    offset += cs.blocks[k].vectors->cols();
+  }
 
-  // A_i_basis = A_i [R_ij V_j ...], with a single pass over the matrix for all blocks
-  auto A_i_basis = A_ovlp.create_range_multivector(neighbours.columns->cols());
-  A_ovlp.spmm(*neighbours.columns, *A_i_basis);
+  // A group of basis vectors that can couple with block j: src holds the vectors, rows src_rows of src are the rows
+  // dst_rows of block j
+  struct Group {
+    Index global_offset;
+    const MultiVec<T>* src;
+    std::vector<Index> src_rows;
+    std::vector<Index> dst_rows;
+  };
 
-  // values = V_i^H A_i [R_ij V_j ...]: one row per basis vector of ours, one column per basis vector of a subdomain
-  // that intersects ours
   CoarseRows<T> rows;
-  rows.first_row = neighbours.blocks.at(ovlp.comm->rank()).global_offset;
-  auto& row_block = rows.blocks.emplace_back();
-  row_block.values = V.create_multivector(V.cols(), A_i_basis->cols());
-  V.dot(*A_i_basis, *row_block.values);
+  rows.first_row = neighbours.global_offset;
+  for (std::size_t j = 0; j < cs.blocks.size(); ++j) {
+    const auto& W = *cs.blocks[j].vectors;
+    const auto& A_j = *A_blocks[j];
+    DDM_CHECK(A_j.rows() == W.rows() && A_j.cols() == W.rows(), "coarse_matrix_rows: matrix {} is {}x{}, but block {} has {} rows", j, A_j.rows(), A_j.cols(), j, W.rows());
 
-  // Column `column` of the result is basis vector (column - block.first) of the block's subdomain, whose global
-  // number starts at block.global_offset
-  row_block.cols.reserve(A_i_basis->cols());
-  for (const auto& [block_rank, block] : neighbours.blocks)
-    for (Index column = block.first; column < block.end; ++column) row_block.cols.push_back(block.global_offset + (column - block.first));
+    auto& row_block = rows.blocks.emplace_back();
+    if (W.cols() == 0) {
+      row_block.values = W.create_multivector(0, 0);
+      continue;
+    }
+
+    std::vector<Group> groups;
+    for (const auto& [peer, nb] : neighbours.peers) {
+      Group g{nb.global_offset, nb.rows.get(), {}, {}};
+      find_in_block<T>(cs.blocks[j], nb.indices, g.dst_rows, g.src_rows);
+      if (!g.dst_rows.empty() && nb.m > 0) groups.push_back(std::move(g));
+    }
+    for (std::size_t k = 0; k < cs.blocks.size(); ++k) {
+      Group g{block_offset[k], cs.blocks[k].vectors.get(), {}, {}};
+      find_common<T>(cs.blocks[j], cs.blocks[k], g.dst_rows, g.src_rows);
+      if (!g.dst_rows.empty() && g.src->cols() > 0) groups.push_back(std::move(g));
+    }
+    std::ranges::sort(groups, {}, &Group::global_offset);
+
+    // C = [C_k ...], the groups side by side on the rows of block j
+    Index cols = 0;
+    for (const auto& g : groups) cols += g.src->cols();
+    auto C = W.create_multivector(W.rows(), cols);
+    row_block.cols.reserve(cols);
+    for (const auto& g : groups) {
+      copy_rows(*g.src, g.src_rows, *C, g.dst_rows, std::ssize(row_block.cols));
+      for (Index c = 0; c < g.src->cols(); ++c) row_block.cols.push_back(g.global_offset + c);
+    }
+
+    // values = W_j^H A_j C, with a single pass over the matrix for all groups
+    auto AC = A_j.create_range_multivector(cols);
+    A_j.spmm(*C, *AC);
+    row_block.values = W.create_multivector(W.cols(), cols);
+    W.dot(*AC, *row_block.values);
+  }
   return rows;
 }
 } // namespace detail
@@ -214,8 +296,9 @@ CoarseRows<T> coarse_matrix_rows(const LocalMat<T>& A_ovlp, const CoarseSpace<T>
 template <class T>
 class CoarseCorrection final : public Prec<T> {
 public:
-  // A_ovlp is the restriction of A to the overlapping index set of the coarse space. Collective
-  CoarseCorrection(const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, const LocalMat<T>& A_ovlp, std::shared_ptr<const CoarseSpace<T>> cs)
+  // A_blocks[b] is the restriction of A to the indices of block b of the coarse space (with a single block, to the
+  // whole overlapping index set). They are only used in the constructor. Collective
+  CoarseCorrection(const Dune::ParameterTree& config, std::shared_ptr<const Mat<T>> A, std::span<const LocalMat<T>* const> A_blocks, std::shared_ptr<const CoarseSpace<T>> cs)
       : Prec<T>(std::move(A))
       , cs_(std::move(cs))
       , apply_event_(Logger::get().registerOrGetEvent("Coarse correction", "apply"))
@@ -232,12 +315,12 @@ public:
     x_.emplace(create_vector(V, V.rows()));
     c_.emplace(create_vector(V, V.cols()));
 
-    setup_coarse_problem(config, detail::coarse_matrix_rows(A_ovlp, *cs_));
+    setup_coarse_problem(config, detail::coarse_matrix_rows(A_blocks, *cs_));
 
     // Visualise the basis vectors if the user has installed a vector sink
     auto save_vectors = config.get("save_vectors", -1);
     if (save_vectors > 0 and debug::has_vec_sink<T>()) {
-      auto v = A_ovlp.create_domain_vector();
+      auto v = create_vector(V, V.rows());
       auto v_novlp = this->mat()->create_domain_vector();
       for (Index i = 0; i < std::min<Index>(cs_->size(), save_vectors); ++i) {
         v.zero();
