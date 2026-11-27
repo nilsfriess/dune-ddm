@@ -121,6 +121,7 @@ std::vector<LocalSubdomain> partition_matrix_with_overlap(const LocalMat<T>& A, 
   const Index n = ovlp.n_original;
 
   // Extract the graph of the original indices in a format METIS understands
+  // TODO(20261127-155359): For DG, METIS can cut through elements, partition the elements instead
   // TODO(20261127-123537): This assumes that the graph of A is symmetric
   std::vector<idx_t> xadj(n + 1);
   std::vector<idx_t> adjncy;

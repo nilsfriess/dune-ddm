@@ -88,6 +88,20 @@ public:
     return A_subs_;
   }
 
+  // Get the matrix on the overlapping index set of the rank, i.e. on the union of the local subdomains. With a single
+  // local subdomain, this is the matrix of that subdomain (so with eliminate_boundary, it has identity rows on the
+  // outermost layer)
+  std::shared_ptr<const LocalMat<T>> get_full_overlapping_mat() const
+  {
+    return A_full_;
+  }
+
+  // Get the local subdomains (see partition_matrix_with_overlap())
+  const std::vector<LocalSubdomain>& get_subdomains() const
+  {
+    return subdomains_;
+  }
+
   // Get the partitions of unity on the local subdomains (empty with overlap 0)
   std::vector<std::shared_ptr<const Vec<T>>> get_pous() const
   {
@@ -246,6 +260,7 @@ private:
     }
     // TODO(20261127-134424): Log subdomain dof numbers for all subdomains
     Logger::get().set_stat("Schwarz/subdomain dofs", static_cast<double>(A_subs_[0]->rows()));
+    A_full_ = A_full;
     d_full_.emplace(A_full->create_range_vector());
     x_full_.emplace(A_full->create_domain_vector());
 
@@ -274,6 +289,7 @@ private:
   std::shared_ptr<const Overlap> ovlp_;
 
   std::vector<LocalSubdomain> subdomains_;            ///< the local subdomains, see partition_matrix_with_overlap()
+  std::shared_ptr<const LocalMat<T>> A_full_;         ///< the matrix on the overlapping index set of the rank (with one local subdomain the same object as A_subs_[0]'s)
   std::vector<std::shared_ptr<const Mat<T>>> A_subs_; ///< A_subs_[j] is the matrix of local subdomain j
   std::vector<std::shared_ptr<Solver<T>>> solvers_;   ///< solvers_[j] is the solver for A_subs_[j], empty until setup_solvers()
   std::vector<std::shared_ptr<const Vec<T>>> pous_;   ///< pous_[j] is the partition of unity on local subdomain j (empty with overlap 0)

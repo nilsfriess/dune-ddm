@@ -6,10 +6,13 @@
 #include "ddm/mat/mat.hh"
 #include "ddm/multivec/multivec.hh"
 #include "ddm/overlap.hh"
+#include "ddm/region.hh"
 #include "ddm/vec/vec.hh"
 
 #include <memory>
+#include <span>
 #include <utility>
+#include <vector>
 
 namespace ddm {
 /** Nicolaides coarse space: If the matrix has near kernel vectors set (using Mat<T>::set_near_kernel()), these vectors multiplied
@@ -17,36 +20,54 @@ namespace ddm {
  *  function multiplied by the partition of unity). The vectors are set to zero at the Dirichlet dofs (the rows A's zero_rows()
  *  was called for).
  *
+ *  Every local subdomain j (see partition_matrix_with_overlap()) contributes the vectors D_j R_j v with its partition of
+ *  unity pous[j], extended by zero to the overlapping index set of the rank. The basis vectors of local subdomain j are
+ *  the columns j * m, ..., j * m + m - 1, with m the number of near kernel vectors (or 1). A_ovlp is the matrix on the
+ *  overlapping index set of the rank.
+ *
  *  Collective.
  */
 template <class T>
-std::shared_ptr<CoarseSpace<T>> nicolaides_coarse_space(std::shared_ptr<const Overlap> ovlp, const Vec<T>& pou, const Mat<T>& A, const LocalMat<T>& A_ovlp)
+std::shared_ptr<CoarseSpace<T>> nicolaides_coarse_space(std::shared_ptr<const Overlap> ovlp,
+                                                        std::span<const LocalSubdomain> subdomains,
+                                                        std::span<const std::shared_ptr<const Vec<T>>> pous,
+                                                        const Mat<T>& A,
+                                                        const LocalMat<T>& A_ovlp)
 {
-  std::shared_ptr<MultiVec<T>> basis;
+  DDM_CHECK(subdomains.size() == pous.size(), "nicolaides_coarse_space: {} local subdomains, but {} partitions of unity", subdomains.size(), pous.size());
 
-  const auto zero_at_dirichlet = [&](auto& v) {
-    auto view = v.host_view(read_write);
-    for (auto i : detail::overlapping_dirichlet_dofs(A, A_ovlp, *ovlp)) view[i] = T{0};
-  };
-
+  // The vectors v on the overlapping index set of the rank: the near kernel vectors, or the constant vector. They are
+  // zero at the Dirichlet dofs, so that D_j R_j v is as well
+  std::vector<Vec<T>> vectors;
   if (not A.get_near_kernel().empty()) {
-    const auto& kernel = A.get_near_kernel();
-    basis = std::shared_ptr<MultiVec<T>>(A_ovlp.create_domain_multivector(kernel.size()));
-    auto v = A_ovlp.create_domain_vector();
-    for (unsigned int i = 0; i < kernel.size(); ++i) {
+    for (const auto& kernel : A.get_near_kernel()) {
+      auto& v = vectors.emplace_back(A_ovlp.create_domain_vector());
       v.zero();
-      v.copy_n_from(kernel[i], kernel[i].size());
+      v.copy_n_from(kernel, kernel.size());
       ovlp->comm->broadcast(v);
-      v.pointwise_mult(pou, v);
-      zero_at_dirichlet(v);
-      column(*basis, i) = v;
     }
   }
   else {
-    auto v = pou;
-    zero_at_dirichlet(v);
-    basis = std::shared_ptr<MultiVec<T>>(A_ovlp.create_domain_multivector(1));
-    column(*basis, 0) = v;
+    auto& v = vectors.emplace_back(A_ovlp.create_domain_vector());
+    v = T{1};
+  }
+  const auto dirichlet = detail::overlapping_dirichlet_dofs(A, A_ovlp, *ovlp);
+  for (auto& v : vectors) {
+    auto view = v.host_view(read_write);
+    for (auto i : dirichlet) view[i] = T{0};
+  }
+
+  // The multivector is zero-initialized, so the basis vectors are zero outside of their local subdomain
+  const auto m = std::ssize(vectors);
+  auto basis = std::shared_ptr<MultiVec<T>>(A_ovlp.create_domain_multivector(std::ssize(subdomains) * m));
+  for (std::size_t j = 0; j < subdomains.size(); ++j) {
+    const auto indices = subdomains[j].region.indices();
+    auto w = *pous[j]; // a vector on local subdomain j
+    for (Index i = 0; i < m; ++i) {
+      vectors[i].multivec().pack_rows(indices, w.multivec());
+      pous[j]->pointwise_mult(w, w);
+      basis->unpack_rows(w.multivec(), indices, static_cast<Index>(j) * m + i);
+    }
   }
 
   return std::make_shared<CoarseSpace<T>>(std::move(ovlp), std::move(basis));
