@@ -23,6 +23,7 @@
 
 #include "examples/assembly.hh"
 #include "examples/pdelab_communication.hh"
+#include "examples/run.hh"
 
 #include <array>
 #include <cmath>
@@ -205,7 +206,6 @@ int main(int argc, char** argv)
     Logger::get().report(MPI_COMM_WORLD);
   }
   catch (std::exception& e) {
-    std::cout << e.what() << "\n";
-    return 1;
+    return ddm::examples::abort_on_error(e);
   }
 }
