@@ -241,7 +241,7 @@ private:
   }
   void release_host(Access /*mode*/) override {}
 
-  // TODO(20261007-071012): Use an AlignedAllocator to allocate the MultiVec data
+  // TODO(20261126-093237): Use an AlignedAllocator to allocate the MultiVec data
   std::vector<T> storage_; ///< column by column, empty for views
   std::span<T> data_;      ///< storage_, or the columns of the owner for views
 };

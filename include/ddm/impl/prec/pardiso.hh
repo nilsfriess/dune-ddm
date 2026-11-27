@@ -50,7 +50,7 @@ public:
       , solve_event_(Logger::get().registerOrGetEvent("PARDISO", "solve"))
       , solve_multi_event_(Logger::get().registerOrGetEvent("PARDISO", "solve_multi"))
   {
-    // TODO(20261006-192425): It should be possible to mark a preconditioner or solver as "sequential" on a higher level
+    // TODO(20261126-093233): It should be possible to mark a preconditioner or solver as "sequential" on a higher level
     DDM_CHECK(this->mat()->sequential(), "PARDISO is a sequential solver");
     read_options(config);
     do_update();

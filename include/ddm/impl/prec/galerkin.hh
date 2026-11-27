@@ -107,7 +107,7 @@ NeighbourBasis<T> neighbour_basis(const Communication& comm, const MultiVec<T>& 
 
   // Send the rows of V each neighbour shares with us, receive the rows of their bases we share with them. The buffers
   // live on the backend of V, the messages go through host views of them.
-  // TODO(20261007-103129): Exchange the neighbour basis without going through host views
+  // TODO(20261126-093234): Exchange the neighbour basis without going through host views
   struct Buffers {
     std::vector<Index> send_idx;
     std::vector<Index> recv_idx;
@@ -329,7 +329,7 @@ private:
                 mpi_comm);
 
     std::vector<T> all_values(rank_ == 0 ? value_displs.back() + value_counts.back() : 0);
-    // TODO(20261007-103129): Avoid the host view
+    // TODO(20261126-093234): Avoid the host view
     {
       const auto values = rows.values->host_view(read);
       MPI_Gatherv(values.data(), static_cast<int>(values.size()), Dune::MPITraits<T>::getType(), all_values.data(), value_counts.data(), value_displs.data(), Dune::MPITraits<T>::getType(), 0,
@@ -366,7 +366,7 @@ private:
   }
 
   // Collects every rank's part of R_0 r (in c_) in d0_ on rank 0. Collective
-  // TODO(20261007-103129): Avoid the host views, this is done in every apply()
+  // TODO(20261126-093234): Avoid the host views, this is done in every apply()
   void gather_coarse_defect()
   {
     MPI_Comm mpi_comm = cs_->overlap->comm->communication_pattern().communicator();
@@ -381,7 +381,7 @@ private:
   }
 
   // Hands every rank its part of the coarse solution x0_ on rank 0, in c_. Collective
-  // TODO(20261007-103129): Avoid the host views, this is done in every apply()
+  // TODO(20261126-093234): Avoid the host views, this is done in every apply()
   void scatter_coarse_solution()
   {
     MPI_Comm mpi_comm = cs_->overlap->comm->communication_pattern().communicator();

@@ -96,7 +96,7 @@ public:
       , solve_multi_event_(Logger::get().registerOrGetEvent("STRUMPACK", "solve_multi"))
       , solver_(false, detail::is_mpi_root())
   {
-    // TODO(20261006-192425): It should be possible to mark a preconditioner or solver as "sequential" on a higher level
+    // TODO(20261126-093233): It should be possible to mark a preconditioner or solver as "sequential" on a higher level
     DDM_CHECK(this->mat()->sequential(), "STRUMPACK is a sequential solver");
     solver_.options().set_Krylov_solver(strumpack::KrylovSolver::DIRECT);
     detail::set_strumpack_options(solver_.options(), config, detail::is_mpi_root());

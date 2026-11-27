@@ -24,7 +24,7 @@ public:
       , factorize_event_(Logger::get().registerOrGetEvent("UMFPACK", "factorize"))
       , solve_event_(Logger::get().registerOrGetEvent("UMFPACK", "solve"))
   {
-    // TODO(20261006-192425): It should be possible to mark a preconditioner or solver as "sequential" on a higher level
+    // TODO(20261126-093233): It should be possible to mark a preconditioner or solver as "sequential" on a higher level
     DDM_CHECK(this->mat()->sequential(), "UMFPACK is a sequential solver");
     do_update();
   }

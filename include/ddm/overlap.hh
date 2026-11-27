@@ -179,7 +179,7 @@ inline Overlap extend_overlap(const Communication& comm, const Pattern& graph, i
     // Add the local rows of the other holders. The `reduction plan` of the Communication class contains exactly the information
     // that is necessary to exchange data at shared indices, so we use it here. Since the Communication object can only communicate
     // scalars, the actual data exchange happens in exchange_lists.
-    // TODO(20261006-072703): Consider extending the Communication class to exchange lists
+    // TODO(20261126-093235): Consider extending the Communication class to exchange lists
     const auto& shared_indices = pattern.reduction_indices();
     for (const auto& [peer, lists] : detail::exchange_lists<CommunicationNodes>(mpi_comm, shared_indices, local_row)) {
       // `lists` is a vector of vectors: for the current peer, we receive a list per shared_indices[peer].recv_idx.
