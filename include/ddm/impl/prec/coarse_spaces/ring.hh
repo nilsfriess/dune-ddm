@@ -116,8 +116,13 @@ void extend_from_ring(const Dune::ParameterTree& config, std::span<const int> la
  *  - extension_prec:   config of the preconditioner of that solver (see create_subproblem_solver())
  */
 template <class T>
-std::shared_ptr<CoarseSpace<T>> ring_coarse_space(const Dune::ParameterTree& config, std::shared_ptr<const Overlap> ovlp, const Vec<T>& pou, std::shared_ptr<const Mat<T>> A,
-                                                  std::shared_ptr<const Mat<T>> A_ovlp, std::shared_ptr<Solver<T>> A_dir, bool harmonic)
+std::shared_ptr<CoarseSpace<T>> ring_coarse_space(const Dune::ParameterTree& config,
+                                                  std::shared_ptr<const Overlap> ovlp,
+                                                  const Vec<T>& pou,
+                                                  std::shared_ptr<const Mat<T>> A,
+                                                  std::shared_ptr<const Mat<T>> A_ovlp,
+                                                  std::shared_ptr<Solver<T>> A_dir,
+                                                  bool harmonic)
 {
   const auto extension = config.get("extension", std::string("from_boundary"));
   DDM_CHECK(extension == "from_boundary" || extension == "from_ring", "ring_coarse_space: unknown extension `{}`, known: from_boundary, from_ring", extension);
@@ -145,8 +150,8 @@ std::shared_ptr<CoarseSpace<T>> ring_coarse_space(const Dune::ParameterTree& con
     debug::add_vec_to_sink("ring", v_novlp);
   }
 
-  NeumannAssembler<T> na(A->get_symmetric_part() != nullptr ? A->get_symmetric_part() : A, ovlp, ring);
-  auto lhs = na.matrix(Dune::ParameterTree{});
+  NeumannAssembler<T> na(A->get_symmetric_part() != nullptr ? A->get_symmetric_part() : A, ovlp);
+  auto lhs = na.matrix(Dune::ParameterTree{}, ring);
 
   // D_R: the partition of unity on the ring, cut off on its inner boundary
   auto ring_pou = lhs->create_domain_vector();

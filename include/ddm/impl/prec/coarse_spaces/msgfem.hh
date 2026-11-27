@@ -62,8 +62,8 @@ std::shared_ptr<CoarseSpace<T>> msgfem_coarse_space(const Dune::ParameterTree& c
   // TODO: With inner_product ring, the Neumann matrix on the whole subdomain is only needed for D A_neu D (and the size
   //       of the problem), which could also be built without it
   const auto A_sym = A->get_symmetric_part() != nullptr ? A->get_symmetric_part() : A;
-  NeumannAssembler<T> na(A_sym, ovlp, Region::whole_subdomain(*ovlp));
-  auto lhs = na.matrix(Dune::ParameterTree{});
+  NeumannAssembler<T> na(A_sym, ovlp);
+  auto lhs = na.matrix(Dune::ParameterTree{}, Region::whole_subdomain(*ovlp));
   auto rhs = lhs->clone();
   rhs->scale(pou);
 
@@ -85,8 +85,7 @@ std::shared_ptr<CoarseSpace<T>> msgfem_coarse_space(const Dune::ParameterTree& c
     const auto ring = Region::from_indices(std::ssize(ring_layer), std::move(ring_indices));
     Logger::get().set_stat("Coarse space/ring dofs", static_cast<double>(ring.size()));
 
-    NeumannAssembler<T> na_ring(A_sym, ovlp, ring);
-    auto A_ring = na_ring.matrix(Dune::ParameterTree{});
+    auto A_ring = na.matrix(Dune::ParameterTree{}, ring);
 
     // B_ring = D A_ring D with D restricted to the ring, only used for the shift
     auto ring_pou = A_ring->create_domain_vector();

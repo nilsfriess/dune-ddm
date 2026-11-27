@@ -34,8 +34,8 @@ std::shared_ptr<CoarseSpace<T>> geneo_coarse_space(const Dune::ParameterTree& co
                                                    const LocalMat<T>& A_ovlp)
 {
   // Build the Neumann matrix for A (or the symmmetric matrix attached to A, if there is one)
-  NeumannAssembler<T> na(A->get_symmetric_part() != nullptr ? A->get_symmetric_part() : A, ovlp, Region::whole_subdomain(*ovlp));
-  auto lhs = na.matrix(config.sub("neumann_mat"));
+  NeumannAssembler<T> na(A->get_symmetric_part() != nullptr ? A->get_symmetric_part() : A, ovlp);
+  auto lhs = na.matrix(config.sub("neumann_mat"), Region::whole_subdomain(*ovlp));
   auto rhs = lhs->clone();
   rhs->scale(pou);
 
