@@ -306,25 +306,48 @@ public:
       , factorize_event_(Logger::get().registerOrGetEvent("Coarse correction", "factorize"))
   {
     Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Coarse correction", "setup")};
-    DDM_CHECK(cs_->blocks.size() == 1 && cs_->blocks[0].covers_all(), "coarse correction: only a single block that covers all indices is supported so far");
-    const auto& V = *cs_->blocks[0].vectors;
     DDM_CHECK(cs_->overlap->n_original == this->mat()->rows(), "coarse correction: the coarse space was built for {} indices, but the matrix has {} rows", cs_->overlap->n_original,
               this->mat()->rows());
 
-    d_.emplace(create_vector(V, V.rows()));
-    x_.emplace(create_vector(V, V.rows()));
-    c_.emplace(create_vector(V, V.cols()));
+    const auto& V0 = *cs_->blocks[0].vectors;
+    const auto n_ovlp = static_cast<Index>(cs_->overlap->layer.size());
+    d_.emplace(create_vector(V0, n_ovlp));
+    x_.emplace(create_vector(V0, n_ovlp));
+    c_.emplace(create_vector(V0, cs_->size()));
+
+    // Buffers for the blocks in apply()
+    Index first_row = 0;
+    for (const auto& block : cs_->blocks) {
+      auto& buffer = buffers_.emplace_back();
+      const auto m = block.vectors->cols();
+      buffer.coarse_rows.resize(m);
+      std::iota(buffer.coarse_rows.begin(), buffer.coarse_rows.end(), first_row);
+      first_row += m;
+      buffer.c.emplace(create_vector(*block.vectors, m));
+      if (!block.covers_all()) {
+        buffer.d.emplace(create_vector(*block.vectors, block.vectors->rows()));
+        buffer.y.emplace(create_vector(*block.vectors, block.vectors->rows()));
+      }
+    }
 
     setup_coarse_problem(config, detail::coarse_matrix_rows(A_blocks, *cs_));
 
     // Visualise the basis vectors if the user has installed a vector sink
     auto save_vectors = config.get("save_vectors", -1);
     if (save_vectors > 0 and debug::has_vec_sink<T>()) {
-      auto v = create_vector(V, V.rows());
+      auto v = create_vector(V0, n_ovlp);
       auto v_novlp = this->mat()->create_domain_vector();
       for (Index i = 0; i < std::min<Index>(cs_->size(), save_vectors); ++i) {
         v.zero();
-        if (debug::vec_sink_debug_rank<T>() == this->mat()->communication()->rank()) v = column(*cs_->blocks[0].vectors, i);
+        if (debug::vec_sink_debug_rank<T>() == this->mat()->communication()->rank()) {
+          // Basis vector i is column c of block b
+          std::size_t b = 0;
+          Index c = i;
+          for (; c >= cs_->blocks[b].vectors->cols(); ++b) c -= cs_->blocks[b].vectors->cols();
+          const auto& block = cs_->blocks[b];
+          if (block.covers_all()) v = column(*block.vectors, c);
+          else v.multivec().unpack_rows(*block.vectors->columns(c, 1), block.indices, 0);
+        }
         cs_->overlap->comm->reduce(v);
         v_novlp.copy_n_from(v, v_novlp.size());
         debug::add_vec_to_sink(std::format("basis{:04d}", i), v_novlp);
@@ -342,16 +365,7 @@ private:
   void do_apply(Vec<T>& z, const Vec<T>& r) override
   {
     Logger::ScopedLog sl{apply_event_};
-    const auto& V = *cs_->blocks[0].vectors;
-    const auto& comm = *cs_->overlap->comm;
-    const auto n = cs_->overlap->n_original;
-
-    // r is consistent, so the owners of the overlap indices have the right values
-    d_->copy_n_from(r, n);
-    comm.broadcast(*d_);
-
-    // Restriction: our part of R_0 r is V_i^H d
-    V.dot(d_->multivec(), c_->multivec());
+    restrict_to_coarse(r);
 
     // Solve the coarse problem on rank 0 and hand everyone its part of the solution
     gather_coarse_defect();
@@ -362,10 +376,48 @@ private:
     }
     scatter_coarse_solution();
 
-    // Prolongation: R_0^T x_0 is the sum of V_i x_i over all subdomains, which the reduction makes consistent
-    V.mult(c_->multivec(), x_->multivec());
-    comm.reduce(*x_);
-    z.copy_n_from(*x_, n);
+    prolongate(z);
+  }
+
+  // Restriction: c_ = our part of R_0 r, i.e. W_b^H r on the indices of block b, for every block b. r must be
+  // consistent. Collective
+  void restrict_to_coarse(const Vec<T>& r)
+  {
+    // r is consistent, so the owners of the overlap indices have the right values
+    d_->copy_n_from(r, cs_->overlap->n_original);
+    cs_->overlap->comm->broadcast(*d_);
+
+    for (std::size_t b = 0; b < cs_->blocks.size(); ++b) {
+      const auto& block = cs_->blocks[b];
+      auto& buffer = buffers_[b];
+      if (block.vectors->cols() == 0) continue;
+      if (block.covers_all()) block.vectors->dot(d_->multivec(), buffer.c->multivec());
+      else {
+        d_->multivec().pack_rows(block.indices, buffer.d->multivec());
+        block.vectors->dot(buffer.d->multivec(), buffer.c->multivec());
+      }
+      c_->multivec().unpack_rows(buffer.c->multivec(), buffer.coarse_rows, 0);
+    }
+  }
+
+  // Prolongation: z = R_0^T x_0, with our part of x_0 in c_. This is the sum of W_b x_b over all blocks of all ranks,
+  // which the reduction makes consistent. Collective
+  void prolongate(Vec<T>& z)
+  {
+    x_->zero();
+    for (std::size_t b = 0; b < cs_->blocks.size(); ++b) {
+      const auto& block = cs_->blocks[b];
+      auto& buffer = buffers_[b];
+      if (block.vectors->cols() == 0) continue;
+      c_->multivec().pack_rows(buffer.coarse_rows, buffer.c->multivec());
+      if (block.covers_all()) block.vectors->mult(buffer.c->multivec(), x_->multivec()); // the only block
+      else {
+        block.vectors->mult(buffer.c->multivec(), buffer.y->multivec());
+        x_->multivec().add_rows(buffer.y->multivec(), block.indices);
+      }
+    }
+    cs_->overlap->comm->reduce(*x_);
+    z.copy_n_from(*x_, cs_->overlap->n_original);
   }
 
   // The coarse space would have to be rebuilt too, so the owner of the coarse space creates a new coarse correction
@@ -535,6 +587,15 @@ private:
   std::optional<Vec<T>> d_; ///< defect on the overlapping index set
   std::optional<Vec<T>> x_; ///< correction on the overlapping index set
   std::optional<Vec<T>> c_; ///< our part of the coarse defect and of the coarse solution
+
+  // Buffers of one block of the coarse space for apply()
+  struct BlockBuffers {
+    std::vector<Index> coarse_rows; ///< the rows of c_ that belong to the block
+    std::optional<Vec<T>> c;        ///< the block's part of c_
+    std::optional<Vec<T>> d;        ///< the defect on the block's indices (not for a block that covers all indices)
+    std::optional<Vec<T>> y;        ///< the correction on the block's indices (not for a block that covers all indices)
+  };
+  std::vector<BlockBuffers> buffers_;
 
   // Only on rank 0
   std::vector<int> row_counts_;       ///< number of coarse rows (= basis vectors) of every rank
