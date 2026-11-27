@@ -30,6 +30,15 @@ if (${dune-pdelab_FOUND})
     target_link_dune_default_libraries(convectiondiffusiondg)
     dune_symlink_to_source_files(FILES convectiondiffusiondg.ini)
 
+    # DG on a grid with ghost cells (ALUGrid): AllEntitySet, ghost constraints in the test space only
+    if (dune-alugrid_FOUND)
+      add_executable(convectiondiffusiondg_ghosts EXCLUDE_FROM_ALL convectiondiffusiondg_ghosts.cc)
+      target_link_libraries(convectiondiffusiondg_ghosts PUBLIC duneddm)
+      add_dune_blas_lapack_flags(convectiondiffusiondg_ghosts)
+      target_link_dune_default_libraries(convectiondiffusiondg_ghosts)
+      dune_symlink_to_source_files(FILES convectiondiffusiondg_ghosts.ini)
+    endif()
+
     # PDELab example demonstrating the unified DDM framework
     add_executable(pdelab_example EXCLUDE_FROM_ALL pdelab_example.cc)
     dune_symlink_to_source_files(FILES poisson_coefficient.lua
