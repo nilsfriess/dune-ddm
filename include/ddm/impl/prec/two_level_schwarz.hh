@@ -85,7 +85,7 @@ public:
                                            coarse_space_type == "msgfem_ring");
     else DDM_CHECK(false, "TwoLevelSchwarzPrec: unknown coarse space type {}", coarse_space_type);
     logger.endEvent(logger.registerOrGetEvent("Two-level Schwarz", "coarse space"));
-    logger.set_stat("Coarse space/basis size", static_cast<double>(coarse_space_->basis->cols()));
+    logger.set_stat("Coarse space/basis size", static_cast<double>(coarse_space_->size()));
     logger.phase_barrier(comm);
 
     coarse_correction_ = std::make_unique<CoarseCorrection<T>>(config.sub("coarse"), this->mat(), *schwarz_.get_full_overlapping_mat(), coarse_space_);

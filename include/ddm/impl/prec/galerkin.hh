@@ -164,7 +164,8 @@ NeighbourBasis<T> neighbour_basis(const Communication& comm, const MultiVec<T>& 
 template <class T>
 CoarseRows<T> coarse_matrix_rows(const LocalMat<T>& A_ovlp, const CoarseSpace<T>& cs)
 {
-  const auto& V = *cs.basis;
+  DDM_CHECK(cs.blocks.size() == 1 && cs.blocks[0].covers_all(), "coarse_matrix_rows: only a single block that covers all indices is supported so far");
+  const auto& V = *cs.blocks[0].vectors;
   const auto& ovlp = *cs.overlap;
   DDM_CHECK(A_ovlp.rows() == V.rows() && A_ovlp.cols() == V.rows(), "coarse_matrix_rows: matrix is {}x{}, but the basis has {} rows", A_ovlp.rows(), A_ovlp.cols(), V.rows());
 
@@ -215,7 +216,8 @@ public:
       , factorize_event_(Logger::get().registerOrGetEvent("Coarse correction", "factorize"))
   {
     Logger::ScopedLog sl{Logger::get().registerOrGetEvent("Coarse correction", "setup")};
-    const auto& V = *cs_->basis;
+    DDM_CHECK(cs_->blocks.size() == 1 && cs_->blocks[0].covers_all(), "coarse correction: only a single block that covers all indices is supported so far");
+    const auto& V = *cs_->blocks[0].vectors;
     DDM_CHECK(cs_->overlap->n_original == this->mat()->rows(), "coarse correction: the coarse space was built for {} indices, but the matrix has {} rows", cs_->overlap->n_original,
               this->mat()->rows());
 
@@ -230,9 +232,9 @@ public:
     if (save_vectors > 0 and debug::has_vec_sink<T>()) {
       auto v = A_ovlp.create_domain_vector();
       auto v_novlp = this->mat()->create_domain_vector();
-      for (Index i = 0; i < std::min<Index>(cs_->basis->cols(), save_vectors); ++i) {
+      for (Index i = 0; i < std::min<Index>(cs_->size(), save_vectors); ++i) {
         v.zero();
-        if (debug::vec_sink_debug_rank<T>() == this->mat()->communication()->rank()) v = column(*cs_->basis, i);
+        if (debug::vec_sink_debug_rank<T>() == this->mat()->communication()->rank()) v = column(*cs_->blocks[0].vectors, i);
         cs_->overlap->comm->reduce(v);
         v_novlp.copy_n_from(v, v_novlp.size());
         debug::add_vec_to_sink(std::format("basis{:04d}", i), v_novlp);
@@ -250,7 +252,7 @@ private:
   void do_apply(Vec<T>& z, const Vec<T>& r) override
   {
     Logger::ScopedLog sl{apply_event_};
-    const auto& V = *cs_->basis;
+    const auto& V = *cs_->blocks[0].vectors;
     const auto& comm = *cs_->overlap->comm;
     const auto n = cs_->overlap->n_original;
 
