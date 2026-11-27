@@ -30,12 +30,17 @@
 namespace ddm {
 
 namespace detail {
-// The rows of the coarse matrix that belong to the basis vectors of one rank
+// The rows of the coarse matrix that belong to the basis vectors of one rank. They come in row blocks, one per block of
+// the coarse space and in the same order: row block b has one row per vector of block b.
 template <class T>
 struct CoarseRows {
-  Index first_row;                     ///< global number of the first row, the rows are first_row, ..., first_row + values->rows() - 1
-  std::vector<Index> cols;             ///< global number of each column of values
-  std::shared_ptr<MultiVec<T>> values; ///< the entries, values->cols() == cols.size()
+  struct RowBlock {
+    std::vector<Index> cols;             ///< global number of each column of values, increasing
+    std::shared_ptr<MultiVec<T>> values; ///< the entries, values->cols() == cols.size()
+  };
+
+  Index first_row;              ///< global number of the first row, the row blocks follow each other from there
+  std::vector<RowBlock> blocks; ///< one per block of the coarse space
 };
 
 // Tags for the messages of neighbour_basis(), distinct from the ones the exchanges of a Communication use
@@ -156,10 +161,11 @@ NeighbourBasis<T> neighbour_basis(const Communication& comm, const MultiVec<T>& 
  *  correct for such a basis.
  *
  *  The coarse basis vectors are numbered globally rank by rank, so ours are first_row, ..., first_row + m_i - 1 (m_i =
- *  number of our basis vectors). The result holds the rows of A_0 with these numbers, restricted to the columns of the
- *  subdomains that intersect ours (all other entries of these rows are zero): values is a dense m_i x M multivector,
- *  where M is the number of basis vectors of these subdomains (including ours), and cols[c] is the global number of
- *  column c of values. The columns are sorted by rank, and within a rank by basis vector, so cols is increasing.
+ *  number of our basis vectors). The result has a single row block with the rows of A_0 with these numbers, restricted
+ *  to the columns of the subdomains that intersect ours (all other entries of these rows are zero): values is a dense
+ *  m_i x M multivector, where M is the number of basis vectors of these subdomains (including ours), and cols[c] is the
+ *  global number of column c of values. The columns are sorted by rank, and within a rank by basis vector, so cols is
+ *  increasing.
  */
 template <class T>
 CoarseRows<T> coarse_matrix_rows(const LocalMat<T>& A_ovlp, const CoarseSpace<T>& cs)
@@ -181,14 +187,15 @@ CoarseRows<T> coarse_matrix_rows(const LocalMat<T>& A_ovlp, const CoarseSpace<T>
   // that intersects ours
   CoarseRows<T> rows;
   rows.first_row = neighbours.blocks.at(ovlp.comm->rank()).global_offset;
-  rows.values = V.create_multivector(V.cols(), A_i_basis->cols());
-  V.dot(*A_i_basis, *rows.values);
+  auto& row_block = rows.blocks.emplace_back();
+  row_block.values = V.create_multivector(V.cols(), A_i_basis->cols());
+  V.dot(*A_i_basis, *row_block.values);
 
   // Column `column` of the result is basis vector (column - block.first) of the block's subdomain, whose global
   // number starts at block.global_offset
-  rows.cols.reserve(A_i_basis->cols());
+  row_block.cols.reserve(A_i_basis->cols());
   for (const auto& [block_rank, block] : neighbours.blocks)
-    for (Index column = block.first; column < block.end; ++column) rows.cols.push_back(block.global_offset + (column - block.first));
+    for (Index column = block.first; column < block.end; ++column) row_block.cols.push_back(block.global_offset + (column - block.first));
   return rows;
 }
 } // namespace detail
@@ -306,62 +313,93 @@ private:
     int size{};
     MPI_Comm_size(mpi_comm, &size);
 
-    // How many rows (= basis vectors) and columns every rank has. The rows are numbered rank by rank, so the row
-    // counts also give the position of every rank's part of the coarse vectors.
-    const Index sizes[2] = {rows.values->rows(), rows.values->cols()};
-    std::vector<Index> all_sizes(rank_ == 0 ? 2 * size : 0);
-    MPI_Gather(sizes, 2, Dune::MPITraits<Index>::getType(), all_sizes.data(), 2, Dune::MPITraits<Index>::getType(), 0, mpi_comm);
+    // Our rows come in row blocks (see detail::coarse_matrix_rows()). Every rank sends the number of its rows, the shape
+    // (rows and columns) of every row block, the columns of all row blocks, and their values (column by column, one row
+    // block after the other). The rows are numbered rank by rank, so the row counts also give the position of every
+    // rank's part of the coarse vectors.
+    // TODO(20261126-093234): Avoid the host views
+    std::vector<Index> shapes;
+    std::vector<Index> cols;
+    std::vector<T> values;
+    Index n_rows = 0;
+    for (const auto& row_block : rows.blocks) {
+      shapes.push_back(row_block.values->rows());
+      shapes.push_back(row_block.values->cols());
+      n_rows += row_block.values->rows();
+      cols.insert(cols.end(), row_block.cols.begin(), row_block.cols.end());
+      const auto view = std::as_const(*row_block.values).host_view(read);
+      values.insert(values.end(), view.data(), view.data() + view.size());
+    }
 
-    std::vector<int> col_counts(size, 0);
-    std::vector<int> col_displs(size, 0);
-    std::vector<int> value_counts(size, 0);
-    std::vector<int> value_displs(size, 0);
+    const Index sizes[4] = {n_rows, static_cast<Index>(shapes.size()), static_cast<Index>(cols.size()), static_cast<Index>(values.size())};
+    std::vector<Index> all_sizes(rank_ == 0 ? 4 * size : 0);
+    MPI_Gather(sizes, 4, Dune::MPITraits<Index>::getType(), all_sizes.data(), 4, Dune::MPITraits<Index>::getType(), 0, mpi_comm);
+
+    // counts[k][p] and displs[k][p] for the shapes (k = 0), columns (1) and values (2) of rank p
+    std::vector<int> counts[3];
+    std::vector<int> displs[3];
     if (rank_ == 0) {
       row_counts_.assign(size, 0);
       row_displs_.assign(size, 0);
+      for (int k = 0; k < 3; ++k) {
+        counts[k].assign(size, 0);
+        displs[k].assign(size, 0);
+      }
       for (int p = 0; p < size; ++p) {
-        row_counts_[p] = static_cast<int>(all_sizes[2 * p]);
-        col_counts[p] = static_cast<int>(all_sizes[2 * p + 1]);
-        value_counts[p] = row_counts_[p] * col_counts[p];
+        row_counts_[p] = static_cast<int>(all_sizes[4 * p]);
+        for (int k = 0; k < 3; ++k) counts[k][p] = static_cast<int>(all_sizes[4 * p + 1 + k]);
         if (p > 0) {
           row_displs_[p] = row_displs_[p - 1] + row_counts_[p - 1];
-          col_displs[p] = col_displs[p - 1] + col_counts[p - 1];
-          value_displs[p] = value_displs[p - 1] + value_counts[p - 1];
+          for (int k = 0; k < 3; ++k) displs[k][p] = displs[k][p - 1] + counts[k][p - 1];
         }
       }
     }
 
-    // The column numbers and the values (column by column) of every rank's rows
-    std::vector<Index> all_cols(rank_ == 0 ? col_displs.back() + col_counts.back() : 0);
-    MPI_Gatherv(rows.cols.data(), static_cast<int>(rows.cols.size()), Dune::MPITraits<Index>::getType(), all_cols.data(), col_counts.data(), col_displs.data(), Dune::MPITraits<Index>::getType(), 0,
-                mpi_comm);
-
-    std::vector<T> all_values(rank_ == 0 ? value_displs.back() + value_counts.back() : 0);
-    // TODO(20261126-093234): Avoid the host view
-    {
-      const auto values = rows.values->host_view(read);
-      MPI_Gatherv(values.data(), static_cast<int>(values.size()), Dune::MPITraits<T>::getType(), all_values.data(), value_counts.data(), value_displs.data(), Dune::MPITraits<T>::getType(), 0,
-                  mpi_comm);
-    }
+    const auto gather = [&]<class U>(const std::vector<U>& local, int k) {
+      std::vector<U> all(rank_ == 0 ? displs[k].back() + counts[k].back() : 0);
+      MPI_Gatherv(local.data(), static_cast<int>(local.size()), Dune::MPITraits<U>::getType(), all.data(), counts[k].data(), displs[k].data(), Dune::MPITraits<U>::getType(), 0, mpi_comm);
+      return all;
+    };
+    const auto all_shapes = gather(shapes, 0);
+    const auto all_cols = gather(cols, 1);
+    const auto all_values = gather(values, 2);
 
     if (rank_ != 0) return;
 
-    // Row first_row + a of rank p has the entries all_values[a + c * rows] in the columns all_cols[c]
+    // Calls f(rows, cols, values) for every row block of every rank, with the global numbers of its rows and columns
+    // and its values column by column
+    const auto for_each_row_block = [&](auto&& f) {
+      std::vector<Index> block_rows;
+      for (int p = 0; p < size; ++p) {
+        Index row = row_displs_[p];
+        const Index* col = all_cols.data() + displs[1][p];
+        const T* value = all_values.data() + displs[2][p];
+        for (int b = 0; b < counts[0][p] / 2; ++b) {
+          const Index r = all_shapes[displs[0][p] + 2 * b];
+          const Index c = all_shapes[displs[0][p] + 2 * b + 1];
+          block_rows.resize(r);
+          std::iota(block_rows.begin(), block_rows.end(), row);
+          f(std::span<const Index>(block_rows), std::span<const Index>(col, c), std::span<const T>(value, r * c));
+          row += r;
+          col += c;
+          value += r * c;
+        }
+      }
+    };
+
     const Index n0 = row_displs_.back() + row_counts_.back();
     Pattern pattern(n0, n0);
-    for (int p = 0; p < size; ++p)
-      for (Index a = 0; a < row_counts_[p]; ++a)
-        for (Index c = 0; c < col_counts[p]; ++c) pattern.add(row_displs_[p] + a, all_cols[col_displs[p] + c]);
+    for_each_row_block([&](std::span<const Index> block_rows, std::span<const Index> block_cols, std::span<const T>) {
+      for (auto r : block_rows)
+        for (auto c : block_cols) pattern.add(r, c);
+    });
     pattern.finalize();
 
-    // Every rank's values are one dense block, stored column by column like add_values() expects it
+    // The values of a row block are stored column by column like add_values() expects it
     auto A0_local = create_local_mat_like<T>(config.sub("mat"), pattern, this->mat()->local());
-    std::vector<Index> block_rows;
-    for (int p = 0; p < size; ++p) {
-      block_rows.resize(row_counts_[p]);
-      std::iota(block_rows.begin(), block_rows.end(), row_displs_[p]);
-      A0_local->add_values(block_rows, std::span<const Index>(all_cols.data() + col_displs[p], col_counts[p]), std::span<const T>(all_values.data() + value_displs[p], value_counts[p]));
-    }
+    for_each_row_block([&](std::span<const Index> block_rows, std::span<const Index> block_cols, std::span<const T> block_values) {
+      if (!block_rows.empty() && !block_cols.empty()) A0_local->add_values(block_rows, block_cols, block_values);
+    });
     A0_local->assemble();
 
     // The coarse matrix only lives on rank 0. It gets a communication on MPI_COMM_SELF that owns all coarse dofs, so
