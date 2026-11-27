@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ddm/check.hh"
+#include "ddm/coarse_space.hh"
 #include "ddm/index.hh"
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/mat.hh"
@@ -78,38 +79,28 @@ std::vector<int> ring_layers(const Vec<T>& pou, const Pattern& graph)
   }
   return layer;
 }
-/** Builds the coarse basis of a rank from its local subdomains (see partition_matrix_with_overlap()).
+/** Builds the blocks of a coarse space (see CoarseSpace) from the local subdomains of a rank (see
+ *  partition_matrix_with_overlap()).
  *
- *  local_basis(j) returns the basis vectors of local subdomain j, numbered by its region. They are extended by zero to
- *  the overlapping index set of the rank and put side by side: first the vectors of subdomain 0, then those of
- *  subdomain 1, and so on. The subdomains can have different numbers of vectors. A single local subdomain covers the
- *  whole overlapping subdomain, so its basis is returned as it is.
+ *  local_basis(j) returns the basis vectors of local subdomain j, numbered by its region. They become block j. The
+ *  subdomains can have different numbers of vectors. A single local subdomain covers the whole overlapping subdomain,
+ *  so it becomes a block that covers all indices.
  *
  *  local_basis is called for one subdomain after the other, so only one subdomain needs its memory (e.g. for an
- *  eigensolver) at a time. A_ovlp is the matrix on the overlapping index set of the rank, it is only used to create
- *  the result.
+ *  eigensolver) at a time.
  */
 template <class T, class F>
-std::shared_ptr<MultiVec<T>> local_bases(std::span<const LocalSubdomain> subdomains, const LocalMat<T>& A_ovlp, F&& local_basis)
+std::vector<typename CoarseSpace<T>::Block> local_bases(std::span<const LocalSubdomain> subdomains, F&& local_basis)
 {
-  std::vector<std::shared_ptr<MultiVec<T>>> bases;
-  bases.reserve(subdomains.size());
-  Index cols = 0;
+  std::vector<typename CoarseSpace<T>::Block> blocks;
+  blocks.reserve(subdomains.size());
   for (std::size_t j = 0; j < subdomains.size(); ++j) {
-    const auto& basis = bases.emplace_back(local_basis(j));
-    DDM_CHECK(basis->rows() == subdomains[j].region.size(), "local_bases: the basis of local subdomain {} has {} rows, but the subdomain has {} indices", j, basis->rows(),
-              subdomains[j].region.size());
-    cols += basis->cols();
+    const auto& region = subdomains[j].region;
+    std::shared_ptr<MultiVec<T>> basis = local_basis(j);
+    DDM_CHECK(basis->rows() == region.size(), "local_bases: the basis of local subdomain {} has {} rows, but the subdomain has {} indices", j, basis->rows(), region.size());
+    if (subdomains.size() == 1 && region.is_subdomain()) blocks.push_back({{}, std::move(basis)});
+    else blocks.push_back({{region.indices().begin(), region.indices().end()}, std::move(basis)});
   }
-  if (subdomains.size() == 1 && subdomains[0].region.is_subdomain()) return bases[0];
-
-  // The result is zero-initialized, so every basis vector is zero outside of its subdomain
-  std::shared_ptr<MultiVec<T>> result(A_ovlp.create_domain_multivector(cols));
-  Index first = 0;
-  for (std::size_t j = 0; j < subdomains.size(); ++j) {
-    result->unpack_rows(*bases[j], subdomains[j].region.indices(), first);
-    first += bases[j]->cols();
-  }
-  return result;
+  return blocks;
 }
 } // namespace ddm::detail
