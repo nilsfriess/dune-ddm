@@ -5,6 +5,7 @@
 #include "ddm/communication.hh"
 #include "ddm/debug/vec_sink.hh"
 #include "ddm/index.hh"
+#include "ddm/logger.hh"
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/mat/pattern.hh"
@@ -12,7 +13,6 @@
 #include "ddm/prec/prec.hh"
 #include "ddm/solver/solver.hh"
 #include "ddm/vec/host_view.hh"
-#include "ddm/logger.hh"
 
 #include <dune/common/parallel/mpitraits.hh>
 #include <dune/common/parametertree.hh>
@@ -240,7 +240,10 @@ public:
     }
   }
 
-  Dune::SolverCategory::Category category() const override { return this->mat()->category(); }
+  Dune::SolverCategory::Category category() const override
+  {
+    return this->mat()->category();
+  }
 
 private:
   // Collective
@@ -274,7 +277,10 @@ private:
   }
 
   // The coarse space would have to be rebuilt too, so the owner of the coarse space creates a new coarse correction
-  void do_update() override { TODO("CoarseCorrection::do_update"); }
+  void do_update() override
+  {
+    TODO("CoarseCorrection::do_update");
+  }
 
   void do_info() const override
   {
@@ -356,7 +362,12 @@ private:
     }
     A0_local->assemble();
 
-    auto A0 = std::make_shared<const Mat<T>>(config.sub("mat"), A0_local, nullptr);
+    // The coarse matrix only lives on rank 0. It gets a communication on MPI_COMM_SELF that owns all coarse dofs, so
+    // that it can also be solved with a preconditioner that needs one, e.g. a (two-level) Schwarz preconditioner with
+    // several local subdomains, which gives a three-level method
+    std::vector<CommunicationNodes> roots(n0);
+    for (Index i = 0; i < n0; ++i) roots[i] = {0, static_cast<std::int64_t>(i)};
+    auto A0 = std::make_shared<const Mat<T>>(config.sub("mat"), A0_local, std::make_shared<Communication>(MPI_COMM_SELF, roots));
     Logger::get().set_stat("Coarse correction/coarse dofs", static_cast<double>(n0));
     Logger::get().set_stat("Coarse correction/coarse nnz", static_cast<double>(pattern.nnz()));
     Logger::ScopedLog sl{factorize_event_};
