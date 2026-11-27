@@ -56,13 +56,9 @@ void extend_from_ring(const Dune::ParameterTree& config, std::span<const int> la
   const auto region = Region::from_indices(std::ssize(layer), std::move(indices));
 
   // Its boundary is layer 1, without the Dirichlet dofs
-  std::vector<Index> region_dirichlet;
+  auto region_dirichlet = region.region_indices(dirichlet);
   std::vector<bool> is_dirichlet(region.size(), false);
-  for (auto i : dirichlet)
-    if (const auto k = region.region_index(i); k >= 0) {
-      region_dirichlet.push_back(k);
-      is_dirichlet[k] = true;
-    }
+  for (auto k : region_dirichlet) is_dirichlet[k] = true;
   std::vector<Index> boundary;
   for (Index k = 0; k < region.size(); ++k)
     if (layer[region.subdomain_index(k)] == 1 && !is_dirichlet[k]) boundary.push_back(k);
@@ -167,13 +163,9 @@ std::shared_ptr<CoarseSpace<T>> ring_coarse_space(const Dune::ParameterTree& con
   rhs->scale(ring_pou);
 
   // The Dirichlet dofs in the numbering of the ring, still sorted. Eliminate them symmetrically; see geneo.hh
-  std::vector<Index> dirichlet;
+  auto dirichlet = ring.region_indices(subdomain_dirichlet);
   std::vector<bool> is_dirichlet(ring.size(), false);
-  for (auto i : subdomain_dirichlet)
-    if (const auto k = ring.region_index(i); k >= 0) {
-      dirichlet.push_back(k);
-      is_dirichlet[k] = true;
-    }
+  for (auto k : dirichlet) is_dirichlet[k] = true;
   lhs->zero_rows_and_cols(dirichlet, T{1});
   rhs->zero_rows_and_cols(dirichlet, T{0});
 

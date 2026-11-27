@@ -28,7 +28,7 @@ namespace ddm {
  *  Config:
  *  - coarse_mode:       additive | deflated (default additive)
  *  - coarse_space_type: nicolaides | geneo | msgfem | geneo_ring | msgfem_ring (default nicolaides). With several local
- *                       subdomains per rank (fine.local_subdomains), only nicolaides is supported so far
+ *                       subdomains per rank (fine.local_subdomains), only nicolaides and geneo are supported so far
  *  - overlap:           overlap of the fine level, takes precedence over fine.overlap
  *  - pou:               partition of unity of both levels, takes precedence over fine.pou
  *  - fine:              config of the fine level (see SchwarzPrec)
@@ -60,8 +60,8 @@ public:
     logger.phase_barrier(comm);
 
     const auto coarse_space_type = config.get("coarse_space_type", "nicolaides");
-    DDM_ASSERT(schwarz_.get_local_subdomains() == 1 || coarse_space_type == "nicolaides",
-               "two-level schwarz: several local subdomains per rank ({}) are only supported with the nicolaides coarse space", schwarz_.get_local_subdomains());
+    DDM_ASSERT(schwarz_.get_local_subdomains() == 1 || coarse_space_type == "nicolaides" || coarse_space_type == "geneo",
+               "two-level schwarz: several local subdomains per rank ({}) are only supported with the nicolaides and geneo coarse spaces", schwarz_.get_local_subdomains());
     const bool needs_fine_solver = schwarz_.eliminates_boundary() && coarse_space_uses_fine_solver(coarse_space_type, config.sub("coarse_space"));
     if (needs_fine_solver) {
       schwarz_.setup_solvers();
@@ -74,8 +74,10 @@ public:
       const auto pous = schwarz_.get_pous();
       coarse_space_ = nicolaides_coarse_space<T>(schwarz_.get_overlap(), schwarz_.get_subdomains(), pous, *this->mat(), *schwarz_.get_full_overlapping_mat());
     }
-    else if (coarse_space_type == "geneo")
-      coarse_space_ = geneo_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pous()[0], this->mat(), schwarz_.get_overlapping_mats()[0]->local());
+    else if (coarse_space_type == "geneo") {
+      const auto pous = schwarz_.get_pous();
+      coarse_space_ = geneo_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), schwarz_.get_subdomains(), pous, this->mat(), *schwarz_.get_full_overlapping_mat());
+    }
     else if (coarse_space_type == "msgfem")
       coarse_space_ = msgfem_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pous()[0], this->mat(), schwarz_.get_overlapping_mats()[0], fine_solver);
     else if (coarse_space_type == "geneo_ring" || coarse_space_type == "msgfem_ring")

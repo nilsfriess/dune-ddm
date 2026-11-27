@@ -98,9 +98,7 @@ std::shared_ptr<CoarseSpace<T>> msgfem_coarse_space(const Dune::ParameterTree& c
     B_ring->scale(ring_pou);
 
     // The Dirichlet dofs in the numbering of the ring, eliminated like above
-    std::vector<Index> ring_dirichlet;
-    for (auto i : harmonic_space.dirichlet())
-      if (const auto k = ring.region_index(i); k >= 0) ring_dirichlet.push_back(k);
+    const auto ring_dirichlet = ring.region_indices(harmonic_space.dirichlet());
     A_ring->zero_rows_and_cols(ring_dirichlet, T{1});
     B_ring->zero_rows_and_cols(ring_dirichlet, T{0});
 

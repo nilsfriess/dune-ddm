@@ -82,6 +82,16 @@ public:
     return region_index_[subdomain_index];
   }
 
+  // Maps subdomain indices to region indices, e.g. to get the Dirichlet dofs in the numbering of the region. Indices
+  // that are not in the region are left out, the others keep their order
+  std::vector<Index> region_indices(std::span<const Index> subdomain_indices) const
+  {
+    std::vector<Index> result;
+    for (auto i : subdomain_indices)
+      if (const auto k = region_index(i); k >= 0) result.push_back(k);
+    return result;
+  }
+
 private:
   std::vector<Index> indices_;      ///< region index -> subdomain index
   std::vector<Index> region_index_; ///< subdomain index -> region index, -1 outside the region

@@ -5,10 +5,14 @@
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/mat/pattern.hh"
+#include "ddm/multivec/multivec.hh"
 #include "ddm/overlap.hh"
+#include "ddm/region.hh"
 #include "ddm/vec/vec.hh"
 
 #include <algorithm>
+#include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -73,5 +77,39 @@ std::vector<int> ring_layers(const Vec<T>& pou, const Pattern& graph)
     frontier = std::move(next);
   }
   return layer;
+}
+/** Builds the coarse basis of a rank from its local subdomains (see partition_matrix_with_overlap()).
+ *
+ *  local_basis(j) returns the basis vectors of local subdomain j, numbered by its region. They are extended by zero to
+ *  the overlapping index set of the rank and put side by side: first the vectors of subdomain 0, then those of
+ *  subdomain 1, and so on. The subdomains can have different numbers of vectors. A single local subdomain covers the
+ *  whole overlapping subdomain, so its basis is returned as it is.
+ *
+ *  local_basis is called for one subdomain after the other, so only one subdomain needs its memory (e.g. for an
+ *  eigensolver) at a time. A_ovlp is the matrix on the overlapping index set of the rank, it is only used to create
+ *  the result.
+ */
+template <class T, class F>
+std::shared_ptr<MultiVec<T>> local_bases(std::span<const LocalSubdomain> subdomains, const LocalMat<T>& A_ovlp, F&& local_basis)
+{
+  std::vector<std::shared_ptr<MultiVec<T>>> bases;
+  bases.reserve(subdomains.size());
+  Index cols = 0;
+  for (std::size_t j = 0; j < subdomains.size(); ++j) {
+    const auto& basis = bases.emplace_back(local_basis(j));
+    DDM_CHECK(basis->rows() == subdomains[j].region.size(), "local_bases: the basis of local subdomain {} has {} rows, but the subdomain has {} indices", j, basis->rows(),
+              subdomains[j].region.size());
+    cols += basis->cols();
+  }
+  if (subdomains.size() == 1 && subdomains[0].region.is_subdomain()) return bases[0];
+
+  // The result is zero-initialized, so every basis vector is zero outside of its subdomain
+  std::shared_ptr<MultiVec<T>> result(A_ovlp.create_domain_multivector(cols));
+  Index first = 0;
+  for (std::size_t j = 0; j < subdomains.size(); ++j) {
+    result->unpack_rows(*bases[j], subdomains[j].region.indices(), first);
+    first += bases[j]->cols();
+  }
+  return result;
 }
 } // namespace ddm::detail
