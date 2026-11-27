@@ -21,7 +21,7 @@ namespace ddm {
  *  was called for).
  *
  *  Every local subdomain j (see partition_matrix_with_overlap()) contributes the vectors D_j R_j v, with its partition
- *  of unity D_j = pous[j]. They are put together as described in detail::local_bases(). A_ovlp is the matrix on the
+ *  of unity D_j = pous[j]. They are block j of the coarse space (see CoarseSpace). A_ovlp is the matrix on the
  *  overlapping index set of the rank.
  *
  *  Collective.
@@ -56,7 +56,7 @@ std::shared_ptr<CoarseSpace<T>> nicolaides_coarse_space(std::shared_ptr<const Ov
     for (auto i : dirichlet) view[i] = T{0};
   }
 
-  auto basis = detail::local_bases<T>(subdomains, A_ovlp, [&](std::size_t j) {
+  auto blocks = detail::local_bases<T>(subdomains, [&](std::size_t j) {
     const auto indices = subdomains[j].region.indices();
     auto basis_j = pous[j]->multivec().create_multivector(std::ssize(indices), std::ssize(vectors));
     auto w = *pous[j]; // a vector on local subdomain j
@@ -68,6 +68,6 @@ std::shared_ptr<CoarseSpace<T>> nicolaides_coarse_space(std::shared_ptr<const Ov
     return basis_j;
   });
 
-  return std::make_shared<CoarseSpace<T>>(std::move(ovlp), std::move(basis));
+  return std::make_shared<CoarseSpace<T>>(std::move(ovlp), std::move(blocks));
 }
 } // namespace ddm

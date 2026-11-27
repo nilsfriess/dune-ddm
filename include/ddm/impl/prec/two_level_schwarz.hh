@@ -85,10 +85,16 @@ public:
                                            coarse_space_type == "msgfem_ring");
     else DDM_CHECK(false, "TwoLevelSchwarzPrec: unknown coarse space type {}", coarse_space_type);
     logger.endEvent(logger.registerOrGetEvent("Two-level Schwarz", "coarse space"));
-    logger.set_stat("Coarse space/basis size", static_cast<double>(coarse_space_->basis->cols()));
+    logger.set_stat("Coarse space/basis size", static_cast<double>(coarse_space_->size()));
     logger.phase_barrier(comm);
 
-    coarse_correction_ = std::make_unique<CoarseCorrection<T>>(config.sub("coarse"), this->mat(), *schwarz_.get_full_overlapping_mat(), coarse_space_);
+    // The matrix of every block of the coarse space: the matrix on the whole overlapping index set for a single block
+    // that covers all indices, otherwise the matrix of the block's local subdomain
+    std::vector<const LocalMat<T>*> A_blocks;
+    if (coarse_space_->blocks.size() == 1 && coarse_space_->blocks[0].covers_all()) A_blocks.push_back(schwarz_.get_full_overlapping_mat().get());
+    else
+      for (const auto& A_sub : schwarz_.get_overlapping_mats()) A_blocks.push_back(&A_sub->local());
+    coarse_correction_ = std::make_unique<CoarseCorrection<T>>(config.sub("coarse"), this->mat(), A_blocks, coarse_space_);
     logger.phase_barrier(comm);
 
     if (!needs_fine_solver) {

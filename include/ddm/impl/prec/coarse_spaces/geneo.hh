@@ -23,9 +23,8 @@ namespace ddm {
  *  Δ-GenEO method from arxiv:2103.16703).
  *
  *  With local subdomains (see partition_matrix_with_overlap()), every local subdomain j solves this eigenproblem on its
- *  own region, with its Neumann matrix and its partition of unity D_j = pous[j]. The vectors of all local subdomains
- *  are put together as described in detail::local_bases(). A_ovlp is then the matrix on the overlapping index set of
- *  the rank.
+ *  own region, with its Neumann matrix and its partition of unity D_j = pous[j]. Its vectors are block j of the coarse
+ *  space (see CoarseSpace). A_ovlp is then the matrix on the overlapping index set of the rank.
  *
  *  Collective.
  *
@@ -47,7 +46,7 @@ std::shared_ptr<CoarseSpace<T>> geneo_coarse_space(const Dune::ParameterTree& co
   NeumannAssembler<T> na(A->get_symmetric_part() != nullptr ? A->get_symmetric_part() : A, ovlp);
   const auto dirichlet = detail::overlapping_dirichlet_dofs(*A, A_ovlp, *ovlp);
 
-  auto basis = detail::local_bases<T>(subdomains, A_ovlp, [&](std::size_t j) {
+  auto blocks = detail::local_bases<T>(subdomains, [&](std::size_t j) {
     const auto& region = subdomains[j].region;
     auto lhs = na.matrix(config.sub("neumann_mat"), region);
     auto rhs = lhs->clone();
@@ -67,6 +66,6 @@ std::shared_ptr<CoarseSpace<T>> geneo_coarse_space(const Dune::ParameterTree& co
     basis_j->scale_rows(pous[j]->multivec());
     return basis_j;
   });
-  return std::make_shared<CoarseSpace<T>>(std::move(ovlp), std::move(basis));
+  return std::make_shared<CoarseSpace<T>>(std::move(ovlp), std::move(blocks));
 }
 } // namespace ddm
