@@ -5,11 +5,11 @@
 #include "ddm/communication_nodes.hh"
 #include "ddm/communication_pattern.hh"
 #include "ddm/index.hh"
+#include "ddm/logger.hh"
 #include "ddm/mat/local_mat.hh"
 #include "ddm/mat/mat.hh"
 #include "ddm/mat/pattern.hh"
 #include "ddm/sparse_exchange.hh"
-#include "ddm/logger.hh"
 
 #include <algorithm>
 #include <cstddef>
@@ -191,8 +191,12 @@ inline Overlap extend_overlap(const Communication& comm, const Pattern& graph, i
     }
 
     // Some of the communicated entries are already known to us, so remove the duplicates
-    const auto by_gid = [](const auto& a, const auto& b) { return a.gid < b.gid; };
-    const auto same_gid = [](const auto& a, const auto& b) { return a.gid == b.gid; };
+    const auto by_gid = [](const auto& a, const auto& b) {
+      return a.gid < b.gid;
+    };
+    const auto same_gid = [](const auto& a, const auto& b) {
+      return a.gid == b.gid;
+    };
     for (auto& row : rows) {
       std::sort(row.begin(), row.end(), by_gid);
       row.erase(std::unique(row.begin(), row.end(), same_gid), row.end());

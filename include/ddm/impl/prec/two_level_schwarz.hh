@@ -54,6 +54,7 @@ public:
     // (e.g. the factorisations of GenEO's or the saddle point method's eigensolver), as if it were done on the first
     // apply, but is still timed as part of the setup. With phase barriers (see Logger::set_phase_barriers()), the
     // factorisation, the coarse space and the coarse correction start on all ranks at the same time.
+    DDM_ASSERT(schwarz_.get_local_subdomains() == 1, "two-level schwarz: only one local subdomain per rank is supported, got {}", schwarz_.get_local_subdomains());
     auto& logger = Logger::get();
     const MPI_Comm comm = schwarz_.get_overlap()->comm->communication_pattern().communicator();
     logger.phase_barrier(comm);
@@ -61,30 +62,30 @@ public:
     const auto coarse_space_type = config.get("coarse_space_type", "nicolaides");
     const bool needs_fine_solver = schwarz_.eliminates_boundary() && coarse_space_uses_fine_solver(coarse_space_type, config.sub("coarse_space"));
     if (needs_fine_solver) {
-      schwarz_.setup_solver();
+      schwarz_.setup_solvers();
       logger.phase_barrier(comm);
     }
-    const auto fine_solver = needs_fine_solver ? schwarz_.get_subdomain_solver() : nullptr;
+    const auto fine_solver = needs_fine_solver ? schwarz_.get_subdomain_solvers()[0] : nullptr;
 
     logger.startEvent(logger.registerOrGetEvent("Two-level Schwarz", "coarse space"));
-    if (coarse_space_type == "nicolaides") coarse_space_ = nicolaides_coarse_space<T>(schwarz_.get_overlap(), *schwarz_.get_pou(), *this->mat(), schwarz_.get_overlapping_mat()->local());
+    if (coarse_space_type == "nicolaides") coarse_space_ = nicolaides_coarse_space<T>(schwarz_.get_overlap(), *schwarz_.get_pous()[0], *this->mat(), schwarz_.get_overlapping_mats()[0]->local());
     else if (coarse_space_type == "geneo")
-      coarse_space_ = geneo_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat()->local());
+      coarse_space_ = geneo_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pous()[0], this->mat(), schwarz_.get_overlapping_mats()[0]->local());
     else if (coarse_space_type == "msgfem")
-      coarse_space_ = msgfem_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat(), fine_solver);
+      coarse_space_ = msgfem_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pous()[0], this->mat(), schwarz_.get_overlapping_mats()[0], fine_solver);
     else if (coarse_space_type == "geneo_ring" || coarse_space_type == "msgfem_ring")
-      coarse_space_ = ring_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pou(), this->mat(), schwarz_.get_overlapping_mat(), fine_solver,
+      coarse_space_ = ring_coarse_space<T>(config.sub("coarse_space"), schwarz_.get_overlap(), *schwarz_.get_pous()[0], this->mat(), schwarz_.get_overlapping_mats()[0], fine_solver,
                                            coarse_space_type == "msgfem_ring");
     else DDM_CHECK(false, "TwoLevelSchwarzPrec: unknown coarse space type {}", coarse_space_type);
     logger.endEvent(logger.registerOrGetEvent("Two-level Schwarz", "coarse space"));
     logger.set_stat("Coarse space/basis size", static_cast<double>(coarse_space_->basis->cols()));
     logger.phase_barrier(comm);
 
-    coarse_correction_ = std::make_unique<CoarseCorrection<T>>(config.sub("coarse"), this->mat(), schwarz_.get_overlapping_mat()->local(), coarse_space_);
+    coarse_correction_ = std::make_unique<CoarseCorrection<T>>(config.sub("coarse"), this->mat(), schwarz_.get_overlapping_mats()[0]->local(), coarse_space_);
     logger.phase_barrier(comm);
 
     if (!needs_fine_solver) {
-      schwarz_.setup_solver();
+      schwarz_.setup_solvers();
       logger.phase_barrier(comm);
     }
     logger.endEvent(setup_event_);
